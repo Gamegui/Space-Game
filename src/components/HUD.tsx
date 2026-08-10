@@ -23,14 +23,14 @@ export default function HUD({
   return (
     <>
       {/* Top bar */}
-      <div className="absolute top-0 left-0 right-0 px-4 pt-2 flex justify-between items-start pointer-events-none z-10">
-        {/* Left: HP + Shield */}
-        <div className="w-44 space-y-1.5">
+      <div className="absolute top-0 left-0 right-0 px-6 pt-3 flex justify-between items-start pointer-events-none z-10">
+        {/* Left: HP + Shield + XP */}
+        <div className="w-56 space-y-1.5 bg-slate-950/70 p-2.5 rounded-xl border border-slate-800/80 backdrop-blur-sm">
           {/* HP */}
           <div>
             <div className="flex justify-between text-xs font-mono mb-0.5">
-              <span className="text-red-400">❤️ HP</span>
-              <span className="text-white">{Math.ceil(player.hp)}/{player.maxHp}</span>
+              <span className="text-red-400 font-bold">❤️ HP</span>
+              <span className="text-white font-bold">{Math.ceil(player.hp)}/{player.maxHp}</span>
             </div>
             <div className="h-2.5 bg-slate-800 rounded-full overflow-hidden border border-slate-700">
               <div
@@ -48,12 +48,12 @@ export default function HUD({
           {player.shield && (
             <div>
               <div className="flex justify-between text-xs font-mono mb-0.5">
-                <span className="text-blue-400">🛡️ SHIELD</span>
-                <span className="text-blue-300">{Math.ceil(player.shield.hp)}/{player.shield.maxHp}</span>
+                <span className="text-sky-400 font-bold">🛡️ SHIELD</span>
+                <span className="text-sky-300 font-bold">{Math.ceil(player.shield.hp)}/{player.shield.maxHp}</span>
               </div>
-              <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden border border-slate-700">
+              <div className="h-2 bg-slate-800 rounded-full overflow-hidden border border-slate-700">
                 <div
-                  className="h-full rounded-full transition-all duration-150 bg-gradient-to-r from-blue-400 to-blue-600"
+                  className="h-full rounded-full transition-all duration-150 bg-gradient-to-r from-sky-400 to-blue-500"
                   style={{ width: `${shieldPct * 100}%` }}
                 />
               </div>
@@ -62,46 +62,46 @@ export default function HUD({
           {/* XP */}
           <div>
             <div className="flex justify-between text-xs font-mono mb-0.5">
-              <span className="text-purple-400">⭐ LVL {player.level}</span>
-              <span className="text-purple-300">{player.xp}/{player.xpToNext}</span>
+              <span className="text-purple-400 font-bold">⭐ LVL {player.level}</span>
+              <span className="text-purple-300 font-bold">{player.xp}/{player.xpToNext} XP</span>
             </div>
-            <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden border border-slate-700">
+            <div className="h-2 bg-slate-800 rounded-full overflow-hidden border border-slate-700">
               <div
-                className="h-full rounded-full transition-all duration-150 bg-gradient-to-r from-purple-500 to-violet-600"
-                style={{ width: `${xpPct * 100}%` }}
+                className="h-full rounded-full transition-all duration-150 bg-gradient-to-r from-purple-400 via-fuchsia-500 to-indigo-500"
+                style={{ width: `${Math.min(100, xpPct * 100)}%` }}
               />
             </div>
           </div>
         </div>
 
-        {/* Center: Wave + Score */}
-        <div className="text-center">
+        {/* Center: Wave + Status */}
+        <div className="text-center bg-slate-950/70 px-5 py-2 rounded-xl border border-slate-800/80 backdrop-blur-sm">
           <div className="text-xs text-slate-400 font-mono tracking-widest">WAVE</div>
-          <div className="text-2xl font-black text-white font-mono">{wave}</div>
-          <div className="text-xs text-slate-500 font-mono">{enemiesLeft} left</div>
+          <div className="text-3xl font-black text-white font-mono leading-none my-0.5">{wave}</div>
+          <div className="text-xs text-slate-400 font-mono">👾 {enemiesLeft} remaining</div>
           {timeSlow && (
-            <div className="text-xs text-cyan-400 font-mono animate-pulse mt-1">⏱ SLOW</div>
+            <div className="text-xs text-cyan-400 font-mono font-bold animate-pulse mt-1">⏱ TIME SLOW ACTIVE</div>
           )}
         </div>
 
         {/* Right: Score + Kills */}
-        <div className="text-right w-44">
-          <div className="text-xs text-yellow-400 font-mono tracking-widest">SCORE</div>
-          <div className="text-xl font-black text-white font-mono">{player.score.toLocaleString()}</div>
-          <div className="text-xs text-slate-400 font-mono">💀 {player.kills} kills</div>
+        <div className="text-right w-56 bg-slate-950/70 p-2.5 rounded-xl border border-slate-800/80 backdrop-blur-sm font-mono">
+          <div className="text-xs text-yellow-400 font-bold tracking-widest">SCORE</div>
+          <div className="text-2xl font-black text-white">{player.score.toLocaleString()}</div>
+          <div className="text-xs text-slate-300 mt-0.5">💀 {player.kills} kills</div>
           {player.goldMultiplier > 1 && (
-            <div className="text-xs text-yellow-300 font-mono">×{player.goldMultiplier.toFixed(1)}</div>
+            <div className="text-xs text-yellow-300 font-bold">×{player.goldMultiplier.toFixed(1)} Bonus</div>
           )}
         </div>
       </div>
 
       {/* Boss HP bar */}
       {bossActive && (
-        <div className="absolute top-24 left-1/2 -translate-x-1/2 w-80 z-10 pointer-events-none">
-          <div className="text-center text-xs font-black text-red-400 font-mono tracking-widest mb-1 animate-pulse">
+        <div className="absolute top-28 left-1/2 -translate-x-1/2 w-96 z-10 pointer-events-none">
+          <div className="text-center text-sm font-black text-red-400 font-mono tracking-widest mb-1 animate-pulse">
             ☠️ {bossName} ☠️
           </div>
-          <div className="h-4 bg-slate-900 rounded-full border-2 border-red-800 overflow-hidden">
+          <div className="h-4 bg-slate-900 rounded-full border-2 border-red-800 overflow-hidden shadow-lg shadow-red-950">
             <div
               className="h-full rounded-full transition-all duration-200"
               style={{
@@ -111,43 +111,43 @@ export default function HUD({
               }}
             />
           </div>
-          <div className="text-center text-xs text-red-300 font-mono mt-0.5">
+          <div className="text-center text-xs text-red-300 font-mono mt-0.5 font-bold">
             {Math.ceil(bossHpPct * 100)}%
           </div>
         </div>
       )}
 
       {/* Bottom: abilities */}
-      <div className="absolute bottom-2 left-1/2 -translate-x-1/2 flex gap-3 z-10">
+      <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex gap-3 z-10">
         {player.nukeCharges > 0 && (
           <button
             onClick={onNuke}
-            className="px-3 py-1.5 bg-red-900/80 border border-red-500 text-red-200 rounded-lg text-xs font-mono font-black hover:bg-red-700 active:scale-95 transition-all pointer-events-auto"
+            className="px-4 py-2 bg-red-900/90 border border-red-500 text-red-100 rounded-xl text-xs font-mono font-black hover:bg-red-700 active:scale-95 transition-all pointer-events-auto shadow-lg shadow-red-950/50"
           >
             ☢️ NUKE ×{player.nukeCharges}
-            <div className="text-[10px] text-red-400 opacity-70">[X]</div>
+            <div className="text-[10px] text-red-300 opacity-80">[X] KEY</div>
           </button>
         )}
         {player.timeSlow && (
           <button
             onClick={onTimeSlow}
-            className={`px-3 py-1.5 rounded-lg text-xs font-mono font-black transition-all pointer-events-auto ${
+            className={`px-4 py-2 rounded-xl text-xs font-mono font-black transition-all pointer-events-auto shadow-lg ${
               player.timeSlowCooldown > 0
                 ? "bg-slate-800/80 border border-slate-600 text-slate-500"
-                : "bg-cyan-900/80 border border-cyan-500 text-cyan-200 hover:bg-cyan-700 active:scale-95"
+                : "bg-cyan-900/90 border border-cyan-500 text-cyan-100 hover:bg-cyan-700 active:scale-95 shadow-cyan-950/50"
             }`}
           >
             ⏱️ SLOW {player.timeSlowCooldown > 0 ? `(${Math.ceil(player.timeSlowCooldown / 60)}s)` : ""}
-            <div className="text-[10px] opacity-70">[C]</div>
+            <div className="text-[10px] opacity-80">[C] KEY</div>
           </button>
         )}
       </div>
 
       {/* Upgrades mini-display */}
       {player.upgrades.length > 0 && (
-        <div className="absolute bottom-2 left-2 flex flex-wrap gap-1 max-w-[160px] z-10 pointer-events-none">
-          {player.upgrades.slice(0, 8).map(u => (
-            <div key={u.id} className="text-xs px-1 py-0.5 bg-slate-900/80 text-slate-400 rounded font-mono border border-slate-700/50 leading-none">
+        <div className="absolute bottom-3 left-3 flex flex-wrap gap-1.5 max-w-[220px] z-10 pointer-events-none">
+          {player.upgrades.slice(0, 10).map(u => (
+            <div key={u.id} className="text-[11px] px-2 py-0.5 bg-slate-900/90 text-sky-300 rounded-md font-mono border border-slate-700/60 leading-none">
               {u.id.split("_")[0]} ×{u.level}
             </div>
           ))}
@@ -156,9 +156,17 @@ export default function HUD({
 
       {/* Satellites/drones count */}
       {(player.satellites.length > 0 || player.drones.length > 0) && (
-        <div className="absolute bottom-2 right-2 text-right z-10 pointer-events-none">
-          {player.satellites.length > 0 && <div className="text-xs text-yellow-400 font-mono">🛰️ ×{player.satellites.length}</div>}
-          {player.drones.length > 0 && <div className="text-xs text-purple-400 font-mono">🤖 ×{player.drones.length}</div>}
+        <div className="absolute bottom-3 right-3 text-right z-10 pointer-events-none space-y-1">
+          {player.satellites.length > 0 && (
+            <div className="text-xs px-2.5 py-1 bg-slate-900/80 border border-yellow-500/40 rounded-lg text-yellow-400 font-mono font-bold">
+              🛰️ Orbitals: {player.satellites.length}
+            </div>
+          )}
+          {player.drones.length > 0 && (
+            <div className="text-xs px-2.5 py-1 bg-slate-900/80 border border-purple-500/40 rounded-lg text-purple-400 font-mono font-bold">
+              🤖 Drones: {player.drones.length}
+            </div>
+          )}
         </div>
       )}
     </>

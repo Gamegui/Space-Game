@@ -28,7 +28,7 @@ function makeInitialObjects(player: PlayerState): GameObjects {
     blackHoleTimer: 0,
     explosions: [],
     waveEnemyQueue: composition.map(c => ({ ...c })),
-    waveSpawnTimer: 60,
+    waveSpawnTimer: 45,
     bossActive: false,
     boss: null,
     waveTimer: 0,
@@ -61,6 +61,7 @@ export default function App() {
   const [bossHpPct, setBossHpPct] = useState(1);
   const [timeSlow, setTimeSlow] = useState(false);
   const [enemiesLeft, setEnemiesLeft] = useState(0);
+  const [waveNotice, setWaveNotice] = useState<string | null>(null);
   const [hiscore, setHiscore]  = useState(() => { try { return parseInt(localStorage.getItem("hs") || "0"); } catch { return 0; } });
 
   const syncUI = useCallback(() => {
@@ -88,6 +89,7 @@ export default function App() {
     setWave(1);
     setBossActive(false);
     setTimeSlow(false);
+    setWaveNotice(null);
     syncUI();
   }, [syncUI]);
 
@@ -100,6 +102,15 @@ export default function App() {
     setWave(newWave);
     g.bossActive = false;
     g.boss = null;
+
+    // Wave clear bonus: restore 35 HP + fully recharge shield
+    g.player.hp = Math.min(g.player.maxHp, g.player.hp + 35);
+    if (g.player.shield) {
+      g.player.shield.hp = g.player.shield.maxHp;
+    }
+
+    setWaveNotice(`WAVE ${newWave - 1} CLEARED! +35 HP & SHIELD RESTORED`);
+    setTimeout(() => setWaveNotice(null), 2500);
 
     if (isBossWave(newWave)) {
       // Boss wave
@@ -119,7 +130,7 @@ export default function App() {
     } else {
       const composition = getWaveComposition(newWave);
       g.waveEnemyQueue = composition.map(c => ({ ...c }));
-      g.waveSpawnTimer = 80;
+      g.waveSpawnTimer = 60;
       setBossActive(false);
     }
   }, []);
@@ -143,7 +154,6 @@ export default function App() {
     applyUpgrade(g.player, u);
     pendingLevelUpsRef.current--;
     if (pendingLevelUpsRef.current > 0) {
-      // More pending level-ups
       const choices = rollUpgrades(g.player, 3);
       upgradeChoicesRef.current = choices;
       setUpgradeChoices(choices);
@@ -220,30 +230,27 @@ export default function App() {
           phaseRef.current = "playing";
           setPhase("playing");
         }
-        // Draw boss intro overlay on canvas
         ctx.save();
         const alpha = Math.min(1, bossIntroTimerRef.current / 60);
         ctx.fillStyle = `rgba(0,0,0,${alpha * 0.6})`;
         ctx.fillRect(0, 0, W, H);
         ctx.globalAlpha = alpha;
         ctx.fillStyle = "#ef4444";
-        ctx.font = "bold 36px monospace";
+        ctx.font = "bold 40px monospace";
         ctx.textAlign = "center";
         ctx.shadowBlur = 30; ctx.shadowColor = "#ef4444";
-        ctx.fillText("⚠ BOSS APPROACHING ⚠", W / 2, H / 2 - 20);
-        ctx.font = "20px monospace";
+        ctx.fillText("⚠ BOSS APPROACHING ⚠", W / 2, H / 2 - 25);
+        ctx.font = "24px monospace";
         ctx.fillStyle = "#fca5a5";
         ctx.shadowBlur = 0;
-        ctx.fillText(bossName, W / 2, H / 2 + 20);
+        ctx.fillText(bossName, W / 2, H / 2 + 25);
         ctx.restore();
-        // Still draw everything else
         for (const e of g.enemies) drawEnemy(ctx, e, frame);
         drawPlayer(ctx, g.player, frame);
         return;
       }
 
       if (phaseRef.current === "paused") {
-        // Draw static game
         for (const p of g.particles) drawParticle(ctx, p);
         for (const b of g.bullets) drawBullet(ctx, b);
         for (const e of g.enemies) drawEnemy(ctx, e, frame);
@@ -298,38 +305,20 @@ export default function App() {
         },
       });
 
-      // Update boss ref
       if (g.bossActive && g.enemies.length > 0) {
         g.boss = g.enemies.find(e => e.isBoss) || null;
         if (!g.boss) { g.bossActive = false; setBossActive(false); }
       }
 
       // ─── Draw ─────────────────────────────────────────────────────────────
-      // Explosions
       for (const ex of g.explosions) drawExplosion(ctx, ex.pos, ex.radius, ex.progress);
-
-      // Particles
       for (const p2 of g.particles) drawParticle(ctx, p2);
-
-      // Black hole
       if (g.blackHolePos) drawBlackHole(ctx, g.blackHolePos, frame);
-
-      // Lightnings
       for (const l of g.lightnings) drawLightning(ctx, l);
-
-      // Mines
       for (const m of g.mines) drawMine(ctx, m, frame);
-
-      // XP orbs
       for (const orb of g.xpOrbs) drawXpOrb(ctx, orb, frame);
-
-      // Bullets
       for (const b of g.bullets) drawBullet(ctx, b);
-
-      // Enemies
       for (const e of g.enemies) drawEnemy(ctx, e, frame);
-
-      // Player (on top)
       drawPlayer(ctx, g.player, frame);
 
       // Sync UI every 6 frames
@@ -341,27 +330,43 @@ export default function App() {
     return () => cancelAnimationFrame(rafRef.current);
   }, [advanceWave, handleLevelUp, hiscore, syncUI]);
 
-  // ─── Touch controls ───────────────────────────────────────────────────────
+  // ─── Mouse / Touch controls ───────────────────────────────────────────────
+  const isMouseDownRef = useRef(false);
+  const handleMouseDown = () => { isMouseDownRef.current = true; };
+  const handleMouseUp = () => { isMouseDownRef.current = false; };
+  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!gameRef.current || phaseRef.current !== "playing") return;
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const mouseX = ((e.clientX - rect.left) / rect.width) * W;
+    const mouseY = ((e.clientY - rect.top) / rect.height) * H;
+    const p = gameRef.current.player;
+    // Smooth navigation towards mouse cursor when mouse is active
+    if (isMouseDownRef.current) {
+      p.pos.x += (mouseX - p.pos.x) * 0.18;
+      p.pos.y += (mouseY - p.pos.y) * 0.18;
+      p.pos.x = Math.max(24, Math.min(W - 24, p.pos.x));
+      p.pos.y = Math.max(60, Math.min(H - 32, p.pos.y));
+    }
+  };
+
   const touchRef = useRef<{ x: number; y: number } | null>(null);
   const handleTouchStart = (e: React.TouchEvent) => {
     const t = e.touches[0];
     touchRef.current = { x: t.clientX, y: t.clientY };
-    // Fire on touch
-    keysRef.current.add(" ");
   };
   const handleTouchMove = (e: React.TouchEvent) => {
     if (!touchRef.current || !gameRef.current) return;
     const t = e.touches[0];
-    const dx = (t.clientX - touchRef.current.x) * 0.7;
-    const dy = (t.clientY - touchRef.current.y) * 0.7;
+    const dx = (t.clientX - touchRef.current.x) * 0.9;
+    const dy = (t.clientY - touchRef.current.y) * 0.9;
     const player = gameRef.current.player;
-    player.pos.x = Math.max(22, Math.min(W - 22, player.pos.x + dx));
-    player.pos.y = Math.max(55, Math.min(H - 28, player.pos.y + dy));
+    player.pos.x = Math.max(24, Math.min(W - 24, player.pos.x + dx));
+    player.pos.y = Math.max(60, Math.min(H - 32, player.pos.y + dy));
     touchRef.current = { x: t.clientX, y: t.clientY };
   };
   const handleTouchEnd = () => {
     touchRef.current = null;
-    keysRef.current.delete(" ");
   };
 
   const finalScore = gameRef.current?.player.score || 0;
@@ -370,9 +375,9 @@ export default function App() {
   const finalLevel = gameRef.current?.player.level || 1;
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-black">
+    <div className="flex min-h-screen items-center justify-center bg-slate-950 p-2 sm:p-4">
       <div
-        className="relative select-none overflow-hidden rounded-xl shadow-2xl shadow-black"
+        className="relative select-none overflow-hidden rounded-2xl shadow-2xl shadow-cyan-950/30 border border-slate-800"
         style={{ width: W, height: H }}
       >
         {/* Canvas */}
@@ -380,12 +385,22 @@ export default function App() {
           ref={canvasRef}
           width={W}
           height={H}
-          className="block"
+          className="block cursor-crosshair"
           style={{ touchAction: "none" }}
+          onMouseDown={handleMouseDown}
+          onMouseUp={handleMouseUp}
+          onMouseMove={handleMouseMove}
           onTouchStart={handleTouchStart}
           onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
         />
+
+        {/* Wave Banner Notification */}
+        {waveNotice && (
+          <div className="absolute top-20 left-1/2 -translate-x-1/2 px-6 py-2 bg-emerald-900/90 border border-emerald-400 text-emerald-100 font-mono text-sm font-black rounded-full shadow-xl shadow-emerald-950/60 backdrop-blur-sm z-20 animate-bounce">
+            ✨ {waveNotice} ✨
+          </div>
+        )}
 
         {/* HUD */}
         {(phase === "playing" || phase === "upgrade" || phase === "boss_intro") && gameRef.current && (
@@ -414,17 +429,17 @@ export default function App() {
 
         {/* Paused overlay */}
         {phase === "paused" && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm z-30">
-            <div className="text-5xl font-black text-white mb-2">⏸</div>
-            <h2 className="text-3xl font-black text-white mb-6">PAUSED</h2>
-            <div className="text-slate-400 font-mono text-sm mb-6 space-y-1 text-center">
-              <p>Move: <span className="text-sky-400">WASD / Arrows</span></p>
-              <p>Fire: <span className="text-sky-400">Space / Z / W</span></p>
-              <p>Nuke: <span className="text-red-400">X</span> | Time Slow: <span className="text-cyan-400">C</span></p>
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/85 backdrop-blur-md z-30">
+            <div className="text-6xl font-black text-white mb-2">⏸</div>
+            <h2 className="text-4xl font-black text-white mb-6">PAUSED</h2>
+            <div className="text-slate-300 font-mono text-sm mb-6 space-y-1.5 text-center bg-slate-900/80 p-5 rounded-2xl border border-slate-700">
+              <p>Move: <span className="text-sky-400 font-bold">WASD / Arrows / Drag Mouse</span></p>
+              <p>Fire: <span className="text-emerald-400 font-bold">Automatic Continuous Fire</span></p>
+              <p>Tactical Nuke: <span className="text-red-400 font-bold">X</span> | Time Slow: <span className="text-cyan-400 font-bold">C</span></p>
             </div>
             <button
               onClick={() => { phaseRef.current = "playing"; setPhase("playing"); }}
-              className="px-8 py-3 bg-sky-600 hover:bg-sky-500 text-white font-black text-lg rounded-full transition-all active:scale-95"
+              className="px-10 py-3.5 bg-sky-600 hover:bg-sky-500 text-white font-black text-lg rounded-full transition-all active:scale-95 shadow-lg shadow-sky-900/50"
             >
               RESUME
             </button>
@@ -433,91 +448,99 @@ export default function App() {
 
         {/* Menu */}
         {phase === "menu" && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 backdrop-blur-sm z-30">
-            <div className="text-center max-w-lg px-6">
-              <div className="text-7xl mb-3">🚀</div>
-              <h1 className="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-b from-sky-300 via-blue-400 to-violet-500 tracking-tight mb-1">
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/85 backdrop-blur-md z-30">
+            <div className="text-center max-w-xl px-6">
+              <div className="text-8xl mb-2 animate-pulse">🚀</div>
+              <h1 className="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-sky-300 via-blue-400 to-indigo-400 tracking-tight mb-1">
                 SPACE SHOOTER
               </h1>
-              <p className="text-blue-300/60 font-mono text-xs tracking-widest mb-6">ROGUELITE ARCADE · WAVE SURVIVAL</p>
+              <p className="text-blue-300/80 font-mono text-xs tracking-widest mb-6">ROGUELITE ARCADE · EXP SURVIVOR</p>
 
-              <div className="grid grid-cols-2 gap-3 text-sm mb-6 font-mono">
-                <div className="bg-slate-900/70 rounded-xl p-3 border border-slate-700">
-                  <div className="text-slate-400 text-xs mb-1">MOVEMENT</div>
-                  <div className="text-sky-400">WASD / Arrows</div>
+              <div className="grid grid-cols-2 gap-3 text-xs mb-5 font-mono">
+                <div className="bg-slate-900/80 rounded-xl p-3 border border-slate-700 text-left">
+                  <div className="text-slate-400 text-[10px] mb-1">NAVIGATION</div>
+                  <div className="text-sky-400 font-bold">WASD / Arrows / Mouse Drag</div>
                 </div>
-                <div className="bg-slate-900/70 rounded-xl p-3 border border-slate-700">
-                  <div className="text-slate-400 text-xs mb-1">FIRE</div>
-                  <div className="text-sky-400">Space / Z / W↑</div>
+                <div className="bg-slate-900/80 rounded-xl p-3 border border-slate-700 text-left">
+                  <div className="text-slate-400 text-[10px] mb-1">WEAPONS</div>
+                  <div className="text-emerald-400 font-bold">Auto-Fire + Aim Assist</div>
                 </div>
-                <div className="bg-slate-900/70 rounded-xl p-3 border border-slate-700">
-                  <div className="text-slate-400 text-xs mb-1">NUKE</div>
-                  <div className="text-red-400">X</div>
+                <div className="bg-slate-900/80 rounded-xl p-3 border border-slate-700 text-left">
+                  <div className="text-slate-400 text-[10px] mb-1">TACTICAL NUKE</div>
+                  <div className="text-red-400 font-bold">Key [X] (Screen Wipe)</div>
                 </div>
-                <div className="bg-slate-900/70 rounded-xl p-3 border border-slate-700">
-                  <div className="text-slate-400 text-xs mb-1">TIME SLOW</div>
-                  <div className="text-cyan-400">C</div>
+                <div className="bg-slate-900/80 rounded-xl p-3 border border-slate-700 text-left">
+                  <div className="text-slate-400 text-[10px] mb-1">TIME SLOW</div>
+                  <div className="text-cyan-400 font-bold">Key [C] (Bullet-Time)</div>
                 </div>
               </div>
 
-              <div className="bg-slate-900/50 rounded-xl p-3 border border-slate-700 mb-4 text-xs font-mono text-slate-400">
-                🎮 Level up → choose from <span className="text-yellow-400">3 random upgrades</span> · 
-                100+ upgrades · 6 Bosses · Infinite waves
+              <div className="bg-slate-900/60 rounded-xl p-3 border border-slate-700 mb-5 text-xs font-mono text-slate-300">
+                ⭐ <span className="text-purple-400 font-bold">XP automatically magnets to your ship</span> · Level up fast to pick <span className="text-yellow-400 font-bold">powerful upgrades</span>
               </div>
 
               {hiscore > 0 && (
-                <div className="text-yellow-400 font-mono text-sm mb-4">🏆 Best Score: {hiscore.toLocaleString()}</div>
+                <div className="text-yellow-400 font-mono text-sm mb-4 font-bold">🏆 High Score: {hiscore.toLocaleString()}</div>
               )}
 
               <button
                 onClick={startGame}
-                className="px-12 py-4 bg-gradient-to-r from-sky-600 to-violet-600 hover:from-sky-500 hover:to-violet-500 text-white font-black text-2xl rounded-full shadow-xl shadow-blue-900/50 transition-all active:scale-95"
+                className="px-14 py-4 bg-gradient-to-r from-sky-500 via-blue-600 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white font-black text-2xl rounded-full shadow-2xl shadow-blue-900/60 transition-all active:scale-95 cursor-pointer"
               >
-                PLAY
+                START GAME
               </button>
-              <div className="text-slate-600 font-mono text-xs mt-3">or press SPACE / ENTER</div>
+              <div className="text-slate-500 font-mono text-xs mt-3">or press SPACE / ENTER</div>
             </div>
           </div>
         )}
 
         {/* Death screen */}
         {phase === "dead" && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/85 backdrop-blur-sm z-30">
-            <div className="text-center max-w-sm px-6">
-              <div className="text-6xl mb-3">💀</div>
-              <h2 className="text-4xl font-black text-red-400 mb-1">DESTROYED</h2>
-              <p className="text-slate-500 font-mono text-xs mb-6">Your ship was annihilated</p>
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 backdrop-blur-md z-30">
+            <div className="text-center max-w-md px-6">
+              <div className="text-7xl mb-2">💀</div>
+              <h2 className="text-4xl font-black text-red-400 mb-1">SHIP DESTROYED</h2>
+              <p className="text-slate-400 font-mono text-xs mb-6">Good attempt! Upgrade builds and try again</p>
 
-              <div className="bg-slate-900/70 rounded-2xl border border-slate-700 p-5 mb-6 space-y-2 font-mono">
-                <div className="flex justify-between">
+              <div className="bg-slate-900/80 rounded-2xl border border-slate-700 p-5 mb-6 space-y-2.5 font-mono">
+                <div className="flex justify-between items-center">
                   <span className="text-slate-400">Score</span>
-                  <span className="text-white font-black text-xl">{finalScore.toLocaleString()}</span>
+                  <span className="text-white font-black text-2xl">{finalScore.toLocaleString()}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-400">Best</span>
-                  <span className="text-yellow-400 font-bold">{hiscore.toLocaleString()}</span>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">Best Record</span>
+                  <span className="text-yellow-400 font-bold text-lg">{hiscore.toLocaleString()}</span>
                 </div>
-                <div className="border-t border-slate-800 pt-2 mt-2 grid grid-cols-3 gap-2 text-center">
-                  <div><div className="text-slate-500 text-xs">WAVE</div><div className="text-white font-bold">{finalWave}</div></div>
-                  <div><div className="text-slate-500 text-xs">KILLS</div><div className="text-red-400 font-bold">{finalKills}</div></div>
-                  <div><div className="text-slate-500 text-xs">LEVEL</div><div className="text-purple-400 font-bold">{finalLevel}</div></div>
+                <div className="border-t border-slate-800 pt-3 mt-2 grid grid-cols-3 gap-2 text-center">
+                  <div className="bg-slate-950/60 p-2 rounded-lg">
+                    <div className="text-slate-500 text-[10px]">WAVE</div>
+                    <div className="text-white font-bold text-base">{finalWave}</div>
+                  </div>
+                  <div className="bg-slate-950/60 p-2 rounded-lg">
+                    <div className="text-slate-500 text-[10px]">KILLS</div>
+                    <div className="text-red-400 font-bold text-base">{finalKills}</div>
+                  </div>
+                  <div className="bg-slate-950/60 p-2 rounded-lg">
+                    <div className="text-slate-500 text-[10px]">LEVEL</div>
+                    <div className="text-purple-400 font-bold text-base">{finalLevel}</div>
+                  </div>
                 </div>
                 {finalScore >= hiscore && finalScore > 0 && (
-                  <div className="text-yellow-400 text-center text-sm font-black animate-pulse">🏆 NEW HIGH SCORE!</div>
+                  <div className="text-yellow-400 text-center text-sm font-black animate-pulse pt-1">🏆 NEW HIGH SCORE!</div>
                 )}
               </div>
 
               <button
                 onClick={startGame}
-                className="w-full py-4 bg-gradient-to-r from-red-700 to-orange-700 hover:from-red-600 hover:to-orange-600 text-white font-black text-xl rounded-full shadow-xl transition-all active:scale-95 mb-3"
+                className="w-full py-4 bg-gradient-to-r from-red-600 via-orange-600 to-amber-600 hover:from-red-500 hover:to-amber-500 text-white font-black text-xl rounded-full shadow-xl transition-all active:scale-95 mb-3 cursor-pointer"
               >
-                RETRY
+                PLAY AGAIN
               </button>
               <button
                 onClick={() => { phaseRef.current = "menu"; setPhase("menu"); gameRef.current = null; }}
-                className="w-full py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-sm rounded-full transition-all active:scale-95"
+                className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-sm rounded-full transition-all active:scale-95 cursor-pointer"
               >
-                MENU
+                MAIN MENU
               </button>
             </div>
           </div>

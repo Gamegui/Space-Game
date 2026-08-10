@@ -1,8 +1,8 @@
 import type { Bullet, Enemy, Particle, Star, PlayerState, XpOrb, Mine, Lightning } from "./types";
 import { getEnemyColors, getEnemySize } from "./enemies";
 
-export const W = 800;
-export const H = 600;
+export const W = 960;
+export const H = 720;
 
 // ─── Stars ────────────────────────────────────────────────────────────────────
 export function drawStars(ctx: CanvasRenderingContext2D, stars: Star[]) {
@@ -25,9 +25,9 @@ export function drawBackground(ctx: CanvasRenderingContext2D, frame: number) {
   // Nebula
   const t = frame * 0.002;
   const colors = [
-    ["rgba(60,20,100,0.12)", W * 0.3, H * 0.4, 280],
-    ["rgba(10,40,120,0.1)",  W * 0.7, H * 0.6, 220],
-    ["rgba(100,10,60,0.08)", W * 0.5, H * 0.2, 200],
+    ["rgba(60,20,100,0.14)", W * 0.3, H * 0.4, 360],
+    ["rgba(10,40,120,0.12)",  W * 0.7, H * 0.6, 300],
+    ["rgba(100,10,60,0.10)", W * 0.5, H * 0.2, 260],
   ] as const;
   for (const [color, cx, cy, r] of colors) {
     const grd = ctx.createRadialGradient(cx + Math.sin(t) * 20, cy, 0, cx, cy, r);

@@ -7,8 +7,8 @@ import { spawnEnemy, getEnemySize } from "./enemies";
 import type { EnemyType } from "./types";
 import { getUpgradeLevel } from "./upgrades";
 
-export const W = 800;
-export const H = 600;
+export const W = 960;
+export const H = 720;
 let _id = 100000;
 export const uid = () => ++_id;
 
@@ -16,7 +16,7 @@ export function randRange(a: number, b: number) { return a + Math.random() * (b 
 export function randInt(a: number, b: number)   { return Math.floor(randRange(a, b)); }
 
 export function makeStars(): Star[] {
-  return Array.from({ length: 150 }, () => ({
+  return Array.from({ length: 180 }, () => ({
     x: Math.random() * W,
     y: Math.random() * H,
     z: Math.random() * 3.5 + 0.5,
@@ -24,15 +24,24 @@ export function makeStars(): Star[] {
   }));
 }
 
+export function getNextLevelXp(level: number): number {
+  if (level === 1) return 20;
+  if (level === 2) return 40;
+  if (level === 3) return 70;
+  if (level === 4) return 105;
+  if (level === 5) return 150;
+  return Math.floor(150 * Math.pow(1.22, level - 5));
+}
+
 export function makeInitialPlayer(): PlayerState {
   return {
     pos: { x: W / 2, y: H - 90 },
     hp: 100, maxHp: 100,
-    speed: 5,
-    fireRate: 14,
-    bulletDamage: 1,
-    bulletSpeed: 13,
-    bulletSize: 3,
+    speed: 5.5,
+    fireRate: 9, // snappy rapid fire
+    bulletDamage: 2, // 2 damage base: scouts die in 1-2 hits
+    bulletSpeed: 14,
+    bulletSize: 4,
     piercing: 0,
     multishot: 0,
     spreadAngle: 0,
@@ -40,28 +49,30 @@ export function makeInitialPlayer(): PlayerState {
     homingStrength: 0.06,
     satellites: [],
     drones: [],
-    shield: null,
-    xp: 0, level: 1, xpToNext: 80,
+    shield: { hp: 30, maxHp: 30, regenTimer: 0, active: true }, // Starter energy shield
+    xp: 0, level: 1, xpToNext: 20, // First level up happens in first 5-10s
     upgrades: [],
     invincTimer: 0,
-    magnetRange: 80,
-    aura: false, auraDamage: 0.15, auraTimer: 0,
+    magnetRange: 120,
+    aura: false, auraDamage: 0.25, auraTimer: 0,
     lasers: 0, laserTimer: 0,
     rearShot: false, rearShotTimer: 0,
     explosiveBullets: false, explosionRadius: 60,
     ricochet: false, ricochetCount: 1,
     mineCount: 0, mineTimer: 0,
     timeSlow: false, timeSlowTimer: 0, timeSlowCooldown: 0,
-    critChance: 0, critMultiplier: 2,
+    critChance: 0.05, critMultiplier: 2,
     lifeSteal: 0,
     burnChance: 0, freezeChance: 0, poisonChance: 0,
     lightningChance: 0, lightningChain: 1,
     goldMultiplier: 1,
-    regenRate: 0, regenTimer: 0,
+    regenRate: 0.2, // Small baseline passive regen
+    regenTimer: 0,
     ghostMode: false, ghostTimer: 0,
     teleportCooldown: 0, teleportTimer: 0,
     blackHole: false, blackHoleTimer: 0, blackHoleCooldown: 0,
-    nukeCharges: 0, nukeCooldown: 0,
+    nukeCharges: 1, // Starter 1 tactical nuke
+    nukeCooldown: 0,
     mirrorShots: false,
     spiralShot: false, spiralAngle: 0,
     waveShot: false, waveShotTimer: 0,
@@ -94,8 +105,6 @@ function makeBurst(pos: Vec2, color: string, count: number, big = false): Partic
   }));
 }
 
-
-
 // ─── Main step function ───────────────────────────────────────────────────────
 export interface GameObjects {
   player: PlayerState;
@@ -113,7 +122,7 @@ export interface GameObjects {
   waveSpawnTimer: number;
   bossActive: boolean;
   boss: Enemy | null;
-  waveTimer: number; // countdown to next spawn
+  waveTimer: number;
 }
 
 export interface StepInput {
@@ -141,16 +150,16 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 
   // ─── Player movement ───────────────────────────────────────────────────────
   const spd = player.speed * timeScale;
-  if ((keys.has("ArrowLeft")  || keys.has("a") || keys.has("A")) && player.pos.x > 22) player.pos.x -= spd;
-  if ((keys.has("ArrowRight") || keys.has("d") || keys.has("D")) && player.pos.x < W - 22) player.pos.x += spd;
-  if ((keys.has("ArrowUp")    || keys.has("w") || keys.has("W")) && player.pos.y > 55)   player.pos.y -= spd;
-  if ((keys.has("ArrowDown")  || keys.has("s") || keys.has("S")) && player.pos.y < H - 28) player.pos.y += spd;
+  if ((keys.has("ArrowLeft")  || keys.has("a") || keys.has("A")) && player.pos.x > 24) player.pos.x -= spd;
+  if ((keys.has("ArrowRight") || keys.has("d") || keys.has("D")) && player.pos.x < W - 24) player.pos.x += spd;
+  if ((keys.has("ArrowUp")    || keys.has("w") || keys.has("W")) && player.pos.y > 60)   player.pos.y -= spd;
+  if ((keys.has("ArrowDown")  || keys.has("s") || keys.has("S")) && player.pos.y < H - 32) player.pos.y += spd;
 
   // ─── Ghost mode ─────────────────────────────────────────────────────────────
   if (player.ghostMode) {
     player.ghostTimer--;
     if (player.ghostTimer <= 0) {
-      player.ghostTimer = player.ghostTimer < -400 ? 120 : -500; // toggle
+      player.ghostTimer = player.ghostTimer < -400 ? 120 : -500;
     }
   }
 
@@ -165,11 +174,11 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 
   // ─── Shield regen ──────────────────────────────────────────────────────────
   if (player.shield) {
-    const shieldRegenBonus = getUpgradeLevel(player, "shield_regen") * 0.3;
-    const regenRate = (1 + shieldRegenBonus);
+    const shieldRegenBonus = getUpgradeLevel(player, "shield_regen") * 0.4;
+    const regenRate = 1 + shieldRegenBonus;
     if (player.shield.hp < player.shield.maxHp) {
       player.shield.regenTimer += regenRate;
-      if (player.shield.regenTimer >= 120) {
+      if (player.shield.regenTimer >= 80) {
         player.shield.hp = Math.min(player.shield.hp + 5, player.shield.maxHp);
         player.shield.regenTimer = 0;
       }
@@ -195,9 +204,8 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   const hpPct = player.hp / player.maxHp;
   const effectiveFireRate = berserker ? player.fireRate * (0.5 + hpPct * 0.5) : player.fireRate;
 
-  if (frame % Math.max(2, Math.floor(effectiveFireRate)) === 0 &&
-    (keys.has(" ") || keys.has("z") || keys.has("Z") ||
-      keys.has("ArrowUp") || keys.has("w") || keys.has("W"))) {
+  // Auto-fire continuous shooting for effortless gameplay + responsive controls
+  if (frame % Math.max(2, Math.floor(effectiveFireRate)) === 0) {
     firePlayerBullets(bullets, player, enemies, frame);
   }
 
@@ -228,12 +236,11 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   for (const sat of player.satellites) {
     sat.angle += sat.speed * timeScale;
     sat.shootTimer--;
-    const satFireRate = Math.max(20, 60 - sat.level * 6);
+    const satFireRate = Math.max(18, 50 - sat.level * 5);
     if (sat.shootTimer <= 0) {
       sat.shootTimer = satFireRate;
       const sx = player.pos.x + Math.cos(sat.angle) * sat.radius;
       const sy = player.pos.y + Math.sin(sat.angle) * sat.radius;
-      // Find nearest enemy
       let nearest: Enemy | null = null;
       let nearDist = 9999;
       for (const e of enemies) {
@@ -244,11 +251,11 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       if (nearest) {
         const dx = nearest.pos.x - sx, dy = nearest.pos.y - sy;
         const dist = Math.sqrt(dx * dx + dy * dy);
-        const dmg = player.bulletDamage * (0.5 + sat.level * 0.4);
+        const dmg = player.bulletDamage * (0.6 + sat.level * 0.4);
         bullets.push({
           id: uid(), pos: { x: sx, y: sy },
-          vel: { x: (dx / dist) * 11, y: (dy / dist) * 11 },
-          fromPlayer: true, damage: dmg, size: 3, color: "#fbbf24",
+          vel: { x: (dx / dist) * 12, y: (dy / dist) * 12 },
+          fromPlayer: true, damage: dmg, size: 3.5, color: "#fbbf24",
           pierce: 0, homing: false,
         });
       }
@@ -265,7 +272,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     drone.angle = drone.orbitAngle;
     drone.shootTimer--;
     if (drone.shootTimer <= 0) {
-      drone.shootTimer = Math.max(15, 45 - drone.level * 5);
+      drone.shootTimer = Math.max(14, 40 - drone.level * 4);
       let nearest: Enemy | null = null;
       let nearDist = 9999;
       for (const e of enemies) {
@@ -276,11 +283,11 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       if (nearest) {
         const dx = nearest.pos.x - drone.pos.x, dy = nearest.pos.y - drone.pos.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
-        const dmg = player.bulletDamage * (0.4 + drone.level * 0.35);
+        const dmg = player.bulletDamage * (0.5 + drone.level * 0.35);
         bullets.push({
           id: uid(), pos: { ...drone.pos },
-          vel: { x: (dx / dist) * 10, y: (dy / dist) * 10 },
-          fromPlayer: true, damage: dmg, size: 3, color: "#a78bfa",
+          vel: { x: (dx / dist) * 11, y: (dy / dist) * 11 },
+          fromPlayer: true, damage: dmg, size: 3.5, color: "#a78bfa",
           pierce: 0, homing: false,
         });
       }
@@ -290,8 +297,8 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   // ─── Aura damage ───────────────────────────────────────────────────────────
   if (player.aura) {
     player.auraTimer++;
-    if (player.auraTimer % 6 === 0) {
-      const auraR = 65;
+    if (player.auraTimer % 5 === 0) {
+      const auraR = 75;
       for (const e of enemies) {
         const dx = e.pos.x - player.pos.x, dy = e.pos.y - player.pos.y;
         if (dx * dx + dy * dy < auraR * auraR) {
@@ -306,8 +313,8 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   if (player.mineCount > 0) {
     player.mineTimer--;
     if (player.mineTimer <= 0) {
-      player.mineTimer = 120;
-      mines.push({ id: uid(), pos: { x: player.pos.x, y: player.pos.y }, timer: 300, radius: 55 });
+      player.mineTimer = 110;
+      mines.push({ id: uid(), pos: { x: player.pos.x, y: player.pos.y }, timer: 300, radius: 60 });
     }
   }
   for (let i = mines.length - 1; i >= 0; i--) {
@@ -316,7 +323,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     for (const e of enemies) {
       const dx = e.pos.x - mine.pos.x, dy = e.pos.y - mine.pos.y;
       if (dx * dx + dy * dy < mine.radius * mine.radius) {
-        e.hp -= 5 * player.bulletDamage;
+        e.hp -= 6 * player.bulletDamage;
         particles.push(...makeBurst(mine.pos, "#f59e0b", 20, true));
         obj.explosions.push({ id: uid(), pos: { ...mine.pos }, radius: mine.radius * 1.5, progress: 0 });
         mines.splice(i, 1);
@@ -330,7 +337,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   if (player.blackHole) {
     player.blackHoleCooldown = Math.max(0, player.blackHoleCooldown - 1);
     if (player.blackHoleCooldown <= 0 && enemies.length > 0) {
-      obj.blackHolePos = { x: randRange(100, W - 100), y: randRange(100, H / 2) };
+      obj.blackHolePos = { x: randRange(120, W - 120), y: randRange(100, H / 2) };
       obj.blackHoleTimer = 180;
       player.blackHoleCooldown = 600;
     }
@@ -341,11 +348,11 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       for (const e of enemies) {
         const dx = obj.blackHolePos.x - e.pos.x, dy = obj.blackHolePos.y - e.pos.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < 200) {
-          e.pos.x += (dx / dist) * 3 * timeScale;
-          e.pos.y += (dy / dist) * 3 * timeScale;
-          if (dist < 25) {
-            e.hp -= 3 * timeScale;
+        if (dist < 220) {
+          e.pos.x += (dx / dist) * 3.5 * timeScale;
+          e.pos.y += (dy / dist) * 3.5 * timeScale;
+          if (dist < 30) {
+            e.hp -= 3.5 * timeScale;
           }
         }
       }
@@ -364,19 +371,19 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     enemies.push(spawnEnemy(next.type, wave));
     next.count--;
     if (next.count <= 0) obj.waveEnemyQueue.shift();
-    obj.waveSpawnTimer = Math.max(18, 55 - wave * 2);
+    obj.waveSpawnTimer = Math.max(25, 60 - wave * 2);
   }
 
   // ─── Move enemies ──────────────────────────────────────────────────────────
   for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i];
-    const ets = e.frozen > 0 ? 0.1 : timeScale;
+    const ets = e.frozen > 0 ? 0.15 : timeScale;
 
     // Pattern movement
     e.patternTimer += ets;
     switch (e.movePattern) {
       case "sine":
-        e.pos.x += Math.sin(e.patternTimer * 0.04) * 2.5 * ets;
+        e.pos.x += Math.sin(e.patternTimer * 0.04) * 2.2 * ets;
         e.pos.y += e.vel.y * ets;
         break;
       case "zigzag":
@@ -386,15 +393,15 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       case "circle":
         e.angle += 0.025 * ets;
         e.pos.x = e.centerX + Math.cos(e.angle) * e.radius;
-        e.pos.y = Math.max(e.pos.y + e.vel.y * 0.3 * ets, 80);
+        e.pos.y = Math.max(e.pos.y + e.vel.y * 0.3 * ets, 90);
         break;
       case "hover":
-        e.pos.y = Math.min(e.pos.y + e.vel.y * ets * 0.5, 120 + (e.id % 80));
+        e.pos.y = Math.min(e.pos.y + e.vel.y * ets * 0.5, 130 + (e.id % 90));
         e.pos.x += Math.sin(e.patternTimer * 0.03) * 1.5 * ets;
         break;
       case "dive":
         e.pos.x += e.vel.x * ets;
-        e.pos.y += e.vel.y * 1.4 * ets;
+        e.pos.y += e.vel.y * 1.3 * ets;
         break;
       default:
         e.pos.x += e.vel.x * ets;
@@ -402,19 +409,19 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     }
 
     // Wall bounce for x
-    if (e.pos.x < 25)     { e.pos.x = 25;     e.vel.x = Math.abs(e.vel.x); }
-    if (e.pos.x > W - 25) { e.pos.x = W - 25; e.vel.x = -Math.abs(e.vel.x); }
+    if (e.pos.x < 30)     { e.pos.x = 30;     e.vel.x = Math.abs(e.vel.x); }
+    if (e.pos.x > W - 30) { e.pos.x = W - 30; e.vel.x = -Math.abs(e.vel.x); }
 
     // Status effects
     if (e.frozen > 0) e.frozen -= 1;
-    if (e.burning > 0) { e.hp -= 0.15 * ets; e.burning -= ets; }
-    if (e.poisoned > 0) { e.hp -= 0.08 * ets; e.poisoned -= ets; }
+    if (e.burning > 0) { e.hp -= 0.2 * ets; e.burning -= ets; }
+    if (e.poisoned > 0) { e.hp -= 0.12 * ets; e.poisoned -= ets; }
 
     // Boss phase changes
     if (e.isBoss) {
-      const hpPct = e.hp / e.maxHp;
-      if (hpPct < 0.5 && e.phase === 0) { e.phase = 1; e.vel.y *= 1.3; e.shootInterval = Math.max(8, e.shootInterval - 10); }
-      if (hpPct < 0.25 && e.phase === 1) { e.phase = 2; e.vel.y *= 1.2; e.shootInterval = Math.max(5, e.shootInterval - 8); }
+      const bossHpPct = e.hp / e.maxHp;
+      if (bossHpPct < 0.5 && e.phase === 0) { e.phase = 1; e.vel.y *= 1.2; e.shootInterval = Math.max(12, e.shootInterval - 8); }
+      if (bossHpPct < 0.25 && e.phase === 1) { e.phase = 2; e.vel.y *= 1.15; e.shootInterval = Math.max(8, e.shootInterval - 6); }
     }
 
     // Enemy shooting
@@ -424,7 +431,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       shootEnemy(e, player, bullets, wave);
     }
 
-    // Off-screen (went past player) - just loop back for bosses
+    // Off-screen (went past player) - loop back for bosses
     if (!e.isBoss && e.pos.y > H + 40) {
       enemies.splice(i, 1);
       continue;
@@ -442,7 +449,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       const isFullHoming = b.homing || player.homing;
       // If player has homing upgrade, use strong homing; otherwise gentle aim assist ("доводка снарядов")
       const strength = isFullHoming ? Math.max(player.homingStrength, 0.07) : 0.032;
-      const maxDistance = isFullHoming ? 650 : 450;
+      const maxDistance = isFullHoming ? 700 : 480;
 
       let bestTarget: Enemy | null = null;
       let bestScore = -Infinity;
@@ -463,7 +470,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         if (!isFullHoming && dot < 0.1) continue;
 
         // Score prefers closer enemies directly ahead of bullet trajectory
-        const score = (dot * 3) - (dist / 200);
+        const score = (dot * 3) - (dist / 220);
         if (score > bestScore) {
           bestScore = score;
           bestTarget = e;
@@ -496,7 +503,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       if (b.pos.y < 0) { b.vel.y *= -1; }
     }
 
-    if (b.pos.x < -30 || b.pos.x > W + 30 || b.pos.y < -50 || b.pos.y > H + 30) {
+    if (b.pos.x < -40 || b.pos.x > W + 40 || b.pos.y < -60 || b.pos.y > H + 40) {
       bullets.splice(i, 1);
     }
   }
@@ -514,7 +521,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       if (dx * dx + dy * dy < (size + b.size) * (size + b.size)) {
         // Hit shield first
         if (e.shieldHp > 0) {
-          e.shieldHp -= b.damage * 0.5;
+          e.shieldHp -= b.damage * 0.6;
           particles.push(...makeBurst(b.pos, "#93c5fd", 4));
           if (b.pierce <= 0) bulletsToRemove.add(b.id);
           continue;
@@ -544,12 +551,11 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 
         // Heal on kill check
         if (e.hp <= 0) {
-          // Heal on kill
           if (getUpgradeLevel(player, "heal_on_kill") > 0) {
-            player.hp = Math.min(player.hp + 2 * getUpgradeLevel(player, "heal_on_kill"), player.maxHp);
+            player.hp = Math.min(player.hp + 3 * getUpgradeLevel(player, "heal_on_kill"), player.maxHp);
           }
           const xpBoostLevel = getUpgradeLevel(player, "xp_boost");
-          const xpGained = Math.floor(e.xp * (1 + xpBoostLevel * 0.2));
+          const xpGained = Math.floor(e.xp * (1 + xpBoostLevel * 0.25));
           enemiesToRemove.add(e.id);
           input.onKill(xpGained, e.pos, e.isBoss);
           // Score
@@ -588,7 +594,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       const dx = b.pos.x - player.pos.x, dy = b.pos.y - player.pos.y;
       if (dx * dx + dy * dy < (18 + b.size) * (18 + b.size)) {
         bullets.splice(i, 1);
-        takeDamage(player, b.damage * 10, particles, input.onDeath);
+        takeDamage(player, b.damage * 5.5, particles, input.onDeath);
       }
     }
     // Enemy contact
@@ -597,7 +603,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       const dx = e.pos.x - player.pos.x, dy = e.pos.y - player.pos.y;
       const size = getEnemySize(e.type);
       if (dx * dx + dy * dy < (size + 16) * (size + 16)) {
-        takeDamage(player, e.isBoss ? 25 : 15, particles, input.onDeath);
+        takeDamage(player, e.isBoss ? 16 : 8, particles, input.onDeath);
       }
     }
   }
@@ -625,7 +631,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       while (player.xp >= player.xpToNext) {
         player.xp -= player.xpToNext;
         player.level++;
-        player.xpToNext = Math.floor(player.xpToNext * 1.35);
+        player.xpToNext = getNextLevelXp(player.level);
         input.onLevelUp(player);
       }
       continue;
@@ -649,7 +655,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     if (p.life <= 0) particles.splice(i, 1);
   }
 
-  // ─── Explosions ────────────────────────────────────────────────────────────
+  // ─── Explosions ────────────────────────────────────────────────────
   for (let i = obj.explosions.length - 1; i >= 0; i--) {
     const ex = obj.explosions[i];
     ex.progress += 0.04;
@@ -715,110 +721,99 @@ function firePlayerBullets(bullets: Bullet[], player: PlayerState, _enemies: Ene
 function shootEnemy(e: Enemy, player: PlayerState, bullets: Bullet[], wave: number) {
   const dx = player.pos.x - e.pos.x, dy = player.pos.y - e.pos.y;
   const dist = Math.sqrt(dx * dx + dy * dy);
-  const spd = 3.5 + wave * 0.08;
+  const spd = 3.2 + wave * 0.06;
   const color = getEnemyBulletColorLocal(e.type);
-  const dmg = e.isBoss ? 2.5 + wave * 0.2 : 1;
-  const size = e.isBoss ? 7 : 5;
+  const dmg = e.isBoss ? 2.0 + wave * 0.15 : 1;
+  const size = e.isBoss ? 6.5 : 4.5;
 
   switch (e.type) {
     case "bomber": {
-      // Ring of bullets
-      for (let i = 0; i < 8; i++) {
-        const a = (i / 8) * Math.PI * 2;
+      // 4-directional cross of bullets
+      for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * Math.PI * 2;
         bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd, y: Math.sin(a) * spd }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
       }
       break;
     }
     case "sniper": {
       // Precision aimed shot
-      bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: (dx / dist) * spd * 1.8, y: (dy / dist) * spd * 1.8 }, fromPlayer: false, damage: dmg * 2, size: size + 3, color, pierce: 0, homing: false });
+      bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: (dx / dist) * spd * 1.5, y: (dy / dist) * spd * 1.5 }, fromPlayer: false, damage: dmg * 1.3, size: size + 2, color, pierce: 0, homing: false });
       break;
     }
     case "artillery": {
-      // 6-directional
-      for (let i = 0; i < 6; i++) {
-        const a = (i / 6) * Math.PI * 2;
+      // 4-directional burst
+      for (let i = 0; i < 4; i++) {
+        const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
         bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd * 0.8, y: Math.sin(a) * spd * 0.8 }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
       }
       break;
     }
     case "spinner": {
-      // Rotating burst
-      for (let i = 0; i < 4; i++) {
-        const a = (i / 4) * Math.PI * 2 + e.angle;
+      // Rotating burst of 3
+      for (let i = 0; i < 3; i++) {
+        const a = (i / 3) * Math.PI * 2 + e.angle;
         bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd, y: Math.sin(a) * spd }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
       }
       break;
     }
     case "boss_destroyer": {
       // Aimed + side guns
-      bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: (dx / dist) * spd * 1.2, y: (dy / dist) * spd * 1.2 }, fromPlayer: false, damage: dmg, size: size + 2, color, pierce: 0, homing: false });
+      bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: (dx / dist) * spd * 1.1, y: (dy / dist) * spd * 1.1 }, fromPlayer: false, damage: dmg, size: size + 2, color, pierce: 0, homing: false });
       for (let s2 = -1; s2 <= 1; s2 += 2) {
-        bullets.push({ id: uid(), pos: { x: e.pos.x + s2 * 50, y: e.pos.y }, vel: { x: s2 * spd * 0.5, y: spd }, fromPlayer: false, damage: dmg * 0.7, size, color, pierce: 0, homing: false });
+        bullets.push({ id: uid(), pos: { x: e.pos.x + s2 * 45, y: e.pos.y }, vel: { x: s2 * spd * 0.4, y: spd * 0.9 }, fromPlayer: false, damage: dmg * 0.6, size, color, pierce: 0, homing: false });
       }
       if (e.phase >= 1) {
-        // Phase 2: extra spread
-        for (let i = 0; i < 5; i++) {
-          const a = (i / 5) * Math.PI * 2;
+        for (let i = 0; i < 4; i++) {
+          const a = (i / 4) * Math.PI * 2;
           bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd * 0.7, y: Math.sin(a) * spd * 0.7 }, fromPlayer: false, damage: dmg * 0.5, size: size - 1, color, pierce: 0, homing: false });
         }
       }
       break;
     }
     case "boss_mothership": {
-      // Spiral
-      for (let i = 0; i < 6; i++) {
-        const a = (i / 6) * Math.PI * 2 + e.angle * 0.02;
+      for (let i = 0; i < 5; i++) {
+        const a = (i / 5) * Math.PI * 2 + e.angle * 0.02;
         bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd, y: Math.sin(a) * spd }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
       }
       if (e.phase >= 1) {
-        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: (dx / dist) * spd * 1.5, y: (dy / dist) * spd * 1.5 }, fromPlayer: false, damage: dmg * 1.5, size: size + 4, color, pierce: 2, homing: false });
+        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: (dx / dist) * spd * 1.3, y: (dy / dist) * spd * 1.3 }, fromPlayer: false, damage: dmg * 1.2, size: size + 3, color, pierce: 1, homing: false });
       }
       break;
     }
     case "boss_dreadnought": {
-      for (let i = 0; i < 10; i++) {
-        const a = (i / 10) * Math.PI * 2 + e.angle * 0.015;
-        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd * 0.9, y: Math.sin(a) * spd * 0.9 }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2 + e.angle * 0.015;
+        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd * 0.85, y: Math.sin(a) * spd * 0.85 }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
       }
       if (e.phase >= 1) {
-        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: (dx / dist) * spd * 2, y: (dy / dist) * spd * 2 }, fromPlayer: false, damage: dmg * 3, size: 14, color, pierce: 5, homing: false });
+        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: (dx / dist) * spd * 1.6, y: (dy / dist) * spd * 1.6 }, fromPlayer: false, damage: dmg * 2, size: 11, color, pierce: 3, homing: false });
       }
       break;
     }
     case "boss_eclipse": {
-      for (let i = 0; i < 12; i++) {
-        const a = (i / 12) * Math.PI * 2 + e.angle * 0.02;
-        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd, y: Math.sin(a) * spd }, fromPlayer: false, damage: dmg, size, color, pierce: 1, homing: false });
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2 + e.angle * 0.02;
+        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd, y: Math.sin(a) * spd }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
       }
       if (e.phase >= 1) {
-        for (let i = 0; i < 6; i++) {
-          const a = (i / 6) * Math.PI * 2;
-          bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd * 1.5, y: Math.sin(a) * spd * 1.5 }, fromPlayer: false, damage: dmg * 1.5, size: size + 2, color, pierce: 0, homing: true });
+        for (let i = 0; i < 4; i++) {
+          const a = (i / 4) * Math.PI * 2;
+          bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd * 1.3, y: Math.sin(a) * spd * 1.3 }, fromPlayer: false, damage: dmg * 1.2, size: size + 2, color, pierce: 0, homing: true });
         }
-      }
-      if (e.phase >= 2) {
-        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: (dx / dist) * spd * 2.5, y: (dy / dist) * spd * 2.5 }, fromPlayer: false, damage: dmg * 4, size: 16, color, pierce: 10, homing: true });
       }
       break;
     }
     case "boss_titan": {
-      for (let i = 0; i < 16; i++) {
-        const a = (i / 16) * Math.PI * 2;
-        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd * (0.5 + e.phase * 0.5), y: Math.sin(a) * spd * (0.5 + e.phase * 0.5) }, fromPlayer: false, damage: dmg, size, color, pierce: e.phase, homing: false });
+      for (let i = 0; i < 10; i++) {
+        const a = (i / 10) * Math.PI * 2;
+        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd * (0.5 + e.phase * 0.4), y: Math.sin(a) * spd * (0.5 + e.phase * 0.4) }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
       }
-      bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: (dx / dist) * spd * 2, y: (dy / dist) * spd * 2 }, fromPlayer: false, damage: dmg * 3, size: 12, color, pierce: 3, homing: true });
       break;
     }
     case "boss_omega": {
-      // Ultimate - all patterns combined
-      for (let i = 0; i < 20; i++) {
-        const a = (i / 20) * Math.PI * 2 + e.angle * 0.03;
-        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd * 1.2, y: Math.sin(a) * spd * 1.2 }, fromPlayer: false, damage: dmg, size, color, pierce: 1, homing: false });
-      }
-      for (let i = 0; i < 3; i++) {
-        const offX = (i - 1) * 40;
-        bullets.push({ id: uid(), pos: { x: e.pos.x + offX, y: e.pos.y }, vel: { x: (dx / dist) * spd * 2.2 + offX * 0.05, y: (dy / dist) * spd * 2.2 }, fromPlayer: false, damage: dmg * 2, size: 12, color, pierce: 5, homing: true });
+      for (let i = 0; i < 12; i++) {
+        const a = (i / 12) * Math.PI * 2 + e.angle * 0.03;
+        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd * 1.1, y: Math.sin(a) * spd * 1.1 }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
       }
       break;
     }
@@ -837,7 +832,7 @@ function chainLightning(source: Enemy, enemies: Enemy[], lightnings: Lightning[]
       if (e.id === current.id) continue;
       const dx = e.pos.x - current.pos.x, dy = e.pos.y - current.pos.y;
       const d = dx * dx + dy * dy;
-      if (d < nearDist && d < 200 * 200) { nearDist = d; nearest = e; }
+      if (d < nearDist && d < 220 * 220) { nearDist = d; nearest = e; }
     }
     if (!nearest) break;
     lightnings.push({ id: uid(), from: { ...current.pos }, to: { ...nearest.pos }, life: 8 });
@@ -862,13 +857,13 @@ function takeDamage(player: PlayerState, amount: number, particles: Particle[], 
   if (player.shield && player.shield.hp > 0) {
     player.shield.hp -= amount;
     if (player.shield.hp < 0) {
-      player.hp += player.shield.hp; // carry over
+      player.hp += player.shield.hp;
       player.shield.hp = 0;
     }
   } else {
     player.hp -= amount;
   }
-  player.invincTimer = 90;
+  player.invincTimer = 75;
   particles.push(...makeBurst(player.pos, "#f87171", 10));
   if (player.hp <= 0) {
     player.hp = 0;
@@ -908,5 +903,3 @@ function getEnemyBulletColorLocal(type: EnemyType): string {
     default: return "#fbbf24";
   }
 }
-
-

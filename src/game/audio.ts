@@ -1,5 +1,5 @@
 // ─── Web Audio API Procedural Sound Engine ─────────────────────────────────────
-// Pure synthesized audio: zero external assets, instant loading, 100% reliable.
+// Rich atmospheric space drone synth with soft, balanced, satisfying laser SFX.
 
 class SoundEngine {
   private ctx: AudioContext | null = null;
@@ -12,9 +12,7 @@ class SoundEngine {
   private xpPitchCounter: number = 0;
   private lastXpTime: number = 0;
 
-  constructor() {
-    // AudioContext will be initialized on first user gesture
-  }
+  constructor() {}
 
   private init() {
     if (this.ctx) return;
@@ -26,15 +24,13 @@ class SoundEngine {
       this.masterGain.connect(this.ctx.destination);
 
       this.sfxGain = this.ctx.createGain();
-      this.sfxGain.gain.setValueAtTime(0.4, this.ctx.currentTime);
+      this.sfxGain.gain.setValueAtTime(0.35, this.ctx.currentTime);
       this.sfxGain.connect(this.masterGain);
 
       this.musicGain = this.ctx.createGain();
-      this.musicGain.gain.setValueAtTime(0.18, this.ctx.currentTime);
+      this.musicGain.gain.setValueAtTime(0.24, this.ctx.currentTime);
       this.musicGain.connect(this.masterGain);
-    } catch {
-      // Audio not supported in this environment
-    }
+    } catch {}
   }
 
   public resume() {
@@ -56,7 +52,7 @@ class SoundEngine {
     return this.isMuted;
   }
 
-  // ─── SFX: Player Shoot ───────────────────────────────────────────────────────
+  // ─── SFX: Soft, Pleasant Laser Shot (Quiet & non-intrusive) ───────────────────
   public playShoot(sniper = false) {
     if (this.isMuted) return;
     this.resume();
@@ -65,23 +61,54 @@ class SoundEngine {
     const t = this.ctx.currentTime;
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
+    const filter = this.ctx.createBiquadFilter();
 
-    osc.type = sniper ? "sawtooth" : "triangle";
-    const startFreq = sniper ? 1200 : 750;
-    const endFreq = sniper ? 180 : 220;
-    const duration = sniper ? 0.18 : 0.08;
+    osc.type = "sine";
+    const startFreq = sniper ? 880 : 540;
+    const endFreq = sniper ? 140 : 180;
+    const duration = sniper ? 0.12 : 0.06;
 
     osc.frequency.setValueAtTime(startFreq, t);
     osc.frequency.exponentialRampToValueAtTime(endFreq, t + duration);
 
-    gain.gain.setValueAtTime(sniper ? 0.25 : 0.15, t);
+    filter.type = "lowpass";
+    filter.frequency.setValueAtTime(1200, t);
+
+    // Softer, gentle volume
+    gain.gain.setValueAtTime(sniper ? 0.08 : 0.045, t);
     gain.gain.exponentialRampToValueAtTime(0.001, t + duration);
+
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.sfxGain);
+
+    osc.start(t);
+    osc.stop(t + duration);
+  }
+
+  // ─── SFX: Dash / Tactical Thruster Burst ─────────────────────────────────────
+  public playDash() {
+    if (this.isMuted) return;
+    this.resume();
+    if (!this.ctx || !this.sfxGain) return;
+
+    const t = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(220, t);
+    osc.frequency.exponentialRampToValueAtTime(600, t + 0.08);
+    osc.frequency.exponentialRampToValueAtTime(90, t + 0.22);
+
+    gain.gain.setValueAtTime(0.18, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
 
     osc.connect(gain);
     gain.connect(this.sfxGain);
 
     osc.start(t);
-    osc.stop(t + duration);
+    osc.stop(t + 0.22);
   }
 
   // ─── SFX: Enemy Hit ─────────────────────────────────────────────────────────
@@ -94,18 +121,18 @@ class SoundEngine {
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
 
-    osc.type = "square";
-    osc.frequency.setValueAtTime(280 + Math.random() * 80, t);
-    osc.frequency.exponentialRampToValueAtTime(90, t + 0.04);
+    osc.type = "triangle";
+    osc.frequency.setValueAtTime(220 + Math.random() * 60, t);
+    osc.frequency.exponentialRampToValueAtTime(70, t + 0.035);
 
-    gain.gain.setValueAtTime(0.08, t);
-    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.04);
+    gain.gain.setValueAtTime(0.06, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.035);
 
     osc.connect(gain);
     gain.connect(this.sfxGain);
 
     osc.start(t);
-    osc.stop(t + 0.04);
+    osc.stop(t + 0.035);
   }
 
   // ─── SFX: Explosion ─────────────────────────────────────────────────────────
@@ -115,9 +142,8 @@ class SoundEngine {
     if (!this.ctx || !this.sfxGain) return;
 
     const t = this.ctx.currentTime;
-    const dur = big ? 0.6 : 0.25;
+    const dur = big ? 0.55 : 0.22;
 
-    // Noise buffer
     const bufferSize = Math.floor(this.ctx.sampleRate * dur);
     const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
     const output = buffer.getChannelData(0);
@@ -130,20 +156,19 @@ class SoundEngine {
 
     const filter = this.ctx.createBiquadFilter();
     filter.type = "lowpass";
-    filter.frequency.setValueAtTime(big ? 600 : 800, t);
-    filter.frequency.exponentialRampToValueAtTime(40, t + dur);
+    filter.frequency.setValueAtTime(big ? 550 : 700, t);
+    filter.frequency.exponentialRampToValueAtTime(35, t + dur);
 
     const gain = this.ctx.createGain();
-    gain.gain.setValueAtTime(big ? 0.45 : 0.25, t);
+    gain.gain.setValueAtTime(big ? 0.35 : 0.18, t);
     gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
 
-    // Sub bass thump for impact
     const sub = this.ctx.createOscillator();
     const subGain = this.ctx.createGain();
     sub.type = "sine";
-    sub.frequency.setValueAtTime(big ? 130 : 90, t);
+    sub.frequency.setValueAtTime(big ? 110 : 80, t);
     sub.frequency.exponentialRampToValueAtTime(25, t + dur * 0.7);
-    subGain.gain.setValueAtTime(big ? 0.4 : 0.2, t);
+    subGain.gain.setValueAtTime(big ? 0.35 : 0.15, t);
     subGain.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.7);
 
     whiteNoise.connect(filter);
@@ -159,21 +184,20 @@ class SoundEngine {
     sub.stop(t + dur);
   }
 
-  // ─── SFX: XP Collect (Harmonious pentatonic scale) ───────────────────────────
+  // ─── SFX: XP Collect ────────────────────────────────────────────────────────
   public playXp() {
     if (this.isMuted) return;
     this.resume();
     if (!this.ctx || !this.sfxGain) return;
 
     const now = Date.now();
-    if (now - this.lastXpTime < 600) {
+    if (now - this.lastXpTime < 500) {
       this.xpPitchCounter = (this.xpPitchCounter + 1) % 8;
     } else {
       this.xpPitchCounter = 0;
     }
     this.lastXpTime = now;
 
-    // Pentatonic scale (C5, D5, E5, G5, A5, C6, D6, E6)
     const freqs = [523.25, 587.33, 659.25, 783.99, 880.00, 1046.50, 1174.66, 1318.51];
     const freq = freqs[this.xpPitchCounter];
 
@@ -183,16 +207,16 @@ class SoundEngine {
 
     osc.type = "sine";
     osc.frequency.setValueAtTime(freq, t);
-    osc.frequency.exponentialRampToValueAtTime(freq * 1.05, t + 0.08);
+    osc.frequency.exponentialRampToValueAtTime(freq * 1.04, t + 0.07);
 
-    gain.gain.setValueAtTime(0.12, t);
-    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+    gain.gain.setValueAtTime(0.08, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.07);
 
     osc.connect(gain);
     gain.connect(this.sfxGain);
 
     osc.start(t);
-    osc.stop(t + 0.08);
+    osc.stop(t + 0.07);
   }
 
   // ─── SFX: Level Up Fanfare ──────────────────────────────────────────────────
@@ -201,25 +225,25 @@ class SoundEngine {
     this.resume();
     if (!this.ctx || !this.sfxGain) return;
 
-    const notes = [523.25, 659.25, 783.99, 1046.50]; // C, E, G, High C
+    const notes = [523.25, 659.25, 783.99, 1046.50];
     const t = this.ctx.currentTime;
 
     notes.forEach((freq, i) => {
-      const startT = t + i * 0.08;
+      const startT = t + i * 0.07;
       const osc = this.ctx!.createOscillator();
       const gain = this.ctx!.createGain();
 
       osc.type = "triangle";
       osc.frequency.setValueAtTime(freq, startT);
 
-      gain.gain.setValueAtTime(0.2, startT);
-      gain.gain.exponentialRampToValueAtTime(0.001, startT + 0.35);
+      gain.gain.setValueAtTime(0.16, startT);
+      gain.gain.exponentialRampToValueAtTime(0.001, startT + 0.3);
 
       osc.connect(gain);
       gain.connect(this.sfxGain!);
 
       osc.start(startT);
-      osc.stop(startT + 0.35);
+      osc.stop(startT + 0.3);
     });
   }
 
@@ -234,10 +258,10 @@ class SoundEngine {
     const gain = this.ctx.createGain();
 
     osc.type = "sawtooth";
-    osc.frequency.setValueAtTime(300, t);
-    osc.frequency.exponentialRampToValueAtTime(35, t + 1.2);
+    osc.frequency.setValueAtTime(260, t);
+    osc.frequency.exponentialRampToValueAtTime(30, t + 1.2);
 
-    gain.gain.setValueAtTime(0.4, t);
+    gain.gain.setValueAtTime(0.35, t);
     gain.gain.exponentialRampToValueAtTime(0.001, t + 1.2);
 
     osc.connect(gain);
@@ -258,17 +282,17 @@ class SoundEngine {
     const gain = this.ctx.createGain();
 
     osc.type = "sine";
-    osc.frequency.setValueAtTime(800, t);
-    osc.frequency.exponentialRampToValueAtTime(150, t + 0.5);
+    osc.frequency.setValueAtTime(750, t);
+    osc.frequency.exponentialRampToValueAtTime(140, t + 0.45);
 
-    gain.gain.setValueAtTime(0.25, t);
-    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
+    gain.gain.setValueAtTime(0.2, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.45);
 
     osc.connect(gain);
     gain.connect(this.sfxGain);
 
     osc.start(t);
-    osc.stop(t + 0.5);
+    osc.stop(t + 0.45);
   }
 
   // ─── SFX: Boss Warning Siren ────────────────────────────────────────────────
@@ -279,23 +303,23 @@ class SoundEngine {
 
     const t = this.ctx.currentTime;
     for (let i = 0; i < 3; i++) {
-      const st = t + i * 0.4;
+      const st = t + i * 0.38;
       const osc = this.ctx.createOscillator();
       const gain = this.ctx.createGain();
 
       osc.type = "sawtooth";
       osc.frequency.setValueAtTime(440, st);
-      osc.frequency.linearRampToValueAtTime(587, st + 0.2);
-      osc.frequency.linearRampToValueAtTime(440, st + 0.38);
+      osc.frequency.linearRampToValueAtTime(587, st + 0.18);
+      osc.frequency.linearRampToValueAtTime(440, st + 0.35);
 
-      gain.gain.setValueAtTime(0.18, st);
-      gain.gain.exponentialRampToValueAtTime(0.01, st + 0.38);
+      gain.gain.setValueAtTime(0.15, st);
+      gain.gain.exponentialRampToValueAtTime(0.01, st + 0.35);
 
       osc.connect(gain);
       gain.connect(this.sfxGain);
 
       osc.start(st);
-      osc.stop(st + 0.38);
+      osc.stop(st + 0.35);
     }
   }
 
@@ -308,21 +332,21 @@ class SoundEngine {
     const t = this.ctx.currentTime;
     const notes = [440, 554, 659, 880];
     notes.forEach((freq, i) => {
-      const st = t + i * 0.05;
+      const st = t + i * 0.045;
       const osc = this.ctx!.createOscillator();
       const gain = this.ctx!.createGain();
 
       osc.type = "sine";
       osc.frequency.setValueAtTime(freq, st);
 
-      gain.gain.setValueAtTime(0.15, st);
-      gain.gain.exponentialRampToValueAtTime(0.001, st + 0.2);
+      gain.gain.setValueAtTime(0.12, st);
+      gain.gain.exponentialRampToValueAtTime(0.001, st + 0.18);
 
       osc.connect(gain);
       gain.connect(this.sfxGain!);
 
       osc.start(st);
-      osc.stop(st + 0.2);
+      osc.stop(st + 0.18);
     });
   }
 
@@ -337,26 +361,26 @@ class SoundEngine {
     const gain = this.ctx.createGain();
 
     osc.type = "triangle";
-    osc.frequency.setValueAtTime(1400, t);
-    osc.frequency.exponentialRampToValueAtTime(200, t + 0.25);
+    osc.frequency.setValueAtTime(1200, t);
+    osc.frequency.exponentialRampToValueAtTime(180, t + 0.22);
 
-    gain.gain.setValueAtTime(0.3, t);
-    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
+    gain.gain.setValueAtTime(0.25, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
 
     osc.connect(gain);
     gain.connect(this.sfxGain);
 
     osc.start(t);
-    osc.stop(t + 0.25);
+    osc.stop(t + 0.22);
   }
 
-  // ─── Ambient Space Drone BGM ────────────────────────────────────────────────
+  // ─── Rich Cosmic Drone Ambient BGM ──────────────────────────────────────────
   public startAmbientBGM() {
     if (this.isMusicPlaying || !this.ctx || !this.musicGain) return;
     this.isMusicPlaying = true;
 
-    // Rich chord drone (Am9: A2, E3, B3, C4)
-    const chord = [110, 164.81, 246.94, 261.63];
+    // Atmospheric warm cosmic chord drone (Am9 / Dm9 space harmonics)
+    const chord = [110, 164.81, 220, 261.63, 329.63];
     const t = this.ctx.currentTime;
 
     this.musicOscillators = chord.map((freq, i) => {
@@ -368,9 +392,9 @@ class SoundEngine {
       osc.frequency.setValueAtTime(freq, t);
 
       filter.type = "lowpass";
-      filter.frequency.setValueAtTime(320 + i * 80, t);
+      filter.frequency.setValueAtTime(260 + i * 70, t);
 
-      gain.gain.setValueAtTime(0.06, t);
+      gain.gain.setValueAtTime(0.07, t);
 
       osc.connect(filter);
       filter.connect(gain);

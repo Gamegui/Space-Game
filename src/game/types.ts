@@ -208,6 +208,8 @@ export interface PlayerState {
   blackHoleCooldown: number;
   nukeCharges: number;
   nukeCooldown: number;
+  dashCooldown: number;
+  dashTimer: number;
   mirrorShots: boolean;
   spiralShot: boolean;
   spiralAngle: number;

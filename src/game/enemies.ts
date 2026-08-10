@@ -110,11 +110,10 @@ export function spawnEnemy(type: EnemyType, wave: number): Enemy {
   const centerX = randRange(minX + 50, maxX - 50);
   const targetY = def.isBoss ? 130 : randRange(85, Math.min(H * 0.45, 330));
 
-  // Small chance for an elite champion enemy on waves 3+
   const isElite = !def.isBoss && wave >= 3 && Math.random() < 0.15;
   const hpMult = isElite ? 2.5 : 1;
   const xpMult = isElite ? 3 : 1;
-  const eliteNames = ["⚡ Swift", "🛡️ Armored", "🔥 Inferno", "☣️ Toxic"];
+  const eliteNames = ["⚡ СВЕРХСКОРОСТНОЙ", "🛡️ БРОНИРОВАННЫЙ", "🔥 ИНФЕРНО", "☣️ ТОКСИЧНЫЙ"];
   const eliteName = isElite ? eliteNames[Math.floor(Math.random() * eliteNames.length)] : undefined;
 
   return {
@@ -232,12 +231,12 @@ export function getEnemySize(type: EnemyType): number {
 
 export function getBossName(type: EnemyType): string {
   switch (type) {
-    case "boss_destroyer":  return "DESTROYER CLASS";
-    case "boss_mothership": return "MOTHERSHIP";
-    case "boss_dreadnought":return "DREADNOUGHT";
-    case "boss_eclipse":    return "ECLIPSE";
-    case "boss_titan":      return "TITAN";
-    case "boss_omega":      return "OMEGA — THE END";
-    default: return "BOSS";
+    case "boss_destroyer":  return "ЭСМИНЕЦ «РАЗРУШИТЕЛЬ»";
+    case "boss_mothership": return "КОРАБЛЬ-МАТКА «ЛЕВИАФАН»";
+    case "boss_dreadnought":return "ДРЕДНОУТ «ВЛАДЫКА ПУСТОТЫ»";
+    case "boss_eclipse":    return "ТЕМНОЕ ЯДРО «ЗАТМЕНИЕ»";
+    case "boss_titan":      return "ДРЕВНИЙ «ТИТАН»";
+    case "boss_omega":      return "ОМЕГА — АБСОЛЮТНЫЙ ФИНАЛ";
+    default: return "ФЛАГМАН ВРАГА";
   }
 }

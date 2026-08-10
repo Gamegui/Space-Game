@@ -120,13 +120,13 @@ export default function App() {
     g.bossActive = false;
     g.boss = null;
 
-    // Wave clear bonus
+    // Wave clear bonus: restore 20 HP
     g.player.hp = Math.min(g.player.maxHp, g.player.hp + 20);
     if (g.player.shield) {
       g.player.shield.hp = Math.min(g.player.shield.maxHp, g.player.shield.hp + 20);
     }
 
-    setWaveNotice(`WAVE ${newWave - 1} CLEARED! +20 HP RESTORED`);
+    setWaveNotice(`ВОЛНА ${newWave - 1} ПРОЙДЕНА! +20 HP ВОССТАНОВЛЕНО`);
     setTimeout(() => setWaveNotice(null), 2400);
 
     if (isBossWave(newWave)) {
@@ -217,9 +217,9 @@ export default function App() {
         if (phaseRef.current === "playing") { phaseRef.current = "paused"; setPhase("paused"); }
         else if (phaseRef.current === "paused") { phaseRef.current = "playing"; setPhase("playing"); }
       }
-      if (e.key === "m" || e.key === "M") handleToggleSound();
-      if (e.key === "x" || e.key === "X") handleNuke();
-      if (e.key === "c" || e.key === "C") handleTimeSlow();
+      if (e.key === "m" || e.key === "M" || e.key === "ь" || e.key === "Ь") handleToggleSound();
+      if (e.key === "x" || e.key === "X" || e.key === "ч" || e.key === "Ч") handleNuke();
+      if (e.key === "c" || e.key === "C" || e.key === "с" || e.key === "С") handleTimeSlow();
       if ((e.key === " " || e.key === "Enter") && phaseRef.current === "menu") setPhase("ship_select");
     };
     const onKeyUp = (e: KeyboardEvent) => keysRef.current.delete(e.key);
@@ -268,10 +268,10 @@ export default function App() {
         ctx.fillRect(0, 0, W, H);
         ctx.globalAlpha = alpha;
         ctx.fillStyle = "#ef4444";
-        ctx.font = "bold 42px monospace";
+        ctx.font = "bold 40px monospace";
         ctx.textAlign = "center";
         ctx.shadowBlur = 30; ctx.shadowColor = "#ef4444";
-        ctx.fillText("⚠ BOSS APPROACHING ⚠", W / 2, H / 2 - 25);
+        ctx.fillText("⚠ ПРИБЛИЖАЕТСЯ БОСС ⚠", W / 2, H / 2 - 25);
         ctx.font = "24px monospace";
         ctx.fillStyle = "#fca5a5";
         ctx.shadowBlur = 0;
@@ -363,7 +363,6 @@ export default function App() {
 
       ctx.restore();
 
-      // Sync UI every 6 frames
       uiSyncCounter++;
       if (uiSyncCounter >= 6) { uiSyncCounter = 0; syncUI(); }
     }
@@ -374,7 +373,18 @@ export default function App() {
 
   // ─── Mouse / Touch controls ───────────────────────────────────────────────
   const isMouseDownRef = useRef(false);
-  const handleMouseDown = () => { isMouseDownRef.current = true; audio.resume(); };
+  const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    audio.resume();
+    // Right click = Dash
+    if (e.button === 2) {
+      if (gameRef.current && gameRef.current.player.dashCooldown <= 0) {
+        keysRef.current.add("Shift");
+        setTimeout(() => keysRef.current.delete("Shift"), 100);
+      }
+      return;
+    }
+    isMouseDownRef.current = true;
+  };
   const handleMouseUp = () => { isMouseDownRef.current = false; };
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!gameRef.current || phaseRef.current !== "playing") return;
@@ -421,7 +431,7 @@ export default function App() {
   const accuracy = playerStats.shotsFired > 0 ? Math.round((playerStats.shotsHit / playerStats.shotsFired) * 100) : 0;
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-950 p-2 sm:p-4">
+    <div className="flex min-h-screen items-center justify-center bg-slate-950 p-2 sm:p-4 font-sans">
       <div
         className="relative select-none overflow-hidden rounded-2xl shadow-2xl shadow-cyan-950/40 border border-slate-800"
         style={{ width: W, height: H }}
@@ -433,6 +443,7 @@ export default function App() {
           height={H}
           className="block cursor-crosshair"
           style={{ touchAction: "none" }}
+          onContextMenu={(e) => e.preventDefault()}
           onMouseDown={handleMouseDown}
           onMouseUp={handleMouseUp}
           onMouseMove={handleMouseMove}
@@ -445,9 +456,9 @@ export default function App() {
         <button
           onClick={handleToggleSound}
           className="absolute top-3 right-3 px-3 py-1.5 bg-slate-900/80 hover:bg-slate-800 border border-slate-700 text-slate-300 rounded-lg text-xs font-mono font-bold z-30 transition-all cursor-pointer backdrop-blur-sm"
-          title="Toggle Sound [M]"
+          title="Включить / Выключить звук [M]"
         >
-          {isMuted ? "🔇 SOUND: OFF" : "🔊 SOUND: ON"}
+          {isMuted ? "🔇 ЗВУК: ВЫКЛ" : "🔊 ЗВУК: ВКЛ"}
         </button>
 
         {/* Wave Banner Notification */}
@@ -486,23 +497,24 @@ export default function App() {
         {phase === "paused" && (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/85 backdrop-blur-md z-30">
             <div className="text-6xl font-black text-white mb-2">⏸</div>
-            <h2 className="text-4xl font-black text-white mb-6">PAUSED</h2>
+            <h2 className="text-4xl font-black text-white mb-6">ПАУЗА</h2>
             <div className="text-slate-300 font-mono text-sm mb-6 space-y-1.5 text-center bg-slate-900/80 p-5 rounded-2xl border border-slate-700">
-              <p>Move: <span className="text-sky-400 font-bold">WASD / Arrows / Drag Mouse</span></p>
-              <p>Weapons: <span className="text-emerald-400 font-bold">Auto-Fire + Target Aim Assist</span></p>
-              <p>Tactical Nuke: <span className="text-red-400 font-bold">X</span> | Time Slow: <span className="text-cyan-400 font-bold">C</span> | Mute: <span className="text-yellow-400 font-bold">M</span></p>
+              <p>Управление: <span className="text-sky-400 font-bold">WASD / Стрелки / Зажатие Мыши</span></p>
+              <p>Тактический рывок: <span className="text-indigo-400 font-bold">Shift / Правый клик мыши</span></p>
+              <p>Оружие: <span className="text-emerald-400 font-bold">Авто-огонь с доводкой до цели</span></p>
+              <p>Ядерный заряд: <span className="text-red-400 font-bold">X</span> | Замедление времени: <span className="text-cyan-400 font-bold">C</span> | Звук: <span className="text-yellow-400 font-bold">M</span></p>
             </div>
             <button
               onClick={() => { phaseRef.current = "playing"; setPhase("playing"); }}
               className="px-10 py-3.5 bg-sky-600 hover:bg-sky-500 text-white font-black text-lg rounded-full transition-all active:scale-95 shadow-lg shadow-sky-900/50 cursor-pointer mb-3"
             >
-              RESUME GAME
+              ПРОДОЛЖИТЬ ИГРУ
             </button>
             <button
               onClick={() => { audio.stopAmbientBGM(); phaseRef.current = "menu"; setPhase("menu"); gameRef.current = null; }}
               className="px-6 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-sm rounded-full transition-all cursor-pointer"
             >
-              ABANDON RUN
+              ВЫЙТИ В ГЛАВНОЕ МЕНЮ
             </button>
           </div>
         )}
@@ -515,42 +527,42 @@ export default function App() {
               <h1 className="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-sky-300 via-blue-400 to-indigo-400 tracking-tight mb-1">
                 SPACE SHOOTER ULTRA
               </h1>
-              <p className="text-blue-300/80 font-mono text-xs tracking-widest mb-6">ROGUELITE ARCADE · SYNTH SOUNDS · 100+ UPGRADES</p>
+              <p className="text-blue-300/80 font-mono text-xs tracking-widest mb-6">КОСМИЧЕСКИЙ РОГАЛИК · СИНТЕЗАТОР ЗВУКА · 100+ УЛУЧШЕНИЙ</p>
 
               <div className="grid grid-cols-2 gap-3 text-xs mb-5 font-mono">
                 <div className="bg-slate-900/80 rounded-xl p-3 border border-slate-700 text-left">
-                  <div className="text-slate-400 text-[10px] mb-1">NAVIGATION</div>
-                  <div className="text-sky-400 font-bold">WASD / Arrows / Mouse Drag</div>
+                  <div className="text-slate-400 text-[10px] mb-1 font-bold">ПОЛЁТ И РЫВОК</div>
+                  <div className="text-sky-400 font-bold">WASD / Стрелки + [SHIFT]</div>
                 </div>
                 <div className="bg-slate-900/80 rounded-xl p-3 border border-slate-700 text-left">
-                  <div className="text-slate-400 text-[10px] mb-1">WEAPONS</div>
-                  <div className="text-emerald-400 font-bold">Auto-Fire + Aim Guidance</div>
+                  <div className="text-slate-400 text-[10px] mb-1 font-bold">ОРУДИЯ</div>
+                  <div className="text-emerald-400 font-bold">Авто-огонь с доводкой пуль</div>
                 </div>
                 <div className="bg-slate-900/80 rounded-xl p-3 border border-slate-700 text-left">
-                  <div className="text-slate-400 text-[10px] mb-1">TACTICAL NUKE</div>
-                  <div className="text-red-400 font-bold">Key [X] Screen Wipe</div>
+                  <div className="text-slate-400 text-[10px] mb-1 font-bold">ЯДЕРНЫЙ УДАР</div>
+                  <div className="text-red-400 font-bold">Клавиша [X] (Зачистка экрана)</div>
                 </div>
                 <div className="bg-slate-900/80 rounded-xl p-3 border border-slate-700 text-left">
-                  <div className="text-slate-400 text-[10px] mb-1">TIME SLOW</div>
-                  <div className="text-cyan-400 font-bold">Key [C] Bullet-Time</div>
+                  <div className="text-slate-400 text-[10px] mb-1 font-bold">ХРОНО-ЗАМЕДЛЕНИЕ</div>
+                  <div className="text-cyan-400 font-bold">Клавиша [C] (Замедление пуль)</div>
                 </div>
               </div>
 
               <div className="bg-slate-900/60 rounded-xl p-3 border border-slate-700 mb-6 text-xs font-mono text-slate-300">
-                ⭐ <span className="text-purple-400 font-bold">XP magnets automatically</span> · Collect combat powerups (💊⚡🛡️🧲💣) · 6 Epic Bosses
+                ⭐ <span className="text-purple-400 font-bold">Опыт притягивается автоматически</span> · Собирайте бонусы (💊⚡🛡️🧲💣) · 6 грандиозных боссов
               </div>
 
               {hiscore > 0 && (
-                <div className="text-yellow-400 font-mono text-sm mb-4 font-bold">🏆 Record High Score: {hiscore.toLocaleString()}</div>
+                <div className="text-yellow-400 font-mono text-sm mb-4 font-bold">🏆 Рекорд очков: {hiscore.toLocaleString()}</div>
               )}
 
               <button
                 onClick={() => { audio.resume(); setPhase("ship_select"); }}
                 className="px-14 py-4 bg-gradient-to-r from-sky-500 via-blue-600 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white font-black text-2xl rounded-full shadow-2xl shadow-blue-900/60 transition-all active:scale-95 cursor-pointer"
               >
-                SELECT SHIP & PLAY
+                ВЫБРАТЬ КОРАБЛЬ И В БОЙ
               </button>
-              <div className="text-slate-500 font-mono text-xs mt-3">or press SPACE / ENTER</div>
+              <div className="text-slate-500 font-mono text-xs mt-3">или нажмите ПРОБЕЛ / ENTER</div>
             </div>
           </div>
         )}
@@ -559,9 +571,9 @@ export default function App() {
         {phase === "ship_select" && (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 backdrop-blur-md z-30 p-6">
             <h2 className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-sky-400 to-indigo-300 mb-1">
-              CHOOSE YOUR STARFIGHTER
+              ВЫБОР БОЕВОГО КОРАБЛЯ
             </h2>
-            <p className="text-slate-400 font-mono text-xs mb-6">Select your vessel class and combat specialty</p>
+            <p className="text-slate-400 font-mono text-xs mb-6">Выберите класс судна и специализацию вооружения</p>
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 max-w-4xl w-full mb-6">
               {SHIP_CLASSES.map((sc) => {
@@ -572,7 +584,7 @@ export default function App() {
                     onClick={() => { audio.playHit(); setSelectedClass(sc.id); }}
                     className={`
                       p-4 rounded-xl border-2 text-left transition-all duration-200 cursor-pointer relative overflow-hidden flex flex-col justify-between
-                      ${isSelected ? `border-[${sc.color}] bg-slate-900/90 shadow-xl scale-105 ring-2 ring-sky-400` : "border-slate-800 bg-slate-950/70 hover:border-slate-700 hover:scale-102"}
+                      ${isSelected ? `bg-slate-900/90 shadow-xl scale-105 ring-2 ring-sky-400` : "border-slate-800 bg-slate-950/70 hover:border-slate-700 hover:scale-102"}
                     `}
                     style={{ borderColor: isSelected ? sc.color : undefined }}
                   >
@@ -599,13 +611,13 @@ export default function App() {
                 onClick={() => setPhase("menu")}
                 className="px-8 py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-sm rounded-full transition-all cursor-pointer"
               >
-                BACK
+                НАЗАД
               </button>
               <button
                 onClick={() => startGame(selectedClass)}
                 className="px-12 py-3.5 bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white font-black text-lg rounded-full shadow-xl shadow-blue-900/50 transition-all active:scale-95 cursor-pointer"
               >
-                LAUNCH MISSION 🚀
+                НАЧАТЬ МИССИЮ 🚀
               </button>
             </div>
           </div>
@@ -616,39 +628,39 @@ export default function App() {
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 backdrop-blur-md z-30 p-6">
             <div className="text-center max-w-lg w-full">
               <div className="text-6xl mb-2 animate-bounce">💀</div>
-              <h2 className="text-4xl font-black text-red-400 mb-1">MISSION TERMINATED</h2>
-              <p className="text-slate-400 font-mono text-xs mb-5">Your vessel was destroyed in deep space</p>
+              <h2 className="text-4xl font-black text-red-400 mb-1">КОРАБЛЬ УНИЧТОЖЕН</h2>
+              <p className="text-slate-400 font-mono text-xs mb-5">Ваше судно было сбито в глубоком космосе</p>
 
               <div className="bg-slate-900/90 rounded-2xl border border-slate-700 p-5 mb-5 space-y-2.5 font-mono text-sm">
                 <div className="flex justify-between items-center pb-2 border-b border-slate-800">
-                  <span className="text-slate-400">Final Score</span>
+                  <span className="text-slate-400">Итоговый счёт</span>
                   <span className="text-white font-black text-2xl">{finalScore.toLocaleString()}</span>
                 </div>
                 <div className="grid grid-cols-3 gap-2 text-center py-2 border-b border-slate-800">
                   <div className="bg-slate-950/70 p-2 rounded-lg">
-                    <div className="text-slate-500 text-[10px]">WAVE REACHED</div>
+                    <div className="text-slate-500 text-[10px]">ДОСТИГНУТА ВОЛНА</div>
                     <div className="text-white font-bold text-lg">{finalWave}</div>
                   </div>
                   <div className="bg-slate-950/70 p-2 rounded-lg">
-                    <div className="text-slate-500 text-[10px]">ENEMIES KILLED</div>
+                    <div className="text-slate-500 text-[10px]">УБИТО ВРАГОВ</div>
                     <div className="text-red-400 font-bold text-lg">{finalKills}</div>
                   </div>
                   <div className="bg-slate-950/70 p-2 rounded-lg">
-                    <div className="text-slate-500 text-[10px]">MAX LEVEL</div>
+                    <div className="text-slate-500 text-[10px]">МАКС. УРОВЕНЬ</div>
                     <div className="text-purple-400 font-bold text-lg">{finalLevel}</div>
                   </div>
                 </div>
                 <div className="grid grid-cols-3 gap-2 text-center pt-1 text-xs">
                   <div>
-                    <div className="text-slate-500 text-[10px]">ACCURACY</div>
+                    <div className="text-slate-500 text-[10px]">МЕТКОСТЬ</div>
                     <div className="text-emerald-400 font-bold">{accuracy}%</div>
                   </div>
                   <div>
-                    <div className="text-slate-500 text-[10px]">ELITES SLAIN</div>
+                    <div className="text-slate-500 text-[10px]">ЭЛИТНЫЕ ВРАГИ</div>
                     <div className="text-yellow-400 font-bold">{playerStats.elitesKilled}</div>
                   </div>
                   <div>
-                    <div className="text-slate-500 text-[10px]">BOSSES SLAIN</div>
+                    <div className="text-slate-500 text-[10px]">БОССЫ</div>
                     <div className="text-sky-400 font-bold">{playerStats.bossesKilled}</div>
                   </div>
                 </div>
@@ -659,13 +671,13 @@ export default function App() {
                   onClick={() => setPhase("ship_select")}
                   className="flex-1 py-3.5 bg-gradient-to-r from-red-600 via-orange-600 to-amber-600 hover:from-red-500 hover:to-amber-500 text-white font-black text-base rounded-full shadow-xl transition-all active:scale-95 cursor-pointer"
                 >
-                  RETRY MISSION
+                  ПОВТОРИТЬ МИССИЮ
                 </button>
                 <button
                   onClick={() => { phaseRef.current = "menu"; setPhase("menu"); gameRef.current = null; }}
                   className="px-6 py-3.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-sm rounded-full transition-all cursor-pointer"
                 >
-                  MAIN MENU
+                  ГЛАВНОЕ МЕНЮ
                 </button>
               </div>
             </div>

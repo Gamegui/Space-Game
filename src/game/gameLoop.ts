@@ -76,6 +76,8 @@ export function makeInitialPlayer(shipClass: ShipClassId = "interceptor"): Playe
     blackHole: false, blackHoleTimer: 0, blackHoleCooldown: 0,
     nukeCharges: 1,
     nukeCooldown: 0,
+    dashCooldown: 0,
+    dashTimer: 0,
     mirrorShots: false,
     spiralShot: false, spiralAngle: 0,
     waveShot: false, waveShotTimer: 0,
@@ -127,7 +129,7 @@ export function makePowerup(pos: Vec2, type: PowerupType): PowerupItem {
     pos: { x: pos.x, y: pos.y },
     vel: { x: randRange(-1, 1), y: randRange(-1, 0.5) },
     type,
-    life: 600, // 10 seconds before disappearing
+    life: 600,
   };
 }
 
@@ -207,14 +209,30 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     if (s.y > H) { s.y = -5; s.x = Math.random() * W; }
   }
 
+  // ─── Tactical Dash Mechanic ────────────────────────────────────────────────
+  player.dashCooldown = Math.max(0, player.dashCooldown - 1);
+  if (player.dashTimer > 0) {
+    player.dashTimer--;
+  }
+
+  const isDashing = player.dashTimer > 0;
+  const dashSpeedMult = isDashing ? 2.4 : 1.0;
+
+  if ((keys.has("Shift") || keys.has("f") || keys.has("F")) && player.dashCooldown <= 0) {
+    player.dashCooldown = 150; // 2.5s cooldown
+    player.dashTimer = 16;
+    player.invincTimer = Math.max(player.invincTimer, 20);
+    audio.playDash();
+    particles.push(...makeBurst(player.pos, "#38bdf8", 12));
+  }
+
   // ─── Player movement ───────────────────────────────────────────────────────
-  const spd = player.speed * timeScale;
+  const spd = player.speed * dashSpeedMult * timeScale;
   if ((keys.has("ArrowLeft")  || keys.has("a") || keys.has("A")) && player.pos.x > 25) player.pos.x -= spd;
   if ((keys.has("ArrowRight") || keys.has("d") || keys.has("D")) && player.pos.x < W - 25) player.pos.x += spd;
   if ((keys.has("ArrowUp")    || keys.has("w") || keys.has("W")) && player.pos.y > 60)   player.pos.y -= spd;
   if ((keys.has("ArrowDown")  || keys.has("s") || keys.has("S")) && player.pos.y < H - 32) player.pos.y += spd;
 
-  // Clamping player
   player.pos.x = Math.max(25, Math.min(W - 25, player.pos.x));
   player.pos.y = Math.max(60, Math.min(H - 32, player.pos.y));
 
@@ -270,7 +288,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 
   const effectiveFireRate = Math.max(2, Math.floor(baseRate));
 
-  // Auto-fire continuous shooting
+  // Auto-fire continuous shooting with soft sound
   if (frame % effectiveFireRate === 0) {
     firePlayerBullets(bullets, player, enemies, frame);
     audio.playShoot(player.snipeMode);
@@ -446,7 +464,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     obj.waveSpawnTimer = Math.max(20, 50 - wave * 2);
   }
 
-  // ─── Move enemies (STRICTLY STAY ON MAP) ───────────────────────────────────
+  // ─── Move & Heal enemies (STRICTLY STAY ON MAP) ───────────────────────────
   for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i];
     const ets = e.frozen > 0 ? 0.15 : timeScale;
@@ -455,7 +473,27 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     const maxX = W - size - 25;
     const targetY = e.targetY || 130;
 
-    // Entrance Glide Phase: smoothly enter into designated combat zone
+    // Healer synergy: heals nearest damaged ally
+    if (e.type === "healer" && frame % 60 === 0) {
+      let hurtAlly: Enemy | null = null;
+      let lowestHpPct = 0.99;
+      for (const other of enemies) {
+        if (other.id !== e.id) {
+          const hpPct = other.hp / other.maxHp;
+          if (hpPct < lowestHpPct) {
+            lowestHpPct = hpPct;
+            hurtAlly = other;
+          }
+        }
+      }
+      if (hurtAlly) {
+        hurtAlly.hp = Math.min(hurtAlly.maxHp, hurtAlly.hp + 4);
+        particles.push(...makeBurst(hurtAlly.pos, "#4ade80", 4));
+        lightnings.push({ id: uid(), from: { ...e.pos }, to: { ...hurtAlly.pos }, life: 10 });
+      }
+    }
+
+    // Entrance Glide Phase
     if (e.pos.y < targetY) {
       e.pos.y += Math.max(2.0, e.vel.y * 1.5) * ets;
       e.patternTimer += ets;
@@ -492,10 +530,8 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           break;
 
         case "dive":
-          // Kamikaze / Charger dive towards player with swoop-back
           e.pos.x += e.vel.x * ets;
           e.pos.y += e.vel.y * 1.6 * ets;
-          // Swoop back up before hitting bottom border!
           if (e.pos.y > H - 120) {
             e.vel.y = -Math.abs(e.vel.y) * 0.9;
           } else if (e.pos.y < targetY && e.vel.y < 0) {
@@ -508,7 +544,6 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           e.pos.y = centerY + Math.sin(e.patternTimer * 0.03) * 20;
       }
 
-      // Wall bounce for X
       if (e.pos.x <= minX) { e.pos.x = minX; e.vel.x = Math.abs(e.vel.x); e.centerX = minX + e.radius; }
       if (e.pos.x >= maxX) { e.pos.x = maxX; e.vel.x = -Math.abs(e.vel.x); e.centerX = maxX - e.radius; }
     }
@@ -670,7 +705,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 
           // Combo tracking
           player.combo++;
-          player.comboTimer = 180; // 3 seconds window
+          player.comboTimer = 180;
 
           if (getUpgradeLevel(player, "heal_on_kill") > 0) {
             player.hp = Math.min(player.hp + 2 * getUpgradeLevel(player, "heal_on_kill"), player.maxHp);
@@ -757,14 +792,14 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 
   // ─── Enemy bullets hit player ──────────────────────────────────────────────
   const isGhost = player.ghostMode && player.ghostTimer > 0;
-  if (player.invincTimer <= 0 && !isGhost) {
+  if (player.invincTimer <= 0 && !isGhost && player.dashTimer <= 0) {
     for (let i = bullets.length - 1; i >= 0; i--) {
       const b = bullets[i];
       if (b.fromPlayer) continue;
       const dx = b.pos.x - player.pos.x, dy = b.pos.y - player.pos.y;
       if (dx * dx + dy * dy < (18 + b.size) * (18 + b.size)) {
         bullets.splice(i, 1);
-        takeDamage(player, b.damage * 7.5, particles, obj, input.onDeath);
+        takeDamage(player, b.damage * 8.5, particles, obj, input.onDeath);
       }
     }
     // Enemy contact
@@ -773,7 +808,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       const dx = e.pos.x - player.pos.x, dy = e.pos.y - player.pos.y;
       const size = getEnemySize(e.type);
       if (dx * dx + dy * dy < (size + 16) * (size + 16)) {
-        takeDamage(player, e.isBoss ? 20 : 10, particles, obj, input.onDeath);
+        takeDamage(player, e.isBoss ? 22 : 11, particles, obj, input.onDeath);
       }
     }
   }
@@ -794,7 +829,14 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     if (dist < 32) {
       audio.playPowerup();
       player.stats.powerupsCollected++;
-      floatingTexts.push(makeFloatingText(player.pos, `+${p.type.toUpperCase()}!`, "#38bdf8", true));
+      const powerupLabels: Record<PowerupType, string> = {
+        heal: "+ЛЕЧЕНИЕ!",
+        rapid: "+ОВЕРДРАЙВ!",
+        shield: "+ФАЗОВЫЙ ЩИТ!",
+        magnet: "+СУПЕР-МАГНИТ!",
+        nuke: "+ТАКТИЧЕСКИЙ ЗАРЯД!"
+      };
+      floatingTexts.push(makeFloatingText(player.pos, powerupLabels[p.type] || "+БОНУС!", "#38bdf8", true));
 
       switch (p.type) {
         case "heal":
@@ -802,12 +844,12 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           if (player.shield) player.shield.hp = Math.min(player.shield.maxHp, player.shield.hp + 20);
           break;
         case "rapid":
-          player.rapidBoostTimer = 360; // 6 seconds 3x fire
+          player.rapidBoostTimer = 360;
           break;
         case "shield":
           if (!player.shield) player.shield = { hp: 30, maxHp: 30, regenTimer: 0, active: true };
           else player.shield.hp = player.shield.maxHp;
-          player.invincTimer = 180; // 3s barrier
+          player.invincTimer = 180;
           break;
         case "magnet":
           xpOrbs.forEach(o => { o.attracted = true; });
@@ -843,7 +885,6 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       audio.playXp();
       player.xp += orb.value;
       xpOrbs.splice(i, 1);
-      // Level up check
       while (player.xp >= player.xpToNext) {
         player.xp -= player.xpToNext;
         player.level++;
@@ -882,7 +923,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     if (p.life <= 0) particles.splice(i, 1);
   }
 
-  // ─── Explosions ────────────────────────────────────────────────────────────
+  // ─── Explosions ────────────────────────────────────────────────────
   for (let i = obj.explosions.length - 1; i >= 0; i--) {
     const ex = obj.explosions[i];
     ex.progress += 0.04;
@@ -916,7 +957,7 @@ function firePlayerBullets(bullets: Bullet[], player: PlayerState, _enemies: Ene
   for (let i = 0; i < shots; i++) {
     let angle: number;
     if (shots === 1) {
-      angle = -Math.PI / 2; // straight up
+      angle = -Math.PI / 2;
     } else if (totalSpread >= 350) {
       angle = (i / shots) * Math.PI * 2;
     } else {
@@ -949,7 +990,7 @@ function firePlayerBullets(bullets: Bullet[], player: PlayerState, _enemies: Ene
 function shootEnemy(e: Enemy, player: PlayerState, bullets: Bullet[], wave: number) {
   const dx = player.pos.x - e.pos.x, dy = player.pos.y - e.pos.y;
   const dist = Math.sqrt(dx * dx + dy * dy);
-  const spd = 3.4 + wave * 0.07;
+  const spd = 3.6 + wave * 0.08;
   const color = getEnemyBulletColorLocal(e.type);
   const dmg = e.isBoss ? 2.2 + wave * 0.18 : 1;
   const size = e.isBoss ? 6.5 : 4.5;
@@ -963,7 +1004,7 @@ function shootEnemy(e: Enemy, player: PlayerState, bullets: Bullet[], wave: numb
       break;
     }
     case "sniper": {
-      bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: (dx / dist) * spd * 1.6, y: (dy / dist) * spd * 1.6 }, fromPlayer: false, damage: dmg * 1.6, size: size + 2, color, pierce: 0, homing: false });
+      bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: (dx / dist) * spd * 1.7, y: (dy / dist) * spd * 1.7 }, fromPlayer: false, damage: dmg * 1.8, size: size + 2, color, pierce: 0, homing: false });
       break;
     }
     case "artillery": {
@@ -981,14 +1022,14 @@ function shootEnemy(e: Enemy, player: PlayerState, bullets: Bullet[], wave: numb
       break;
     }
     case "boss_destroyer": {
-      bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: (dx / dist) * spd * 1.15, y: (dy / dist) * spd * 1.15 }, fromPlayer: false, damage: dmg, size: size + 2, color, pierce: 0, homing: false });
+      bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: (dx / dist) * spd * 1.2, y: (dy / dist) * spd * 1.2 }, fromPlayer: false, damage: dmg, size: size + 2, color, pierce: 0, homing: false });
       for (let s2 = -1; s2 <= 1; s2 += 2) {
         bullets.push({ id: uid(), pos: { x: e.pos.x + s2 * 45, y: e.pos.y }, vel: { x: s2 * spd * 0.45, y: spd * 0.95 }, fromPlayer: false, damage: dmg * 0.7, size, color, pierce: 0, homing: false });
       }
       if (e.phase >= 1) {
-        for (let i = 0; i < 5; i++) {
-          const a = (i / 5) * Math.PI * 2;
-          bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd * 0.75, y: Math.sin(a) * spd * 0.75 }, fromPlayer: false, damage: dmg * 0.6, size: size - 1, color, pierce: 0, homing: false });
+        for (let i = 0; i < 6; i++) {
+          const a = (i / 6) * Math.PI * 2;
+          bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd * 0.8, y: Math.sin(a) * spd * 0.8 }, fromPlayer: false, damage: dmg * 0.6, size: size - 1, color, pierce: 0, homing: false });
         }
       }
       break;

@@ -30,7 +30,7 @@ export function getWaveEnemyTypes(wave: number): EnemyType[] {
   if (wave === 6) return ["fighter", "bomber", "sniper"];
   if (wave === 7) return ["fighter", "sniper", "kamikaze"];
   if (wave === 8) return ["tank", "spinner", "fighter"];
-  if (wave === 9) return ["stealth", "charger", "bomber"];
+  if (wave === 9) return ["stealth", "charger", "bomber", "splitter"];
   if (wave === 10) return ["boss_mothership"];
   if (wave === 11) return ["tank", "healer", "charger", "spinner"];
   if (wave === 12) return ["artillery", "stealth", "splitter", "kamikaze"];
@@ -57,49 +57,48 @@ export function getBossType(wave: number): EnemyType {
 }
 
 export function getEnemyDef(type: EnemyType, wave: number): EnemyDef {
-  // Smooth, fair scaling per wave
-  const scale = 1 + (wave - 1) * 0.05;
+  const scale = 1 + (wave - 1) * 0.08;
 
   switch (type) {
     case "scout":
-      return { type, hp: 2.5 * scale, speed: 1.0, shootInterval: 160, movePattern: "straight", xp: 8, isBoss: false, shieldHp: 0, drops: false };
+      return { type, hp: 3.5 * scale, speed: 1.2, shootInterval: 130, movePattern: "straight", xp: 6, isBoss: false, shieldHp: 0, drops: false };
     case "fighter":
-      return { type, hp: 5.0 * scale, speed: 1.1, shootInterval: 120, movePattern: "sine", xp: 14, isBoss: false, shieldHp: 0, drops: false };
+      return { type, hp: 7.0 * scale, speed: 1.25, shootInterval: 95, movePattern: "sine", xp: 11, isBoss: false, shieldHp: 0, drops: false };
     case "bomber":
-      return { type, hp: 8.0 * scale, speed: 0.7, shootInterval: 90, movePattern: "straight", xp: 22, isBoss: false, shieldHp: 0, drops: false };
+      return { type, hp: 13.0 * scale, speed: 0.75, shootInterval: 75, movePattern: "straight", xp: 18, isBoss: false, shieldHp: 0, drops: false };
     case "sniper":
-      return { type, hp: 4.0 * scale, speed: 0.7, shootInterval: 130, movePattern: "hover", xp: 18, isBoss: false, shieldHp: 0, drops: false };
+      return { type, hp: 5.5 * scale, speed: 0.8, shootInterval: 100, movePattern: "hover", xp: 15, isBoss: false, shieldHp: 0, drops: false };
     case "tank":
-      return { type, hp: 16.0 * scale, speed: 0.45, shootInterval: 110, movePattern: "straight", xp: 30, isBoss: false, shieldHp: 3, drops: true };
+      return { type, hp: 26.0 * scale, speed: 0.5, shootInterval: 90, movePattern: "straight", xp: 28, isBoss: false, shieldHp: 6, drops: true };
     case "splitter":
-      return { type, hp: 6.0 * scale, speed: 0.9, shootInterval: 130, movePattern: "zigzag", xp: 20, isBoss: false, shieldHp: 0, drops: true };
+      return { type, hp: 8.0 * scale, speed: 1.0, shootInterval: 110, movePattern: "zigzag", xp: 16, isBoss: false, shieldHp: 0, drops: true };
     case "kamikaze":
-      return { type, hp: 3.0 * scale, speed: 2.0, shootInterval: 999, movePattern: "dive", xp: 12, isBoss: false, shieldHp: 0, drops: false };
+      return { type, hp: 4.5 * scale, speed: 2.5, shootInterval: 999, movePattern: "dive", xp: 10, isBoss: false, shieldHp: 0, drops: false };
     case "spinner":
-      return { type, hp: 9.0 * scale, speed: 0.9, shootInterval: 60, movePattern: "circle", xp: 28, isBoss: false, shieldHp: 0, drops: true };
+      return { type, hp: 12.0 * scale, speed: 1.0, shootInterval: 50, movePattern: "circle", xp: 24, isBoss: false, shieldHp: 0, drops: true };
     case "stealth":
-      return { type, hp: 5.5 * scale, speed: 1.3, shootInterval: 110, movePattern: "sine", xp: 25, isBoss: false, shieldHp: 0, drops: true };
+      return { type, hp: 7.0 * scale, speed: 1.5, shootInterval: 90, movePattern: "sine", xp: 22, isBoss: false, shieldHp: 0, drops: true };
     case "charger":
-      return { type, hp: 10.0 * scale, speed: 1.8, shootInterval: 160, movePattern: "dive", xp: 30, isBoss: false, shieldHp: 0, drops: true };
+      return { type, hp: 14.0 * scale, speed: 2.1, shootInterval: 130, movePattern: "dive", xp: 26, isBoss: false, shieldHp: 0, drops: true };
     case "healer":
-      return { type, hp: 6.0 * scale, speed: 0.8, shootInterval: 120, movePattern: "hover", xp: 32, isBoss: false, shieldHp: 0, drops: true };
+      return { type, hp: 9.0 * scale, speed: 0.85, shootInterval: 100, movePattern: "hover", xp: 28, isBoss: false, shieldHp: 0, drops: true };
     case "artillery":
-      return { type, hp: 10.0 * scale, speed: 0.4, shootInterval: 90, movePattern: "hover", xp: 35, isBoss: false, shieldHp: 0, drops: true };
+      return { type, hp: 14.0 * scale, speed: 0.45, shootInterval: 80, movePattern: "hover", xp: 32, isBoss: false, shieldHp: 0, drops: true };
 
     case "boss_destroyer":
-      return { type, hp: 120 * scale, speed: 0.6, shootInterval: 50, movePattern: "sine", xp: 300, isBoss: true, shieldHp: 25, drops: true };
+      return { type, hp: 240 * scale, speed: 0.7, shootInterval: 42, movePattern: "sine", xp: 250, isBoss: true, shieldHp: 40, drops: true };
     case "boss_mothership":
-      return { type, hp: 220 * scale, speed: 0.5, shootInterval: 40, movePattern: "hover", xp: 500, isBoss: true, shieldHp: 40, drops: true };
+      return { type, hp: 460 * scale, speed: 0.55, shootInterval: 35, movePattern: "hover", xp: 450, isBoss: true, shieldHp: 70, drops: true };
     case "boss_dreadnought":
-      return { type, hp: 380 * scale, speed: 0.55, shootInterval: 35, movePattern: "zigzag", xp: 800, isBoss: true, shieldHp: 60, drops: true };
+      return { type, hp: 780 * scale, speed: 0.6, shootInterval: 28, movePattern: "zigzag", xp: 750, isBoss: true, shieldHp: 100, drops: true };
     case "boss_eclipse":
-      return { type, hp: 600 * scale, speed: 0.7, shootInterval: 30, movePattern: "circle", xp: 1200, isBoss: true, shieldHp: 80, drops: true };
+      return { type, hp: 1200 * scale, speed: 0.75, shootInterval: 24, movePattern: "circle", xp: 1100, isBoss: true, shieldHp: 130, drops: true };
     case "boss_titan":
-      return { type, hp: 900 * scale, speed: 0.6, shootInterval: 25, movePattern: "sine", xp: 1800, isBoss: true, shieldHp: 100, drops: true };
+      return { type, hp: 1800 * scale, speed: 0.65, shootInterval: 20, movePattern: "sine", xp: 1600, isBoss: true, shieldHp: 160, drops: true };
     case "boss_omega":
-      return { type, hp: 1500 * scale, speed: 0.8, shootInterval: 20, movePattern: "circle", xp: 3000, isBoss: true, shieldHp: 150, drops: true };
+      return { type, hp: 3000 * scale, speed: 0.85, shootInterval: 16, movePattern: "circle", xp: 2500, isBoss: true, shieldHp: 220, drops: true };
     default:
-      return { type, hp: 4, speed: 1, shootInterval: 120, movePattern: "straight", xp: 8, isBoss: false, shieldHp: 0, drops: false };
+      return { type, hp: 5, speed: 1, shootInterval: 120, movePattern: "straight", xp: 8, isBoss: false, shieldHp: 0, drops: false };
   }
 }
 
@@ -109,11 +108,11 @@ export function spawnEnemy(type: EnemyType, wave: number): Enemy {
   return {
     id: uid(),
     pos: { x: centerX, y: def.isBoss ? -90 : randRange(-120, -40) },
-    vel: { x: randRange(-0.8, 0.8) * def.speed, y: def.speed * 0.55 },
+    vel: { x: randRange(-0.8, 0.8) * def.speed, y: def.speed * 0.6 },
     hp: def.hp,
     maxHp: def.hp,
     type: def.type,
-    shootTimer: randInt(40, def.shootInterval),
+    shootTimer: randInt(35, def.shootInterval),
     shootInterval: def.shootInterval,
     isBoss: def.isBoss,
     phase: 0,
@@ -142,48 +141,36 @@ export function spawnBoss(wave: number): Enemy {
 export function getWaveComposition(wave: number): { type: EnemyType; count: number }[] {
   if (isBossWave(wave)) return [];
 
-  // Wave 1: Gentle warmup with scouts, gives player 2-3 instant upgrades
-  if (wave === 1) {
-    return [{ type: "scout", count: 8 }];
-  }
-  // Wave 2: Scouts + Fighters
-  if (wave === 2) {
-    return [
-      { type: "scout", count: 6 },
-      { type: "fighter", count: 4 },
-    ];
-  }
-  // Wave 3: Scouts + Fighters + Splitters
-  if (wave === 3) {
-    return [
-      { type: "scout", count: 6 },
-      { type: "fighter", count: 5 },
-      { type: "splitter", count: 3 },
-    ];
-  }
-  // Wave 4: Fighters + Splitters + Bombers
-  if (wave === 4) {
-    return [
-      { type: "fighter", count: 6 },
-      { type: "splitter", count: 4 },
-      { type: "bomber", count: 3 },
-    ];
-  }
+  // Wave 1: 10 scouts
+  if (wave === 1) return [{ type: "scout", count: 10 }];
+  // Wave 2: 8 scouts + 5 fighters
+  if (wave === 2) return [{ type: "scout", count: 8 }, { type: "fighter", count: 5 }];
+  // Wave 3: 7 scouts + 6 fighters + 4 splitters
+  if (wave === 3) return [{ type: "scout", count: 7 }, { type: "fighter", count: 6 }, { type: "splitter", count: 4 }];
+  // Wave 4: 8 fighters + 5 splitters + 4 bombers
+  if (wave === 4) return [{ type: "fighter", count: 8 }, { type: "splitter", count: 5 }, { type: "bomber", count: 4 }];
+  // Wave 6: 9 fighters + 4 snipers + 4 bombers
+  if (wave === 6) return [{ type: "fighter", count: 9 }, { type: "sniper", count: 4 }, { type: "bomber", count: 4 }];
+  // Wave 7: 8 fighters + 6 kamikazes + 4 snipers
+  if (wave === 7) return [{ type: "fighter", count: 8 }, { type: "kamikaze", count: 6 }, { type: "sniper", count: 4 }];
+  // Wave 8: 6 tanks + 6 spinners + 8 fighters
+  if (wave === 8) return [{ type: "tank", count: 6 }, { type: "spinner", count: 6 }, { type: "fighter", count: 8 }];
+  // Wave 9: 7 stealth + 6 chargers + 5 bombers + 5 splitters
+  if (wave === 9) return [{ type: "stealth", count: 7 }, { type: "charger", count: 6 }, { type: "bomber", count: 5 }, { type: "splitter", count: 5 }];
 
   const types = getWaveEnemyTypes(wave);
-  const baseCount = 7 + Math.floor(wave * 1.5);
+  const baseCount = 10 + Math.floor(wave * 2.2);
   const result: { type: EnemyType; count: number }[] = [];
 
-  // Always have a frontline group
   const leadType = types[0] || "scout";
-  const leadCount = Math.max(3, Math.floor(baseCount * 0.35));
+  const leadCount = Math.max(4, Math.floor(baseCount * 0.35));
   result.push({ type: leadType, count: leadCount });
 
   const extras = types.slice(1);
   if (extras.length > 0) {
     const remaining = baseCount - leadCount;
-    const perType = Math.max(1, Math.floor(remaining / Math.min(extras.length, 3)));
-    for (let i = 0; i < extras.length && i < 3; i++) {
+    const perType = Math.max(2, Math.floor(remaining / Math.min(extras.length, 4)));
+    for (let i = 0; i < extras.length && i < 4; i++) {
       result.push({ type: extras[i], count: perType });
     }
   }

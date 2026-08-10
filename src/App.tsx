@@ -103,13 +103,13 @@ export default function App() {
     g.bossActive = false;
     g.boss = null;
 
-    // Wave clear bonus: restore 35 HP + fully recharge shield
-    g.player.hp = Math.min(g.player.maxHp, g.player.hp + 35);
+    // Wave clear bonus: restore 20 HP
+    g.player.hp = Math.min(g.player.maxHp, g.player.hp + 20);
     if (g.player.shield) {
-      g.player.shield.hp = g.player.shield.maxHp;
+      g.player.shield.hp = Math.min(g.player.shield.maxHp, g.player.shield.hp + 20);
     }
 
-    setWaveNotice(`WAVE ${newWave - 1} CLEARED! +35 HP & SHIELD RESTORED`);
+    setWaveNotice(`WAVE ${newWave - 1} CLEARED! +20 HP RESTORED`);
     setTimeout(() => setWaveNotice(null), 2500);
 
     if (isBossWave(newWave)) {

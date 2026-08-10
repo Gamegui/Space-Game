@@ -1,11 +1,13 @@
 import type {
   PlayerState, Bullet, Enemy, Particle, Mine, Lightning,
-  Vec2, Star, XpOrb,
+  Vec2, Star, XpOrb, FloatingText, PowerupItem, PowerupType, ShipClassId
 } from "./types";
 
 import { spawnEnemy, getEnemySize } from "./enemies";
 import type { EnemyType } from "./types";
 import { getUpgradeLevel } from "./upgrades";
+import { audio } from "./audio";
+import { applyShipClassStats } from "./shipClasses";
 
 export const W = 960;
 export const H = 720;
@@ -33,14 +35,15 @@ export function getNextLevelXp(level: number): number {
   return Math.floor(240 * Math.pow(1.25, level - 5));
 }
 
-export function makeInitialPlayer(): PlayerState {
-  return {
-    pos: { x: W / 2, y: H - 90 },
+export function makeInitialPlayer(shipClass: ShipClassId = "interceptor"): PlayerState {
+  const p: PlayerState = {
+    shipClass,
+    pos: { x: W / 2, y: H - 100 },
     hp: 100, maxHp: 100,
-    speed: 5.2,
-    fireRate: 11, // ~5.5 shots per second
+    speed: 5.4,
+    fireRate: 11,
     bulletDamage: 1.3,
-    bulletSpeed: 13.5,
+    bulletSpeed: 14,
     bulletSize: 3.5,
     piercing: 0,
     multishot: 0,
@@ -49,12 +52,12 @@ export function makeInitialPlayer(): PlayerState {
     homingStrength: 0.06,
     satellites: [],
     drones: [],
-    shield: { hp: 15, maxHp: 15, regenTimer: 0, active: true }, // Starter 15 HP light shield
-    xp: 0, level: 1, xpToNext: 30, // Level up midway through wave 1
+    shield: { hp: 20, maxHp: 20, regenTimer: 0, active: true },
+    xp: 0, level: 1, xpToNext: 30,
     upgrades: [],
     invincTimer: 0,
-    magnetRange: 100,
-    aura: false, auraDamage: 0.2, auraTimer: 0,
+    magnetRange: 120,
+    aura: false, auraDamage: 0.25, auraTimer: 0,
     lasers: 0, laserTimer: 0,
     rearShot: false, rearShotTimer: 0,
     explosiveBullets: false, explosionRadius: 60,
@@ -71,14 +74,27 @@ export function makeInitialPlayer(): PlayerState {
     ghostMode: false, ghostTimer: 0,
     teleportCooldown: 0, teleportTimer: 0,
     blackHole: false, blackHoleTimer: 0, blackHoleCooldown: 0,
-    nukeCharges: 0,
+    nukeCharges: 1,
     nukeCooldown: 0,
     mirrorShots: false,
     spiralShot: false, spiralAngle: 0,
     waveShot: false, waveShotTimer: 0,
     snipeMode: false, rapidMode: false,
+    rapidBoostTimer: 0,
     score: 0, kills: 0,
+    combo: 0, comboTimer: 0,
+    stats: {
+      damageDealt: 0,
+      shotsFired: 0,
+      shotsHit: 0,
+      elitesKilled: 0,
+      bossesKilled: 0,
+      powerupsCollected: 0,
+    },
   };
+
+  applyShipClassStats(p, shipClass);
+  return p;
 }
 
 export function makeXpOrb(pos: Vec2, value: number): XpOrb {
@@ -88,6 +104,30 @@ export function makeXpOrb(pos: Vec2, value: number): XpOrb {
     vel: { x: randRange(-1.5, 1.5), y: randRange(-2, 0.5) },
     value,
     attracted: true,
+  };
+}
+
+export function makeFloatingText(pos: Vec2, text: string, color: string, isCrit = false): FloatingText {
+  return {
+    id: uid(),
+    pos: { x: pos.x + randRange(-8, 8), y: pos.y + randRange(-6, 6) },
+    vel: { x: randRange(-0.8, 0.8), y: -1.8 },
+    text,
+    color,
+    size: isCrit ? 18 : 13,
+    life: isCrit ? 45 : 35,
+    maxLife: isCrit ? 45 : 35,
+    isCrit,
+  };
+}
+
+export function makePowerup(pos: Vec2, type: PowerupType): PowerupItem {
+  return {
+    id: uid(),
+    pos: { x: pos.x, y: pos.y },
+    vel: { x: randRange(-1, 1), y: randRange(-1, 0.5) },
+    type,
+    life: 600, // 10 seconds before disappearing
   };
 }
 
@@ -115,6 +155,8 @@ export interface GameObjects {
   mines: Mine[];
   lightnings: Lightning[];
   stars: Star[];
+  floatingTexts: FloatingText[];
+  powerups: PowerupItem[];
   blackHolePos: Vec2 | null;
   blackHoleTimer: number;
   explosions: { id: number; pos: Vec2; radius: number; progress: number }[];
@@ -123,6 +165,7 @@ export interface GameObjects {
   bossActive: boolean;
   boss: Enemy | null;
   waveTimer: number;
+  screenShake: number;
 }
 
 export interface StepInput {
@@ -138,9 +181,25 @@ export interface StepInput {
 }
 
 export function stepGame(obj: GameObjects, input: StepInput): void {
-  const { player, bullets, enemies, particles, xpOrbs, mines, lightnings, stars } = obj;
+  const { player, bullets, enemies, particles, xpOrbs, mines, lightnings, stars, floatingTexts, powerups } = obj;
   const { keys, wave, frame, timeSlow } = input;
   const timeScale = timeSlow ? 0.5 : 1;
+
+  // Screen shake decay
+  obj.screenShake = Math.max(0, obj.screenShake * 0.88 - 0.2);
+
+  // Combo timer decay
+  if (player.comboTimer > 0) {
+    player.comboTimer--;
+    if (player.comboTimer <= 0) {
+      player.combo = 0;
+    }
+  }
+
+  // Powerup rapid boost decay
+  if (player.rapidBoostTimer > 0) {
+    player.rapidBoostTimer--;
+  }
 
   // ─── Stars ─────────────────────────────────────────────────────────────────
   for (const s of stars) {
@@ -150,10 +209,14 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 
   // ─── Player movement ───────────────────────────────────────────────────────
   const spd = player.speed * timeScale;
-  if ((keys.has("ArrowLeft")  || keys.has("a") || keys.has("A")) && player.pos.x > 24) player.pos.x -= spd;
-  if ((keys.has("ArrowRight") || keys.has("d") || keys.has("D")) && player.pos.x < W - 24) player.pos.x += spd;
+  if ((keys.has("ArrowLeft")  || keys.has("a") || keys.has("A")) && player.pos.x > 25) player.pos.x -= spd;
+  if ((keys.has("ArrowRight") || keys.has("d") || keys.has("D")) && player.pos.x < W - 25) player.pos.x += spd;
   if ((keys.has("ArrowUp")    || keys.has("w") || keys.has("W")) && player.pos.y > 60)   player.pos.y -= spd;
   if ((keys.has("ArrowDown")  || keys.has("s") || keys.has("S")) && player.pos.y < H - 32) player.pos.y += spd;
+
+  // Clamping player
+  player.pos.x = Math.max(25, Math.min(W - 25, player.pos.x));
+  player.pos.y = Math.max(60, Math.min(H - 32, player.pos.y));
 
   // ─── Ghost mode ─────────────────────────────────────────────────────────────
   if (player.ghostMode) {
@@ -199,14 +262,18 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   player.laserTimer = Math.max(0, player.laserTimer - 1);
   player.waveShotTimer = Math.max(0, player.waveShotTimer - 1);
 
-  // Berserker: fire rate scales with missing HP
+  // Berserker & rapid boost
   const berserker = getUpgradeLevel(player, "berserker") > 0;
   const hpPct = player.hp / player.maxHp;
-  const effectiveFireRate = berserker ? player.fireRate * (0.5 + hpPct * 0.5) : player.fireRate;
+  let baseRate = berserker ? player.fireRate * (0.5 + hpPct * 0.5) : player.fireRate;
+  if (player.rapidBoostTimer > 0) baseRate *= 0.45;
+
+  const effectiveFireRate = Math.max(2, Math.floor(baseRate));
 
   // Auto-fire continuous shooting
-  if (frame % Math.max(2, Math.floor(effectiveFireRate)) === 0) {
+  if (frame % effectiveFireRate === 0) {
     firePlayerBullets(bullets, player, enemies, frame);
+    audio.playShoot(player.snipeMode);
   }
 
   // Spiral shot auto-fires
@@ -251,7 +318,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       if (nearest) {
         const dx = nearest.pos.x - sx, dy = nearest.pos.y - sy;
         const dist = Math.sqrt(dx * dx + dy * dy);
-        const dmg = player.bulletDamage * (0.5 + sat.level * 0.35);
+        const dmg = player.bulletDamage * (0.55 + sat.level * 0.35);
         bullets.push({
           id: uid(), pos: { x: sx, y: sy },
           vel: { x: (dx / dist) * 11, y: (dy / dist) * 11 },
@@ -298,11 +365,12 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   if (player.aura) {
     player.auraTimer++;
     if (player.auraTimer % 5 === 0) {
-      const auraR = 70;
+      const auraR = 75;
       for (const e of enemies) {
         const dx = e.pos.x - player.pos.x, dy = e.pos.y - player.pos.y;
         if (dx * dx + dy * dy < auraR * auraR) {
           e.hp -= player.auraDamage * timeScale;
+          player.stats.damageDealt += player.auraDamage * timeScale;
           particles.push(...makeBurst({ x: e.pos.x, y: e.pos.y }, "#fde047", 1));
         }
       }
@@ -323,9 +391,12 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     for (const e of enemies) {
       const dx = e.pos.x - mine.pos.x, dy = e.pos.y - mine.pos.y;
       if (dx * dx + dy * dy < mine.radius * mine.radius) {
-        e.hp -= 5 * player.bulletDamage;
+        e.hp -= 6 * player.bulletDamage;
+        player.stats.damageDealt += 6 * player.bulletDamage;
         particles.push(...makeBurst(mine.pos, "#f59e0b", 20, true));
         obj.explosions.push({ id: uid(), pos: { ...mine.pos }, radius: mine.radius * 1.5, progress: 0 });
+        obj.screenShake = Math.max(obj.screenShake, 5);
+        audio.playExplosion(false);
         mines.splice(i, 1);
         break;
       }
@@ -353,6 +424,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           e.pos.y += (dy / dist) * 3 * timeScale;
           if (dist < 25) {
             e.hp -= 3 * timeScale;
+            player.stats.damageDealt += 3 * timeScale;
           }
         }
       }
@@ -374,43 +446,76 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     obj.waveSpawnTimer = Math.max(20, 50 - wave * 2);
   }
 
-  // ─── Move enemies ──────────────────────────────────────────────────────────
+  // ─── Move enemies (STRICTLY STAY ON MAP) ───────────────────────────────────
   for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i];
     const ets = e.frozen > 0 ? 0.15 : timeScale;
+    const size = getEnemySize(e.type);
+    const minX = size + 25;
+    const maxX = W - size - 25;
+    const targetY = e.targetY || 130;
 
-    // Pattern movement
-    e.patternTimer += ets;
-    switch (e.movePattern) {
-      case "sine":
-        e.pos.x += Math.sin(e.patternTimer * 0.04) * 2.4 * ets;
-        e.pos.y += e.vel.y * ets;
-        break;
-      case "zigzag":
-        e.pos.x += e.vel.x * (Math.sin(e.patternTimer * 0.06) > 0 ? 1 : -1) * ets;
-        e.pos.y += e.vel.y * ets;
-        break;
-      case "circle":
-        e.angle += 0.025 * ets;
-        e.pos.x = e.centerX + Math.cos(e.angle) * e.radius;
-        e.pos.y = Math.max(e.pos.y + e.vel.y * 0.3 * ets, 90);
-        break;
-      case "hover":
-        e.pos.y = Math.min(e.pos.y + e.vel.y * ets * 0.5, 130 + (e.id % 90));
-        e.pos.x += Math.sin(e.patternTimer * 0.03) * 1.5 * ets;
-        break;
-      case "dive":
-        e.pos.x += e.vel.x * ets;
-        e.pos.y += e.vel.y * 1.35 * ets;
-        break;
-      default:
-        e.pos.x += e.vel.x * ets;
-        e.pos.y += e.vel.y * ets;
+    // Entrance Glide Phase: smoothly enter into designated combat zone
+    if (e.pos.y < targetY) {
+      e.pos.y += Math.max(2.0, e.vel.y * 1.5) * ets;
+      e.patternTimer += ets;
+    } else {
+      // Maneuver Phase inside Screen
+      e.patternTimer += ets;
+      const centerY = e.centerY || targetY;
+
+      switch (e.movePattern) {
+        case "sine":
+          e.pos.x += Math.sin(e.patternTimer * 0.04) * 2.5 * ets;
+          e.pos.y = centerY + Math.sin(e.patternTimer * 0.02) * 35;
+          break;
+
+        case "zigzag":
+          e.pos.x += e.vel.x * (Math.sin(e.patternTimer * 0.05) > 0 ? 1.3 : -1.3) * ets;
+          e.pos.y = centerY + Math.cos(e.patternTimer * 0.03) * 30;
+          break;
+
+        case "circle":
+          e.angle += 0.025 * ets;
+          e.pos.x = e.centerX + Math.cos(e.angle) * e.radius;
+          e.pos.y = centerY + Math.sin(e.angle) * (e.radius * 0.5);
+          break;
+
+        case "hover":
+          e.pos.x += Math.sin(e.patternTimer * 0.03) * 2.0 * ets;
+          e.pos.y = centerY + Math.sin(e.patternTimer * 0.04) * 20;
+          break;
+
+        case "patrol":
+          e.pos.x += e.vel.x * ets;
+          e.pos.y = centerY + Math.sin(e.patternTimer * 0.02) * 25;
+          break;
+
+        case "dive":
+          // Kamikaze / Charger dive towards player with swoop-back
+          e.pos.x += e.vel.x * ets;
+          e.pos.y += e.vel.y * 1.6 * ets;
+          // Swoop back up before hitting bottom border!
+          if (e.pos.y > H - 120) {
+            e.vel.y = -Math.abs(e.vel.y) * 0.9;
+          } else if (e.pos.y < targetY && e.vel.y < 0) {
+            e.vel.y = Math.abs(e.vel.y);
+          }
+          break;
+
+        default:
+          e.pos.x += e.vel.x * ets;
+          e.pos.y = centerY + Math.sin(e.patternTimer * 0.03) * 20;
+      }
+
+      // Wall bounce for X
+      if (e.pos.x <= minX) { e.pos.x = minX; e.vel.x = Math.abs(e.vel.x); e.centerX = minX + e.radius; }
+      if (e.pos.x >= maxX) { e.pos.x = maxX; e.vel.x = -Math.abs(e.vel.x); e.centerX = maxX - e.radius; }
     }
 
-    // Wall bounce for x
-    if (e.pos.x < 30)     { e.pos.x = 30;     e.vel.x = Math.abs(e.vel.x); }
-    if (e.pos.x > W - 30) { e.pos.x = W - 30; e.vel.x = -Math.abs(e.vel.x); }
+    // Strict boundary safety clamping — enemies NEVER leave the screen
+    e.pos.x = Math.max(minX, Math.min(maxX, e.pos.x));
+    e.pos.y = Math.max(50, Math.min(H - 90, e.pos.y));
 
     // Status effects
     if (e.frozen > 0) e.frozen -= 1;
@@ -420,8 +525,17 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     // Boss phase changes
     if (e.isBoss) {
       const bossHpPct = e.hp / e.maxHp;
-      if (bossHpPct < 0.5 && e.phase === 0) { e.phase = 1; e.vel.y *= 1.25; e.shootInterval = Math.max(10, e.shootInterval - 8); }
-      if (bossHpPct < 0.25 && e.phase === 1) { e.phase = 2; e.vel.y *= 1.2; e.shootInterval = Math.max(6, e.shootInterval - 6); }
+      if (bossHpPct < 0.5 && e.phase === 0) {
+        e.phase = 1;
+        e.shootInterval = Math.max(10, e.shootInterval - 8);
+        obj.screenShake = Math.max(obj.screenShake, 8);
+        audio.playBossWarning();
+      }
+      if (bossHpPct < 0.25 && e.phase === 1) {
+        e.phase = 2;
+        e.shootInterval = Math.max(6, e.shootInterval - 6);
+        obj.screenShake = Math.max(obj.screenShake, 10);
+      }
     }
 
     // Enemy shooting
@@ -430,13 +544,6 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       e.shootTimer = e.shootInterval * (e.frozen > 0 ? 3 : 1);
       shootEnemy(e, player, bullets, wave);
     }
-
-    // Off-screen (went past player) - loop back for bosses
-    if (!e.isBoss && e.pos.y > H + 40) {
-      enemies.splice(i, 1);
-      continue;
-    }
-    if (e.isBoss && e.pos.y > H + 200) e.pos.y = -100;
   }
 
   // ─── Move bullets ──────────────────────────────────────────────────────────
@@ -447,15 +554,13 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     // Aim assist / homing for player bullets
     if (b.fromPlayer && enemies.length > 0) {
       const isFullHoming = b.homing || player.homing;
-      const strength = isFullHoming ? Math.max(player.homingStrength, 0.07) : 0.030;
+      const strength = isFullHoming ? Math.max(player.homingStrength, 0.07) : 0.032;
       const maxDistance = isFullHoming ? 650 : 450;
 
       let bestTarget: Enemy | null = null;
       let bestScore = -Infinity;
 
       for (const e of enemies) {
-        if (e.pos.y < -40 || e.pos.y > H + 40) continue;
-
         const dx = e.pos.x - b.pos.x;
         const dy = e.pos.y - b.pos.y;
         const distSq = dx * dx + dy * dy;
@@ -517,20 +622,31 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       const size = getEnemySize(e.type);
       const dx = b.pos.x - e.pos.x, dy = b.pos.y - e.pos.y;
       if (dx * dx + dy * dy < (size + b.size) * (size + b.size)) {
+        player.stats.shotsHit++;
+        audio.playHit();
+
         // Hit shield first
         if (e.shieldHp > 0) {
           e.shieldHp -= b.damage * 0.6;
+          floatingTexts.push(makeFloatingText(b.pos, `${Math.ceil(b.damage)}`, "#93c5fd"));
           particles.push(...makeBurst(b.pos, "#93c5fd", 4));
           if (b.pierce <= 0) bulletsToRemove.add(b.id);
           continue;
         }
 
-        // Crit
+        // Crit calculation
         let dmg = b.damage;
         const isCrit = Math.random() < player.critChance;
-        if (isCrit) { dmg *= player.critMultiplier; particles.push(...makeBurst(b.pos, "#fff", 6)); }
+        if (isCrit) {
+          dmg *= player.critMultiplier;
+          particles.push(...makeBurst(b.pos, "#fff", 6));
+          floatingTexts.push(makeFloatingText(b.pos, `${Math.ceil(dmg)}!`, "#fbbf24", true));
+        } else {
+          floatingTexts.push(makeFloatingText(b.pos, `${Math.ceil(dmg)}`, "#fff"));
+        }
 
         e.hp -= dmg;
+        player.stats.damageDealt += dmg;
 
         // Status effects
         if (Math.random() < player.burnChance)   { e.burning  = Math.max(e.burning,  180); particles.push(...makeBurst(b.pos, "#f97316", 3)); }
@@ -547,8 +663,15 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           player.hp = Math.min(player.hp + dmg * player.lifeSteal, player.maxHp);
         }
 
-        // Heal on kill check
+        // Heal on kill check & enemy defeat
         if (e.hp <= 0) {
+          audio.playExplosion(e.isBoss);
+          obj.screenShake = Math.max(obj.screenShake, e.isBoss ? 15 : (e.isElite ? 7 : 3));
+
+          // Combo tracking
+          player.combo++;
+          player.comboTimer = 180; // 3 seconds window
+
           if (getUpgradeLevel(player, "heal_on_kill") > 0) {
             player.hp = Math.min(player.hp + 2 * getUpgradeLevel(player, "heal_on_kill"), player.maxHp);
           }
@@ -556,9 +679,13 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           const xpGained = Math.floor(e.xp * (1 + xpBoostLevel * 0.2));
           enemiesToRemove.add(e.id);
           input.onKill(xpGained, e.pos, e.isBoss);
-          // Score
-          player.score += Math.floor(e.xp * 10 * player.goldMultiplier);
+
+          const comboBonus = 1 + (player.combo > 1 ? player.combo * 0.05 : 0);
+          player.score += Math.floor(e.xp * 10 * player.goldMultiplier * comboBonus);
           player.kills++;
+          if (e.isElite) player.stats.elitesKilled++;
+          if (e.isBoss) player.stats.bossesKilled++;
+
           // Explosion
           if (player.explosiveBullets) {
             explodeArea(e.pos, player.explosionRadius, enemies, enemiesToRemove, particles, obj.explosions, player);
@@ -581,7 +708,9 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
                 angle: 0,
                 radius: 80,
                 centerX: e.pos.x,
-                movePattern: "straight",
+                centerY: e.pos.y,
+                targetY: e.pos.y,
+                movePattern: "sine",
                 patternTimer: 0,
                 shieldHp: 0,
                 maxShieldHp: 0,
@@ -594,8 +723,16 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
             }
           }
 
-          const col = e.isBoss ? "#f43f5e" : "#fb923c";
-          particles.push(...makeBurst(e.pos, col, e.isBoss ? 40 : 14, e.isBoss));
+          // Random Combat Powerup drop
+          const dropChance = e.isBoss ? 1.0 : (e.isElite ? 0.65 : 0.08);
+          if (Math.random() < dropChance) {
+            const types: PowerupType[] = ["heal", "rapid", "shield", "magnet", "nuke"];
+            const pType = types[Math.floor(Math.random() * types.length)];
+            powerups.push(makePowerup(e.pos, pType));
+          }
+
+          const col = e.isBoss ? "#f43f5e" : (e.isElite ? "#fbbf24" : "#fb923c");
+          particles.push(...makeBurst(e.pos, col, e.isBoss ? 45 : (e.isElite ? 25 : 14), e.isBoss));
           xpOrbs.push(makeXpOrb(e.pos, xpGained));
         }
 
@@ -627,7 +764,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       const dx = b.pos.x - player.pos.x, dy = b.pos.y - player.pos.y;
       if (dx * dx + dy * dy < (18 + b.size) * (18 + b.size)) {
         bullets.splice(i, 1);
-        takeDamage(player, b.damage * 7.5, particles, input.onDeath);
+        takeDamage(player, b.damage * 7.5, particles, obj, input.onDeath);
       }
     }
     // Enemy contact
@@ -636,9 +773,55 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       const dx = e.pos.x - player.pos.x, dy = e.pos.y - player.pos.y;
       const size = getEnemySize(e.type);
       if (dx * dx + dy * dy < (size + 16) * (size + 16)) {
-        takeDamage(player, e.isBoss ? 20 : 10, particles, input.onDeath);
+        takeDamage(player, e.isBoss ? 20 : 10, particles, obj, input.onDeath);
       }
     }
+  }
+
+  // ─── Powerup collection ────────────────────────────────────────────────────
+  for (let i = powerups.length - 1; i >= 0; i--) {
+    const p = powerups[i];
+    p.life--;
+    p.pos.x += p.vel.x;
+    p.pos.y += p.vel.y;
+    p.vel.x *= 0.96;
+    p.vel.y *= 0.96;
+
+    const dx = player.pos.x - p.pos.x;
+    const dy = player.pos.y - p.pos.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+
+    if (dist < 32) {
+      audio.playPowerup();
+      player.stats.powerupsCollected++;
+      floatingTexts.push(makeFloatingText(player.pos, `+${p.type.toUpperCase()}!`, "#38bdf8", true));
+
+      switch (p.type) {
+        case "heal":
+          player.hp = Math.min(player.maxHp, player.hp + 30);
+          if (player.shield) player.shield.hp = Math.min(player.shield.maxHp, player.shield.hp + 20);
+          break;
+        case "rapid":
+          player.rapidBoostTimer = 360; // 6 seconds 3x fire
+          break;
+        case "shield":
+          if (!player.shield) player.shield = { hp: 30, maxHp: 30, regenTimer: 0, active: true };
+          else player.shield.hp = player.shield.maxHp;
+          player.invincTimer = 180; // 3s barrier
+          break;
+        case "magnet":
+          xpOrbs.forEach(o => { o.attracted = true; });
+          break;
+        case "nuke":
+          player.nukeCharges = Math.min(3, player.nukeCharges + 1);
+          break;
+      }
+
+      particles.push(...makeBurst(p.pos, "#38bdf8", 16));
+      powerups.splice(i, 1);
+      continue;
+    }
+    if (p.life <= 0) powerups.splice(i, 1);
   }
 
   // ─── XP collection (automatically attracted to player) ─────────────────────
@@ -657,6 +840,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     orb.pos.y += (dy / Math.max(dist, 1)) * pullSpeed;
 
     if (dist < 24) {
+      audio.playXp();
       player.xp += orb.value;
       xpOrbs.splice(i, 1);
       // Level up check
@@ -664,10 +848,21 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         player.xp -= player.xpToNext;
         player.level++;
         player.xpToNext = getNextLevelXp(player.level);
+        audio.playLevelUp();
         input.onLevelUp(player);
       }
       continue;
     }
+  }
+
+  // ─── Floating Texts ────────────────────────────────────────────────────────
+  for (let i = floatingTexts.length - 1; i >= 0; i--) {
+    const ft = floatingTexts[i];
+    ft.pos.x += ft.vel.x;
+    ft.pos.y += ft.vel.y;
+    ft.vel.y *= 0.95;
+    ft.life--;
+    if (ft.life <= 0) floatingTexts.splice(i, 1);
   }
 
   // ─── Lightnings ────────────────────────────────────────────────────────────
@@ -687,7 +882,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     if (p.life <= 0) particles.splice(i, 1);
   }
 
-  // ─── Explosions ────────────────────────────────────────────────────
+  // ─── Explosions ────────────────────────────────────────────────────────────
   for (let i = obj.explosions.length - 1; i >= 0; i--) {
     const ex = obj.explosions[i];
     ex.progress += 0.04;
@@ -702,12 +897,13 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function makePlayerBullet(player: PlayerState, pos: Vec2, vel: Vec2): Bullet {
+  player.stats.shotsFired++;
   return {
     id: uid(), pos: { ...pos }, vel,
     fromPlayer: true,
     damage: player.bulletDamage,
     size: player.bulletSize,
-    color: player.snipeMode ? "#ffffff" : "#38bdf8",
+    color: player.snipeMode ? "#ffffff" : (player.shipClass === "tempest" ? "#c084fc" : (player.shipClass === "dreadnought" ? "#f59e0b" : "#38bdf8")),
     pierce: player.piercing,
     homing: player.homing,
   };
@@ -760,7 +956,6 @@ function shootEnemy(e: Enemy, player: PlayerState, bullets: Bullet[], wave: numb
 
   switch (e.type) {
     case "bomber": {
-      // 6-directional hexagonal ring of bullets
       for (let i = 0; i < 6; i++) {
         const a = (i / 6) * Math.PI * 2;
         bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd, y: Math.sin(a) * spd }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
@@ -768,12 +963,10 @@ function shootEnemy(e: Enemy, player: PlayerState, bullets: Bullet[], wave: numb
       break;
     }
     case "sniper": {
-      // Precision aimed shot
       bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: (dx / dist) * spd * 1.6, y: (dy / dist) * spd * 1.6 }, fromPlayer: false, damage: dmg * 1.6, size: size + 2, color, pierce: 0, homing: false });
       break;
     }
     case "artillery": {
-      // 5-directional burst
       for (let i = 0; i < 5; i++) {
         const a = (i / 5) * Math.PI * 2;
         bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd * 0.85, y: Math.sin(a) * spd * 0.85 }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
@@ -781,7 +974,6 @@ function shootEnemy(e: Enemy, player: PlayerState, bullets: Bullet[], wave: numb
       break;
     }
     case "spinner": {
-      // Rotating burst of 4
       for (let i = 0; i < 4; i++) {
         const a = (i / 4) * Math.PI * 2 + e.angle;
         bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd, y: Math.sin(a) * spd }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
@@ -789,7 +981,6 @@ function shootEnemy(e: Enemy, player: PlayerState, bullets: Bullet[], wave: numb
       break;
     }
     case "boss_destroyer": {
-      // Aimed + side guns
       bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: (dx / dist) * spd * 1.15, y: (dy / dist) * spd * 1.15 }, fromPlayer: false, damage: dmg, size: size + 2, color, pierce: 0, homing: false });
       for (let s2 = -1; s2 <= 1; s2 += 2) {
         bullets.push({ id: uid(), pos: { x: e.pos.x + s2 * 45, y: e.pos.y }, vel: { x: s2 * spd * 0.45, y: spd * 0.95 }, fromPlayer: false, damage: dmg * 0.7, size, color, pierce: 0, homing: false });
@@ -879,13 +1070,17 @@ function explodeArea(pos: Vec2, radius: number, enemies: Enemy[], toRemove: Set<
     const dx = e.pos.x - pos.x, dy = e.pos.y - pos.y;
     if (dx * dx + dy * dy < radius * radius) {
       e.hp -= player.bulletDamage * 3;
+      player.stats.damageDealt += player.bulletDamage * 3;
       if (e.hp <= 0) toRemove.add(e.id);
       particles.push(...makeBurst(e.pos, "#f97316", 5));
     }
   }
 }
 
-function takeDamage(player: PlayerState, amount: number, particles: Particle[], onDeath: () => void) {
+function takeDamage(player: PlayerState, amount: number, particles: Particle[], obj: GameObjects, onDeath: () => void) {
+  audio.playShieldBreak();
+  obj.screenShake = Math.max(obj.screenShake, 8);
+
   if (player.shield && player.shield.hp > 0) {
     player.shield.hp -= amount;
     if (player.shield.hp < 0) {
@@ -904,6 +1099,9 @@ function takeDamage(player: PlayerState, amount: number, particles: Particle[], 
 }
 
 function triggerNuke(obj: GameObjects, player: PlayerState, particles: Particle[]) {
+  audio.playNuke();
+  obj.screenShake = Math.max(obj.screenShake, 20);
+
   for (const e of obj.enemies) {
     particles.push(...makeBurst(e.pos, "#f43f5e", 20, true));
     obj.xpOrbs.push(makeXpOrb(e.pos, e.xp));

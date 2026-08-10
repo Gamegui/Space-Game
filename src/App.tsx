@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import type { PlayerState, UpgradeDef, GamePhase } from "./game/types";
+import type { PlayerState, UpgradeDef, GamePhase, ShipClassId } from "./game/types";
 import type { GameObjects } from "./game/gameLoop";
 import { stepGame, makeStars, makeInitialPlayer, W, H, uid } from "./game/gameLoop";
 import { rollUpgrades, applyUpgrade } from "./game/upgrades";
 import { getWaveComposition, isBossWave, spawnBoss, getBossName } from "./game/enemies";
+import { SHIP_CLASSES } from "./game/shipClasses";
+import { audio } from "./game/audio";
 import {
   drawBackground, drawStars, drawPlayer, drawEnemy, drawBullet,
-  drawParticle, drawXpOrb, drawMine, drawLightning, drawBlackHole, drawExplosion
+  drawParticle, drawXpOrb, drawMine, drawLightning, drawBlackHole, drawExplosion,
+  drawFloatingText, drawPowerup
 } from "./game/renderer";
 import UpgradePanel from "./components/UpgradePanel";
 import HUD from "./components/HUD";
@@ -24,6 +27,8 @@ function makeInitialObjects(player: PlayerState): GameObjects {
     mines: [],
     lightnings: [],
     stars: makeStars(),
+    floatingTexts: [],
+    powerups: [],
     blackHolePos: null,
     blackHoleTimer: 0,
     explosions: [],
@@ -32,6 +37,7 @@ function makeInitialObjects(player: PlayerState): GameObjects {
     bossActive: false,
     boss: null,
     waveTimer: 0,
+    screenShake: 0,
   };
 }
 
@@ -52,17 +58,19 @@ export default function App() {
   const bossIntroTimerRef = useRef(0);
 
   // UI state (causes re-renders)
-  const [phase, setPhase]     = useState<GamePhase>("menu");
-  const [wave, setWave]       = useState(1);
+  const [phase, setPhase]         = useState<GamePhase>("menu");
+  const [selectedClass, setSelectedClass] = useState<ShipClassId>("interceptor");
+  const [wave, setWave]           = useState(1);
   const [playerLevel, setPlayerLevel] = useState(1);
   const [upgradeChoices, setUpgradeChoices] = useState<UpgradeDef[]>([]);
   const [bossActive, setBossActive] = useState(false);
-  const [bossName, setBossName] = useState("");
+  const [bossName, setBossName]   = useState("");
   const [bossHpPct, setBossHpPct] = useState(1);
-  const [timeSlow, setTimeSlow] = useState(false);
+  const [timeSlow, setTimeSlow]   = useState(false);
   const [enemiesLeft, setEnemiesLeft] = useState(0);
   const [waveNotice, setWaveNotice] = useState<string | null>(null);
-  const [hiscore, setHiscore]  = useState(() => { try { return parseInt(localStorage.getItem("hs") || "0"); } catch { return 0; } });
+  const [isMuted, setIsMuted]     = useState(false);
+  const [hiscore, setHiscore]     = useState(() => { try { return parseInt(localStorage.getItem("hs") || "0"); } catch { return 0; } });
 
   const syncUI = useCallback(() => {
     const g = gameRef.current;
@@ -74,9 +82,18 @@ export default function App() {
     }
   }, []);
 
-  // ─── Start game ─────────────────────────────────────────────────────────────
-  const startGame = useCallback(() => {
-    const player = makeInitialPlayer();
+  // ─── Sound Toggle ───────────────────────────────────────────────────────────
+  const handleToggleSound = useCallback(() => {
+    const muted = audio.toggleMute();
+    setIsMuted(muted);
+  }, []);
+
+  // ─── Start game with Ship Class ─────────────────────────────────────────────
+  const startGame = useCallback((shipClass: ShipClassId = selectedClass) => {
+    audio.resume();
+    audio.startAmbientBGM();
+
+    const player = makeInitialPlayer(shipClass);
     const objects = makeInitialObjects(player);
     gameRef.current = objects;
     waveRef.current = 1;
@@ -91,7 +108,7 @@ export default function App() {
     setTimeSlow(false);
     setWaveNotice(null);
     syncUI();
-  }, [syncUI]);
+  }, [selectedClass, syncUI]);
 
   // ─── Wave advance ────────────────────────────────────────────────────────────
   const advanceWave = useCallback(() => {
@@ -103,17 +120,17 @@ export default function App() {
     g.bossActive = false;
     g.boss = null;
 
-    // Wave clear bonus: restore 20 HP
+    // Wave clear bonus
     g.player.hp = Math.min(g.player.maxHp, g.player.hp + 20);
     if (g.player.shield) {
       g.player.shield.hp = Math.min(g.player.shield.maxHp, g.player.shield.hp + 20);
     }
 
     setWaveNotice(`WAVE ${newWave - 1} CLEARED! +20 HP RESTORED`);
-    setTimeout(() => setWaveNotice(null), 2500);
+    setTimeout(() => setWaveNotice(null), 2400);
 
     if (isBossWave(newWave)) {
-      // Boss wave
+      audio.playBossWarning();
       const boss = spawnBoss(newWave);
       g.enemies = [boss];
       g.boss = boss;
@@ -123,14 +140,13 @@ export default function App() {
       setBossName(bName);
       setBossActive(true);
       setBossHpPct(1);
-      // Boss intro
       phaseRef.current = "boss_intro";
       setPhase("boss_intro");
       bossIntroTimerRef.current = 180;
     } else {
       const composition = getWaveComposition(newWave);
       g.waveEnemyQueue = composition.map(c => ({ ...c }));
-      g.waveSpawnTimer = 60;
+      g.waveSpawnTimer = 50;
       setBossActive(false);
     }
   }, []);
@@ -151,6 +167,7 @@ export default function App() {
   const handleChooseUpgrade = useCallback((u: UpgradeDef) => {
     const g = gameRef.current;
     if (!g) return;
+    audio.playPowerup();
     applyUpgrade(g.player, u);
     pendingLevelUpsRef.current--;
     if (pendingLevelUpsRef.current > 0) {
@@ -167,6 +184,8 @@ export default function App() {
   const handleNuke = useCallback(() => {
     const g = gameRef.current;
     if (!g || g.player.nukeCharges <= 0) return;
+    audio.playNuke();
+    g.screenShake = 20;
     for (const e of g.enemies) {
       g.xpOrbs.push({ id: uid(), pos: { ...e.pos }, vel: { x: 0, y: -1 }, value: e.xp, attracted: true });
       g.player.score += Math.floor(e.xp * 10);
@@ -182,6 +201,7 @@ export default function App() {
     const g = gameRef.current;
     if (!g || !g.player.timeSlow) return;
     if (g.player.timeSlowCooldown > 0 || g.player.timeSlowTimer > 0) return;
+    audio.playTimeSlow();
     g.player.timeSlowTimer = 300;
     g.player.timeSlowCooldown = g.player.timeSlowCooldown || 500;
     timeSlowRef.current = true;
@@ -191,20 +211,22 @@ export default function App() {
   // ─── Keyboard ─────────────────────────────────────────────────────────────
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      audio.resume();
       keysRef.current.add(e.key);
       if (e.key === "Escape") {
         if (phaseRef.current === "playing") { phaseRef.current = "paused"; setPhase("paused"); }
         else if (phaseRef.current === "paused") { phaseRef.current = "playing"; setPhase("playing"); }
       }
+      if (e.key === "m" || e.key === "M") handleToggleSound();
       if (e.key === "x" || e.key === "X") handleNuke();
       if (e.key === "c" || e.key === "C") handleTimeSlow();
-      if ((e.key === " " || e.key === "Enter") && (phaseRef.current === "menu" || phaseRef.current === "dead")) startGame();
+      if ((e.key === " " || e.key === "Enter") && phaseRef.current === "menu") setPhase("ship_select");
     };
     const onKeyUp = (e: KeyboardEvent) => keysRef.current.delete(e.key);
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     return () => { window.removeEventListener("keydown", onKeyDown); window.removeEventListener("keyup", onKeyUp); };
-  }, [startGame, handleNuke, handleTimeSlow]);
+  }, [startGame, handleNuke, handleTimeSlow, handleToggleSound]);
 
   // ─── Game loop ────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -217,11 +239,21 @@ export default function App() {
       const g = gameRef.current;
       const frame = ++frameRef.current;
 
-      // Always draw background and stars
+      ctx.save();
+      // Apply screen shake
+      if (g && g.screenShake > 0) {
+        const sx = (Math.random() - 0.5) * g.screenShake;
+        const sy = (Math.random() - 0.5) * g.screenShake;
+        ctx.translate(sx, sy);
+      }
+
       drawBackground(ctx, frame);
       if (g) drawStars(ctx, g.stars);
 
-      if (!g || phaseRef.current === "menu" || phaseRef.current === "dead") return;
+      if (!g || phaseRef.current === "menu" || phaseRef.current === "ship_select" || phaseRef.current === "dead") {
+        ctx.restore();
+        return;
+      }
 
       // Boss intro countdown
       if (phaseRef.current === "boss_intro") {
@@ -232,11 +264,11 @@ export default function App() {
         }
         ctx.save();
         const alpha = Math.min(1, bossIntroTimerRef.current / 60);
-        ctx.fillStyle = `rgba(0,0,0,${alpha * 0.6})`;
+        ctx.fillStyle = `rgba(0,0,0,${alpha * 0.65})`;
         ctx.fillRect(0, 0, W, H);
         ctx.globalAlpha = alpha;
         ctx.fillStyle = "#ef4444";
-        ctx.font = "bold 40px monospace";
+        ctx.font = "bold 42px monospace";
         ctx.textAlign = "center";
         ctx.shadowBlur = 30; ctx.shadowColor = "#ef4444";
         ctx.fillText("⚠ BOSS APPROACHING ⚠", W / 2, H / 2 - 25);
@@ -247,6 +279,7 @@ export default function App() {
         ctx.restore();
         for (const e of g.enemies) drawEnemy(ctx, e, frame);
         drawPlayer(ctx, g.player, frame);
+        ctx.restore();
         return;
       }
 
@@ -256,10 +289,14 @@ export default function App() {
         for (const e of g.enemies) drawEnemy(ctx, e, frame);
         for (const orb of g.xpOrbs) drawXpOrb(ctx, orb, frame);
         drawPlayer(ctx, g.player, frame);
+        ctx.restore();
         return;
       }
 
-      if (phaseRef.current !== "playing" && phaseRef.current !== "upgrade") return;
+      if (phaseRef.current !== "playing" && phaseRef.current !== "upgrade") {
+        ctx.restore();
+        return;
+      }
 
       // Time slow management
       const p = g.player;
@@ -279,6 +316,7 @@ export default function App() {
         timeSlow: timeSlowRef.current,
         onLevelUp: handleLevelUp,
         onDeath: () => {
+          audio.stopAmbientBGM();
           const hs = Math.max(g.player.score, hiscore);
           localStorage.setItem("hs", String(hs));
           setHiscore(hs);
@@ -317,9 +355,13 @@ export default function App() {
       for (const l of g.lightnings) drawLightning(ctx, l);
       for (const m of g.mines) drawMine(ctx, m, frame);
       for (const orb of g.xpOrbs) drawXpOrb(ctx, orb, frame);
+      for (const pu of g.powerups) drawPowerup(ctx, pu, frame);
       for (const b of g.bullets) drawBullet(ctx, b);
       for (const e of g.enemies) drawEnemy(ctx, e, frame);
       drawPlayer(ctx, g.player, frame);
+      for (const ft of g.floatingTexts) drawFloatingText(ctx, ft);
+
+      ctx.restore();
 
       // Sync UI every 6 frames
       uiSyncCounter++;
@@ -332,7 +374,7 @@ export default function App() {
 
   // ─── Mouse / Touch controls ───────────────────────────────────────────────
   const isMouseDownRef = useRef(false);
-  const handleMouseDown = () => { isMouseDownRef.current = true; };
+  const handleMouseDown = () => { isMouseDownRef.current = true; audio.resume(); };
   const handleMouseUp = () => { isMouseDownRef.current = false; };
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!gameRef.current || phaseRef.current !== "playing") return;
@@ -341,27 +383,27 @@ export default function App() {
     const mouseX = ((e.clientX - rect.left) / rect.width) * W;
     const mouseY = ((e.clientY - rect.top) / rect.height) * H;
     const p = gameRef.current.player;
-    // Smooth navigation towards mouse cursor when mouse is active
     if (isMouseDownRef.current) {
-      p.pos.x += (mouseX - p.pos.x) * 0.18;
-      p.pos.y += (mouseY - p.pos.y) * 0.18;
-      p.pos.x = Math.max(24, Math.min(W - 24, p.pos.x));
+      p.pos.x += (mouseX - p.pos.x) * 0.22;
+      p.pos.y += (mouseY - p.pos.y) * 0.22;
+      p.pos.x = Math.max(25, Math.min(W - 25, p.pos.x));
       p.pos.y = Math.max(60, Math.min(H - 32, p.pos.y));
     }
   };
 
   const touchRef = useRef<{ x: number; y: number } | null>(null);
   const handleTouchStart = (e: React.TouchEvent) => {
+    audio.resume();
     const t = e.touches[0];
     touchRef.current = { x: t.clientX, y: t.clientY };
   };
   const handleTouchMove = (e: React.TouchEvent) => {
     if (!touchRef.current || !gameRef.current) return;
     const t = e.touches[0];
-    const dx = (t.clientX - touchRef.current.x) * 0.9;
-    const dy = (t.clientY - touchRef.current.y) * 0.9;
+    const dx = (t.clientX - touchRef.current.x) * 1.0;
+    const dy = (t.clientY - touchRef.current.y) * 1.0;
     const player = gameRef.current.player;
-    player.pos.x = Math.max(24, Math.min(W - 24, player.pos.x + dx));
+    player.pos.x = Math.max(25, Math.min(W - 25, player.pos.x + dx));
     player.pos.y = Math.max(60, Math.min(H - 32, player.pos.y + dy));
     touchRef.current = { x: t.clientX, y: t.clientY };
   };
@@ -369,15 +411,19 @@ export default function App() {
     touchRef.current = null;
   };
 
+  const playerStats = gameRef.current?.player.stats || {
+    damageDealt: 0, shotsFired: 0, shotsHit: 0, elitesKilled: 0, bossesKilled: 0, powerupsCollected: 0
+  };
   const finalScore = gameRef.current?.player.score || 0;
   const finalWave  = waveRef.current;
   const finalKills = gameRef.current?.player.kills || 0;
   const finalLevel = gameRef.current?.player.level || 1;
+  const accuracy = playerStats.shotsFired > 0 ? Math.round((playerStats.shotsHit / playerStats.shotsFired) * 100) : 0;
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-slate-950 p-2 sm:p-4">
       <div
-        className="relative select-none overflow-hidden rounded-2xl shadow-2xl shadow-cyan-950/30 border border-slate-800"
+        className="relative select-none overflow-hidden rounded-2xl shadow-2xl shadow-cyan-950/40 border border-slate-800"
         style={{ width: W, height: H }}
       >
         {/* Canvas */}
@@ -394,6 +440,15 @@ export default function App() {
           onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
         />
+
+        {/* Audio Mute Button */}
+        <button
+          onClick={handleToggleSound}
+          className="absolute top-3 right-3 px-3 py-1.5 bg-slate-900/80 hover:bg-slate-800 border border-slate-700 text-slate-300 rounded-lg text-xs font-mono font-bold z-30 transition-all cursor-pointer backdrop-blur-sm"
+          title="Toggle Sound [M]"
+        >
+          {isMuted ? "🔇 SOUND: OFF" : "🔊 SOUND: ON"}
+        </button>
 
         {/* Wave Banner Notification */}
         {waveNotice && (
@@ -434,27 +489,33 @@ export default function App() {
             <h2 className="text-4xl font-black text-white mb-6">PAUSED</h2>
             <div className="text-slate-300 font-mono text-sm mb-6 space-y-1.5 text-center bg-slate-900/80 p-5 rounded-2xl border border-slate-700">
               <p>Move: <span className="text-sky-400 font-bold">WASD / Arrows / Drag Mouse</span></p>
-              <p>Fire: <span className="text-emerald-400 font-bold">Automatic Continuous Fire</span></p>
-              <p>Tactical Nuke: <span className="text-red-400 font-bold">X</span> | Time Slow: <span className="text-cyan-400 font-bold">C</span></p>
+              <p>Weapons: <span className="text-emerald-400 font-bold">Auto-Fire + Target Aim Assist</span></p>
+              <p>Tactical Nuke: <span className="text-red-400 font-bold">X</span> | Time Slow: <span className="text-cyan-400 font-bold">C</span> | Mute: <span className="text-yellow-400 font-bold">M</span></p>
             </div>
             <button
               onClick={() => { phaseRef.current = "playing"; setPhase("playing"); }}
-              className="px-10 py-3.5 bg-sky-600 hover:bg-sky-500 text-white font-black text-lg rounded-full transition-all active:scale-95 shadow-lg shadow-sky-900/50"
+              className="px-10 py-3.5 bg-sky-600 hover:bg-sky-500 text-white font-black text-lg rounded-full transition-all active:scale-95 shadow-lg shadow-sky-900/50 cursor-pointer mb-3"
             >
-              RESUME
+              RESUME GAME
+            </button>
+            <button
+              onClick={() => { audio.stopAmbientBGM(); phaseRef.current = "menu"; setPhase("menu"); gameRef.current = null; }}
+              className="px-6 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-sm rounded-full transition-all cursor-pointer"
+            >
+              ABANDON RUN
             </button>
           </div>
         )}
 
-        {/* Menu */}
+        {/* Main Menu */}
         {phase === "menu" && (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/85 backdrop-blur-md z-30">
             <div className="text-center max-w-xl px-6">
               <div className="text-8xl mb-2 animate-pulse">🚀</div>
               <h1 className="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-sky-300 via-blue-400 to-indigo-400 tracking-tight mb-1">
-                SPACE SHOOTER
+                SPACE SHOOTER ULTRA
               </h1>
-              <p className="text-blue-300/80 font-mono text-xs tracking-widest mb-6">ROGUELITE ARCADE · EXP SURVIVOR</p>
+              <p className="text-blue-300/80 font-mono text-xs tracking-widest mb-6">ROGUELITE ARCADE · SYNTH SOUNDS · 100+ UPGRADES</p>
 
               <div className="grid grid-cols-2 gap-3 text-xs mb-5 font-mono">
                 <div className="bg-slate-900/80 rounded-xl p-3 border border-slate-700 text-left">
@@ -463,85 +524,150 @@ export default function App() {
                 </div>
                 <div className="bg-slate-900/80 rounded-xl p-3 border border-slate-700 text-left">
                   <div className="text-slate-400 text-[10px] mb-1">WEAPONS</div>
-                  <div className="text-emerald-400 font-bold">Auto-Fire + Aim Assist</div>
+                  <div className="text-emerald-400 font-bold">Auto-Fire + Aim Guidance</div>
                 </div>
                 <div className="bg-slate-900/80 rounded-xl p-3 border border-slate-700 text-left">
                   <div className="text-slate-400 text-[10px] mb-1">TACTICAL NUKE</div>
-                  <div className="text-red-400 font-bold">Key [X] (Screen Wipe)</div>
+                  <div className="text-red-400 font-bold">Key [X] Screen Wipe</div>
                 </div>
                 <div className="bg-slate-900/80 rounded-xl p-3 border border-slate-700 text-left">
                   <div className="text-slate-400 text-[10px] mb-1">TIME SLOW</div>
-                  <div className="text-cyan-400 font-bold">Key [C] (Bullet-Time)</div>
+                  <div className="text-cyan-400 font-bold">Key [C] Bullet-Time</div>
                 </div>
               </div>
 
-              <div className="bg-slate-900/60 rounded-xl p-3 border border-slate-700 mb-5 text-xs font-mono text-slate-300">
-                ⭐ <span className="text-purple-400 font-bold">XP automatically magnets to your ship</span> · Level up fast to pick <span className="text-yellow-400 font-bold">powerful upgrades</span>
+              <div className="bg-slate-900/60 rounded-xl p-3 border border-slate-700 mb-6 text-xs font-mono text-slate-300">
+                ⭐ <span className="text-purple-400 font-bold">XP magnets automatically</span> · Collect combat powerups (💊⚡🛡️🧲💣) · 6 Epic Bosses
               </div>
 
               {hiscore > 0 && (
-                <div className="text-yellow-400 font-mono text-sm mb-4 font-bold">🏆 High Score: {hiscore.toLocaleString()}</div>
+                <div className="text-yellow-400 font-mono text-sm mb-4 font-bold">🏆 Record High Score: {hiscore.toLocaleString()}</div>
               )}
 
               <button
-                onClick={startGame}
+                onClick={() => { audio.resume(); setPhase("ship_select"); }}
                 className="px-14 py-4 bg-gradient-to-r from-sky-500 via-blue-600 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white font-black text-2xl rounded-full shadow-2xl shadow-blue-900/60 transition-all active:scale-95 cursor-pointer"
               >
-                START GAME
+                SELECT SHIP & PLAY
               </button>
               <div className="text-slate-500 font-mono text-xs mt-3">or press SPACE / ENTER</div>
             </div>
           </div>
         )}
 
-        {/* Death screen */}
-        {phase === "dead" && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 backdrop-blur-md z-30">
-            <div className="text-center max-w-md px-6">
-              <div className="text-7xl mb-2">💀</div>
-              <h2 className="text-4xl font-black text-red-400 mb-1">SHIP DESTROYED</h2>
-              <p className="text-slate-400 font-mono text-xs mb-6">Good attempt! Upgrade builds and try again</p>
+        {/* Ship Select Screen */}
+        {phase === "ship_select" && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 backdrop-blur-md z-30 p-6">
+            <h2 className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-sky-400 to-indigo-300 mb-1">
+              CHOOSE YOUR STARFIGHTER
+            </h2>
+            <p className="text-slate-400 font-mono text-xs mb-6">Select your vessel class and combat specialty</p>
 
-              <div className="bg-slate-900/80 rounded-2xl border border-slate-700 p-5 mb-6 space-y-2.5 font-mono">
-                <div className="flex justify-between items-center">
-                  <span className="text-slate-400">Score</span>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 max-w-4xl w-full mb-6">
+              {SHIP_CLASSES.map((sc) => {
+                const isSelected = selectedClass === sc.id;
+                return (
+                  <button
+                    key={sc.id}
+                    onClick={() => { audio.playHit(); setSelectedClass(sc.id); }}
+                    className={`
+                      p-4 rounded-xl border-2 text-left transition-all duration-200 cursor-pointer relative overflow-hidden flex flex-col justify-between
+                      ${isSelected ? `border-[${sc.color}] bg-slate-900/90 shadow-xl scale-105 ring-2 ring-sky-400` : "border-slate-800 bg-slate-950/70 hover:border-slate-700 hover:scale-102"}
+                    `}
+                    style={{ borderColor: isSelected ? sc.color : undefined }}
+                  >
+                    <div>
+                      <div className="text-4xl mb-2">{sc.icon}</div>
+                      <div className="font-black text-white text-base leading-tight">{sc.name}</div>
+                      <div className="text-[11px] font-mono text-sky-400 mb-2">{sc.subtitle}</div>
+                      <div className="text-xs text-slate-400 mb-3 leading-snug">{sc.description}</div>
+                    </div>
+                    <div className="space-y-1 border-t border-slate-800/80 pt-2 font-mono text-[10px]">
+                      {sc.perks.map((p, idx) => (
+                        <div key={idx} className="text-slate-300 flex items-center gap-1">
+                          <span className="text-emerald-400">✔</span> {p}
+                        </div>
+                      ))}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="flex gap-4">
+              <button
+                onClick={() => setPhase("menu")}
+                className="px-8 py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-sm rounded-full transition-all cursor-pointer"
+              >
+                BACK
+              </button>
+              <button
+                onClick={() => startGame(selectedClass)}
+                className="px-12 py-3.5 bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white font-black text-lg rounded-full shadow-xl shadow-blue-900/50 transition-all active:scale-95 cursor-pointer"
+              >
+                LAUNCH MISSION 🚀
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Death screen with comprehensive stats */}
+        {phase === "dead" && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 backdrop-blur-md z-30 p-6">
+            <div className="text-center max-w-lg w-full">
+              <div className="text-6xl mb-2 animate-bounce">💀</div>
+              <h2 className="text-4xl font-black text-red-400 mb-1">MISSION TERMINATED</h2>
+              <p className="text-slate-400 font-mono text-xs mb-5">Your vessel was destroyed in deep space</p>
+
+              <div className="bg-slate-900/90 rounded-2xl border border-slate-700 p-5 mb-5 space-y-2.5 font-mono text-sm">
+                <div className="flex justify-between items-center pb-2 border-b border-slate-800">
+                  <span className="text-slate-400">Final Score</span>
                   <span className="text-white font-black text-2xl">{finalScore.toLocaleString()}</span>
                 </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-slate-400">Best Record</span>
-                  <span className="text-yellow-400 font-bold text-lg">{hiscore.toLocaleString()}</span>
-                </div>
-                <div className="border-t border-slate-800 pt-3 mt-2 grid grid-cols-3 gap-2 text-center">
-                  <div className="bg-slate-950/60 p-2 rounded-lg">
-                    <div className="text-slate-500 text-[10px]">WAVE</div>
-                    <div className="text-white font-bold text-base">{finalWave}</div>
+                <div className="grid grid-cols-3 gap-2 text-center py-2 border-b border-slate-800">
+                  <div className="bg-slate-950/70 p-2 rounded-lg">
+                    <div className="text-slate-500 text-[10px]">WAVE REACHED</div>
+                    <div className="text-white font-bold text-lg">{finalWave}</div>
                   </div>
-                  <div className="bg-slate-950/60 p-2 rounded-lg">
-                    <div className="text-slate-500 text-[10px]">KILLS</div>
-                    <div className="text-red-400 font-bold text-base">{finalKills}</div>
+                  <div className="bg-slate-950/70 p-2 rounded-lg">
+                    <div className="text-slate-500 text-[10px]">ENEMIES KILLED</div>
+                    <div className="text-red-400 font-bold text-lg">{finalKills}</div>
                   </div>
-                  <div className="bg-slate-950/60 p-2 rounded-lg">
-                    <div className="text-slate-500 text-[10px]">LEVEL</div>
-                    <div className="text-purple-400 font-bold text-base">{finalLevel}</div>
+                  <div className="bg-slate-950/70 p-2 rounded-lg">
+                    <div className="text-slate-500 text-[10px]">MAX LEVEL</div>
+                    <div className="text-purple-400 font-bold text-lg">{finalLevel}</div>
                   </div>
                 </div>
-                {finalScore >= hiscore && finalScore > 0 && (
-                  <div className="text-yellow-400 text-center text-sm font-black animate-pulse pt-1">🏆 NEW HIGH SCORE!</div>
-                )}
+                <div className="grid grid-cols-3 gap-2 text-center pt-1 text-xs">
+                  <div>
+                    <div className="text-slate-500 text-[10px]">ACCURACY</div>
+                    <div className="text-emerald-400 font-bold">{accuracy}%</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-500 text-[10px]">ELITES SLAIN</div>
+                    <div className="text-yellow-400 font-bold">{playerStats.elitesKilled}</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-500 text-[10px]">BOSSES SLAIN</div>
+                    <div className="text-sky-400 font-bold">{playerStats.bossesKilled}</div>
+                  </div>
+                </div>
               </div>
 
-              <button
-                onClick={startGame}
-                className="w-full py-4 bg-gradient-to-r from-red-600 via-orange-600 to-amber-600 hover:from-red-500 hover:to-amber-500 text-white font-black text-xl rounded-full shadow-xl transition-all active:scale-95 mb-3 cursor-pointer"
-              >
-                PLAY AGAIN
-              </button>
-              <button
-                onClick={() => { phaseRef.current = "menu"; setPhase("menu"); gameRef.current = null; }}
-                className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-sm rounded-full transition-all active:scale-95 cursor-pointer"
-              >
-                MAIN MENU
-              </button>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setPhase("ship_select")}
+                  className="flex-1 py-3.5 bg-gradient-to-r from-red-600 via-orange-600 to-amber-600 hover:from-red-500 hover:to-amber-500 text-white font-black text-base rounded-full shadow-xl transition-all active:scale-95 cursor-pointer"
+                >
+                  RETRY MISSION
+                </button>
+                <button
+                  onClick={() => { phaseRef.current = "menu"; setPhase("menu"); gameRef.current = null; }}
+                  className="px-6 py-3.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-sm rounded-full transition-all cursor-pointer"
+                >
+                  MAIN MENU
+                </button>
+              </div>
             </div>
           </div>
         )}

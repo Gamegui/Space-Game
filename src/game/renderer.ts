@@ -1,4 +1,7 @@
-import type { Bullet, Enemy, Particle, Star, PlayerState, XpOrb, Mine, Lightning } from "./types";
+import type {
+  Bullet, Enemy, Particle, Star, PlayerState, XpOrb, Mine,
+  Lightning, FloatingText, PowerupItem
+} from "./types";
 import { getEnemyColors, getEnemySize } from "./enemies";
 
 export const W = 960;
@@ -22,7 +25,7 @@ export function drawBackground(ctx: CanvasRenderingContext2D, frame: number) {
   ctx.fillStyle = "#03050d";
   ctx.fillRect(0, 0, W, H);
 
-  // Nebula
+  // Deep Space Nebula Glow
   const t = frame * 0.002;
   const colors = [
     ["rgba(60,20,100,0.14)", W * 0.3, H * 0.4, 360],
@@ -40,49 +43,63 @@ export function drawBackground(ctx: CanvasRenderingContext2D, frame: number) {
 
 // ─── Player ───────────────────────────────────────────────────────────────────
 export function drawPlayer(ctx: CanvasRenderingContext2D, state: PlayerState, frame: number) {
-  const { pos, invincTimer, shield, satellites, drones, aura } = state;
+  const { pos, invincTimer, shield, satellites, drones, aura, shipClass, rapidBoostTimer } = state;
 
   if (invincTimer > 0 && frame % 8 < 4) return;
 
   ctx.save();
   ctx.translate(pos.x, pos.y);
 
+  // Rapid Overdrive glow
+  if (rapidBoostTimer > 0) {
+    const og = ctx.createRadialGradient(0, 0, 10, 0, 0, 50);
+    og.addColorStop(0, "rgba(56,189,248,0.35)");
+    og.addColorStop(1, "rgba(56,189,248,0)");
+    ctx.fillStyle = og;
+    ctx.beginPath();
+    ctx.arc(0, 0, 50, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   // Aura glow
   if (aura) {
-    const ag = ctx.createRadialGradient(0, 0, 10, 0, 0, 60);
-    ag.addColorStop(0, "rgba(255,200,50,0.15)");
+    const ag = ctx.createRadialGradient(0, 0, 10, 0, 0, 70);
+    ag.addColorStop(0, "rgba(255,200,50,0.18)");
     ag.addColorStop(1, "rgba(255,200,50,0)");
     ctx.fillStyle = ag;
     ctx.beginPath();
-    ctx.arc(0, 0, 60, 0, Math.PI * 2);
+    ctx.arc(0, 0, 70, 0, Math.PI * 2);
     ctx.fill();
   }
 
   // Shield bubble
   if (shield && shield.active && shield.hp > 0) {
-    const alpha = 0.3 + 0.2 * Math.sin(frame * 0.1);
+    const alpha = 0.35 + 0.2 * Math.sin(frame * 0.1);
     const pct = shield.hp / shield.maxHp;
     ctx.strokeStyle = `rgba(100,180,255,${alpha})`;
     ctx.lineWidth = 3;
     ctx.beginPath();
-    ctx.arc(0, 0, 38 + Math.sin(frame * 0.08) * 2, 0, Math.PI * 2);
+    ctx.arc(0, 0, 40 + Math.sin(frame * 0.08) * 2, 0, Math.PI * 2);
     ctx.stroke();
-    const sg = ctx.createRadialGradient(0, 0, 28, 0, 0, 42);
+    const sg = ctx.createRadialGradient(0, 0, 28, 0, 0, 44);
     sg.addColorStop(0, `rgba(100,180,255,${0.05 * pct})`);
-    sg.addColorStop(1, `rgba(100,180,255,${0.15 * pct})`);
+    sg.addColorStop(1, `rgba(100,180,255,${0.18 * pct})`);
     ctx.fillStyle = sg;
     ctx.beginPath();
-    ctx.arc(0, 0, 42, 0, Math.PI * 2);
+    ctx.arc(0, 0, 44, 0, Math.PI * 2);
     ctx.fill();
   }
 
   // Engine trail
-  const eg = ctx.createLinearGradient(0, 0, 0, 36);
-  eg.addColorStop(0, "rgba(56,189,248,0.9)");
-  eg.addColorStop(0.5, "rgba(99,102,241,0.6)");
+  const eg = ctx.createLinearGradient(0, 0, 0, 40);
+  const trailColor = shipClass === "tempest" ? "rgba(168,85,247,0.9)" :
+                     shipClass === "dreadnought" ? "rgba(245,158,11,0.9)" :
+                     shipClass === "commander" ? "rgba(16,185,129,0.9)" : "rgba(56,189,248,0.9)";
+  eg.addColorStop(0, trailColor);
+  eg.addColorStop(0.5, "rgba(99,102,241,0.5)");
   eg.addColorStop(1, "rgba(0,0,0,0)");
   ctx.fillStyle = eg;
-  const trailH = 20 + Math.sin(frame * 0.3) * 8;
+  const trailH = 22 + Math.sin(frame * 0.3) * 8;
   ctx.beginPath();
   ctx.moveTo(-8, 14);
   ctx.lineTo(0, 14 + trailH);
@@ -90,46 +107,51 @@ export function drawPlayer(ctx: CanvasRenderingContext2D, state: PlayerState, fr
   ctx.closePath();
   ctx.fill();
 
-  // Ship body
+  // Ship body based on class
+  const mainColor = shipClass === "tempest" ? "#a855f7" :
+                    shipClass === "dreadnought" ? "#f59e0b" :
+                    shipClass === "commander" ? "#10b981" : "#38bdf8";
+
   ctx.shadowBlur = 15;
-  ctx.shadowColor = "#38bdf8";
+  ctx.shadowColor = mainColor;
   ctx.fillStyle = "#0f172a";
-  ctx.strokeStyle = "#38bdf8";
-  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = mainColor;
+  ctx.lineWidth = 1.6;
+
   ctx.beginPath();
-  ctx.moveTo(0, -28);
-  ctx.lineTo(22, 18);
-  ctx.lineTo(10, 10);
+  ctx.moveTo(0, -30);
+  ctx.lineTo(24, 18);
+  ctx.lineTo(11, 11);
   ctx.lineTo(0, 16);
-  ctx.lineTo(-10, 10);
-  ctx.lineTo(-22, 18);
+  ctx.lineTo(-11, 11);
+  ctx.lineTo(-24, 18);
   ctx.closePath();
   ctx.fill();
   ctx.stroke();
 
   // Wings
-  ctx.fillStyle = "#1e3a5f";
-  ctx.strokeStyle = "#60a5fa";
+  ctx.fillStyle = "#1e293b";
+  ctx.strokeStyle = mainColor;
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(-10, 6);
-  ctx.lineTo(-26, 18);
-  ctx.lineTo(-14, 14);
+  ctx.moveTo(-11, 6);
+  ctx.lineTo(-28, 18);
+  ctx.lineTo(-15, 14);
   ctx.closePath();
   ctx.fill(); ctx.stroke();
   ctx.beginPath();
-  ctx.moveTo(10, 6);
-  ctx.lineTo(26, 18);
-  ctx.lineTo(14, 14);
+  ctx.moveTo(11, 6);
+  ctx.lineTo(28, 18);
+  ctx.lineTo(15, 14);
   ctx.closePath();
   ctx.fill(); ctx.stroke();
 
   // Cockpit
   ctx.shadowBlur = 8;
-  ctx.shadowColor = "#7dd3fc";
-  ctx.fillStyle = "#0ea5e9";
+  ctx.shadowColor = mainColor;
+  ctx.fillStyle = mainColor;
   ctx.beginPath();
-  ctx.ellipse(0, -8, 5, 9, 0, 0, Math.PI * 2);
+  ctx.ellipse(0, -9, 5.5, 10, 0, 0, Math.PI * 2);
   ctx.fill();
 
   ctx.restore();
@@ -153,11 +175,11 @@ export function drawPlayer(ctx: CanvasRenderingContext2D, state: PlayerState, fr
     ctx.beginPath();
     ctx.rect(-3, -3, 6, 6);
     ctx.fill();
-    // Orbit trail
     ctx.restore();
+
     ctx.save();
     ctx.translate(pos.x, pos.y);
-    ctx.strokeStyle = "rgba(251,191,36,0.12)";
+    ctx.strokeStyle = "rgba(251,191,36,0.14)";
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.arc(0, 0, sat.radius, 0, Math.PI * 2);
@@ -194,9 +216,21 @@ export function drawEnemy(ctx: CanvasRenderingContext2D, e: Enemy, frame: number
   ctx.save();
   ctx.translate(e.pos.x, e.pos.y);
 
+  // Elite Aura
+  if (e.isElite) {
+    const pulse = Math.sin(frame * 0.15) * 4;
+    ctx.strokeStyle = "rgba(251,191,36,0.7)";
+    ctx.lineWidth = 2.5;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.arc(0, 0, size + 12 + pulse, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
   // Freeze tint
   if (e.frozen > 0) {
-    ctx.fillStyle = "rgba(147,197,253,0.3)";
+    ctx.fillStyle = "rgba(147,197,253,0.35)";
     ctx.beginPath();
     ctx.arc(0, 0, size + 5, 0, Math.PI * 2);
     ctx.fill();
@@ -213,14 +247,14 @@ export function drawEnemy(ctx: CanvasRenderingContext2D, e: Enemy, frame: number
 
   // Poison
   if (e.poisoned > 0) {
-    ctx.fillStyle = "rgba(74,222,128,0.15)";
+    ctx.fillStyle = "rgba(74,222,128,0.18)";
     ctx.beginPath();
     ctx.arc(0, 0, size + 4, 0, Math.PI * 2);
     ctx.fill();
   }
 
-  ctx.shadowBlur = e.isBoss ? 25 : 12;
-  ctx.shadowColor = stroke;
+  ctx.shadowBlur = e.isBoss ? 25 : (e.isElite ? 18 : 12);
+  ctx.shadowColor = e.isElite ? "#fbbf24" : stroke;
 
   const speedFactor = e.frozen > 0 ? 0 : 1;
   const rot = e.angle * speedFactor;
@@ -249,7 +283,7 @@ export function drawEnemy(ctx: CanvasRenderingContext2D, e: Enemy, frame: number
   // Shield
   if (e.shieldHp > 0) {
     const pct = e.shieldHp / e.maxShieldHp;
-    ctx.strokeStyle = `rgba(147,197,253,${0.4 + 0.3 * Math.sin(frame * 0.15)})`;
+    ctx.strokeStyle = `rgba(147,197,253,${0.5 + 0.3 * Math.sin(frame * 0.15)})`;
     ctx.lineWidth = 2 + pct * 2;
     ctx.beginPath();
     ctx.arc(0, 0, size + 8, 0, Math.PI * 2);
@@ -265,8 +299,16 @@ export function drawEnemy(ctx: CanvasRenderingContext2D, e: Enemy, frame: number
   const pct = e.hp / e.maxHp;
   ctx.fillStyle = pct > 0.6 ? "#4ade80" : pct > 0.3 ? "#fbbf24" : "#f87171";
   ctx.fillRect(-bw / 2, by, bw * pct, 5);
-  ctx.globalAlpha = 1;
 
+  // Elite tag
+  if (e.isElite && e.eliteName) {
+    ctx.font = "bold 10px monospace";
+    ctx.fillStyle = "#fbbf24";
+    ctx.textAlign = "center";
+    ctx.fillText(e.eliteName, 0, -size - 8);
+  }
+
+  ctx.globalAlpha = 1;
   ctx.restore();
 }
 
@@ -364,27 +406,21 @@ function drawBossDestroyer(ctx: CanvasRenderingContext2D, fill: string, stroke: 
   ctx.closePath(); ctx.fill(); ctx.stroke();
   ctx.fillStyle = light;
   ctx.beginPath(); ctx.ellipse(0, 0, s * 0.4, s * 0.5, 0, 0, Math.PI * 2); ctx.fill();
-  // Cannons
   ctx.fillStyle = stroke;
   ctx.fillRect(-s - 6, -s * 0.2, 10, s * 0.6);
   ctx.fillRect(s - 4, -s * 0.2, 10, s * 0.6);
-  // Core pulse
   const pulse = Math.sin(frame * 0.1) * 0.3 + 0.7;
   ctx.globalAlpha = pulse;
   ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(0, 0, 8, 0, Math.PI * 2); ctx.fill();
   ctx.globalAlpha = 1;
 }
 function drawBossMothership(ctx: CanvasRenderingContext2D, fill: string, stroke: string, light: string, s: number, frame: number) {
-  // Outer ring
   ctx.strokeStyle = stroke; ctx.lineWidth = 3;
   ctx.beginPath(); ctx.arc(0, 0, s * 1.3, 0, Math.PI * 2); ctx.stroke();
-  // Body
   ctx.fillStyle = fill;
   ctx.beginPath(); ctx.ellipse(0, 0, s * 1.1, s * 0.55, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-  // Dome
   ctx.fillStyle = light;
   ctx.beginPath(); ctx.ellipse(0, -s * 0.15, s * 0.45, s * 0.4, 0, 0, Math.PI * 2); ctx.fill();
-  // Rotating gun ports
   for (let i = 0; i < 6; i++) {
     ctx.save();
     ctx.rotate((i / 6) * Math.PI * 2 + frame * 0.005);
@@ -417,7 +453,6 @@ function drawBossDreadnought(ctx: CanvasRenderingContext2D, fill: string, stroke
   ctx.globalAlpha = 1;
 }
 function drawBossEclipse(ctx: CanvasRenderingContext2D, fill: string, stroke: string, light: string, s: number, frame: number) {
-  // Outer glow rings
   for (let i = 3; i >= 1; i--) {
     ctx.globalAlpha = 0.1 / i;
     ctx.strokeStyle = light;
@@ -429,10 +464,8 @@ function drawBossEclipse(ctx: CanvasRenderingContext2D, fill: string, stroke: st
   ctx.globalAlpha = 1;
   ctx.fillStyle = fill; ctx.strokeStyle = stroke; ctx.lineWidth = 3;
   ctx.beginPath(); ctx.arc(0, 0, s, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-  // Dark core
   ctx.fillStyle = "#030712";
   ctx.beginPath(); ctx.arc(0, 0, s * 0.45, 0, Math.PI * 2); ctx.fill();
-  // Orbiting crystals
   for (let i = 0; i < 8; i++) {
     ctx.save();
     ctx.rotate((i / 8) * Math.PI * 2 + frame * 0.015);
@@ -446,7 +479,6 @@ function drawBossEclipse(ctx: CanvasRenderingContext2D, fill: string, stroke: st
   ctx.beginPath(); ctx.arc(0, 0, 8, 0, Math.PI * 2); ctx.fill();
 }
 function drawBossTitan(ctx: CanvasRenderingContext2D, fill: string, stroke: string, light: string, s: number, frame: number) {
-  // Giant armored form
   ctx.fillStyle = fill; ctx.strokeStyle = stroke; ctx.lineWidth = 3.5;
   ctx.beginPath();
   ctx.moveTo(0, -s * 1.8); ctx.lineTo(s * 1.6, -s * 0.6);
@@ -455,13 +487,11 @@ function drawBossTitan(ctx: CanvasRenderingContext2D, fill: string, stroke: stri
   ctx.lineTo(-s * 1.4, s * 1.2); ctx.lineTo(-s * 2, s * 0.2);
   ctx.lineTo(-s * 1.6, -s * 0.6);
   ctx.closePath(); ctx.fill(); ctx.stroke();
-  // Armor plates
   ctx.fillStyle = light; ctx.lineWidth = 1.5;
   for (let i = 0; i < 4; i++) {
     ctx.save(); ctx.rotate((i / 4) * Math.PI * 2);
     ctx.beginPath(); ctx.rect(-15, -s * 0.5, 30, s * 0.8); ctx.fill(); ctx.stroke(); ctx.restore();
   }
-  // Core
   const pulse = Math.sin(frame * 0.07) * 0.4 + 0.6;
   ctx.globalAlpha = pulse;
   const cg = ctx.createRadialGradient(0, 0, 0, 0, 0, 20);
@@ -472,8 +502,6 @@ function drawBossTitan(ctx: CanvasRenderingContext2D, fill: string, stroke: stri
   ctx.globalAlpha = 1;
 }
 function drawBossOmega(ctx: CanvasRenderingContext2D, fill: string, stroke: string, light: string, s: number, frame: number) {
-  // Ominous, massive, reality-warping form
-  // Outer distortion rings
   for (let i = 4; i >= 1; i--) {
     ctx.save();
     ctx.rotate(frame * 0.003 * i);
@@ -489,7 +517,6 @@ function drawBossOmega(ctx: CanvasRenderingContext2D, fill: string, stroke: stri
   }
   ctx.globalAlpha = 1;
 
-  // Body
   const phase = frame * 0.02;
   ctx.fillStyle = fill; ctx.strokeStyle = stroke; ctx.lineWidth = 4;
   ctx.beginPath();
@@ -500,10 +527,8 @@ function drawBossOmega(ctx: CanvasRenderingContext2D, fill: string, stroke: stri
   }
   ctx.closePath(); ctx.fill(); ctx.stroke();
 
-  // Eye
   ctx.fillStyle = "#0f0f0f";
   ctx.beginPath(); ctx.arc(0, 0, s * 0.55, 0, Math.PI * 2); ctx.fill();
-  // Iris
   ctx.save(); ctx.rotate(frame * 0.02);
   for (let i = 0; i < 12; i++) {
     ctx.save(); ctx.rotate((i / 12) * Math.PI * 2);
@@ -514,7 +539,6 @@ function drawBossOmega(ctx: CanvasRenderingContext2D, fill: string, stroke: stri
     ctx.closePath(); ctx.fill(); ctx.restore();
   }
   ctx.restore();
-  // Pupil
   ctx.fillStyle = "#ff0000";
   ctx.shadowBlur = 30; ctx.shadowColor = "#ff0000";
   ctx.beginPath(); ctx.arc(0, 0, s * 0.18, 0, Math.PI * 2); ctx.fill();
@@ -545,7 +569,6 @@ export function drawBullet(ctx: CanvasRenderingContext2D, b: Bullet) {
     ctx.beginPath();
     ctx.arc(0, 0, b.size, 0, Math.PI * 2);
     ctx.fill();
-    // Inner bright core
     ctx.fillStyle = "#fff";
     ctx.globalAlpha = 0.6;
     ctx.beginPath();
@@ -592,6 +615,54 @@ export function drawXpOrb(ctx: CanvasRenderingContext2D, orb: XpOrb, frame: numb
   ctx.restore();
 }
 
+// ─── Floating Text ────────────────────────────────────────────────────────────
+export function drawFloatingText(ctx: CanvasRenderingContext2D, ft: FloatingText) {
+  const alpha = ft.life / ft.maxLife;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.font = ft.isCrit ? `bold ${ft.size}px monospace` : `bold ${ft.size}px monospace`;
+  ctx.fillStyle = ft.color;
+  ctx.shadowBlur = ft.isCrit ? 10 : 4;
+  ctx.shadowColor = ft.color;
+  ctx.textAlign = "center";
+  ctx.fillText(ft.text, ft.pos.x, ft.pos.y);
+  ctx.restore();
+}
+
+// ─── Combat Powerups ──────────────────────────────────────────────────────────
+export function drawPowerup(ctx: CanvasRenderingContext2D, p: PowerupItem, frame: number) {
+  const pulse = Math.sin(frame * 0.15 + p.id) * 3;
+  ctx.save();
+  ctx.translate(p.pos.x, p.pos.y);
+
+  // Outer glowing ring
+  ctx.shadowBlur = 12;
+  ctx.shadowColor = "#38bdf8";
+  ctx.strokeStyle = "#38bdf8";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(0, 0, 16 + pulse, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Background
+  ctx.fillStyle = "rgba(15, 23, 42, 0.9)";
+  ctx.beginPath();
+  ctx.arc(0, 0, 14, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Icon
+  ctx.font = "14px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  const icon = p.type === "heal" ? "💊" :
+               p.type === "rapid" ? "⚡" :
+               p.type === "shield" ? "🛡️" :
+               p.type === "magnet" ? "🧲" : "💣";
+  ctx.fillText(icon, 0, 0);
+
+  ctx.restore();
+}
+
 // ─── Mines ────────────────────────────────────────────────────────────────────
 export function drawMine(ctx: CanvasRenderingContext2D, mine: Mine, frame: number) {
   const flicker = Math.sin(frame * 0.3) * 0.3 + 0.7;
@@ -627,7 +698,6 @@ export function drawLightning(ctx: CanvasRenderingContext2D, l: Lightning) {
   ctx.shadowColor = "#fde047";
   ctx.lineWidth = 2;
   ctx.beginPath();
-  // Jagged lightning
   const dx = l.to.x - l.from.x, dy = l.to.y - l.from.y;
   const dist = Math.sqrt(dx * dx + dy * dy);
   const steps = Math.floor(dist / 20);
@@ -648,7 +718,6 @@ export function drawBlackHole(ctx: CanvasRenderingContext2D, pos: { x: number; y
   ctx.save();
   ctx.translate(pos.x, pos.y);
   ctx.rotate(frame * 0.05);
-  // Accretion disk
   for (let i = 0; i < 3; i++) {
     ctx.strokeStyle = `rgba(168,85,247,${0.4 - i * 0.1})`;
     ctx.lineWidth = 4 - i;
@@ -656,7 +725,6 @@ export function drawBlackHole(ctx: CanvasRenderingContext2D, pos: { x: number; y
     ctx.ellipse(0, 0, 40 + i * 12, 12 + i * 3, 0, 0, Math.PI * 2);
     ctx.stroke();
   }
-  // Core
   ctx.fillStyle = "#000";
   ctx.shadowBlur = 30;
   ctx.shadowColor = "#7c3aed";
@@ -666,7 +734,7 @@ export function drawBlackHole(ctx: CanvasRenderingContext2D, pos: { x: number; y
   ctx.restore();
 }
 
-// ─── HUD helpers ──────────────────────────────────────────────────────────────
+// ─── Explosions ───────────────────────────────────────────────────────────────
 export function drawExplosion(ctx: CanvasRenderingContext2D, pos: { x: number; y: number }, radius: number, progress: number) {
   const alpha = 1 - progress;
   ctx.save();

@@ -1,5 +1,39 @@
 export interface Vec2 { x: number; y: number; }
 
+export type ShipClassId = "interceptor" | "dreadnought" | "tempest" | "commander";
+
+export interface ShipClassDef {
+  id: ShipClassId;
+  name: string;
+  subtitle: string;
+  icon: string;
+  description: string;
+  perks: string[];
+  color: string;
+}
+
+export interface FloatingText {
+  id: number;
+  pos: Vec2;
+  vel: Vec2;
+  text: string;
+  color: string;
+  size: number;
+  life: number;
+  maxLife: number;
+  isCrit?: boolean;
+}
+
+export type PowerupType = "heal" | "rapid" | "shield" | "magnet" | "nuke";
+
+export interface PowerupItem {
+  id: number;
+  pos: Vec2;
+  vel: Vec2;
+  type: PowerupType;
+  life: number;
+}
+
 export interface Bullet {
   id: number;
   pos: Vec2;
@@ -8,9 +42,9 @@ export interface Bullet {
   damage: number;
   size: number;
   color: string;
-  pierce: number; // how many enemies it can pass through
+  pierce: number;
   homing: boolean;
-  homingTarget?: number; // enemy id
+  homingTarget?: number;
 }
 
 export interface Enemy {
@@ -23,16 +57,20 @@ export interface Enemy {
   shootTimer: number;
   shootInterval: number;
   isBoss: boolean;
-  phase: number; // boss phase
-  angle: number; // for circular movement
-  radius: number; // for circular movement
+  isElite?: boolean;
+  eliteName?: string;
+  phase: number;
+  angle: number;
+  radius: number;
   centerX: number;
+  centerY?: number;
+  targetY?: number;
   movePattern: MovePattern;
   patternTimer: number;
   shieldHp: number;
   maxShieldHp: number;
-  frozen: number; // frames frozen
-  burning: number; // frames burning
+  frozen: number;
+  burning: number;
   poisoned: number;
   drops: boolean;
   xp: number;
@@ -45,7 +83,7 @@ export type EnemyType =
   | "boss_eclipse" | "boss_titan" | "boss_omega";
 
 export type MovePattern =
-  | "straight" | "sine" | "circle" | "zigzag" | "dive" | "hover";
+  | "straight" | "sine" | "circle" | "zigzag" | "dive" | "hover" | "patrol";
 
 export interface Particle {
   id: number;
@@ -56,7 +94,7 @@ export interface Particle {
   color: string;
   size: number;
   glow: boolean;
-  shape: "circle" | "square" | "star";
+  shape: "circle" | "square" | "star" | "ring";
 }
 
 export interface Star { x: number; y: number; z: number; speed: number; }
@@ -65,7 +103,7 @@ export interface Satellite {
   angle: number;
   radius: number;
   speed: number;
-  level: number; // damage level
+  level: number;
   shootTimer: number;
 }
 
@@ -111,16 +149,17 @@ export interface PlayerUpgrade {
 }
 
 export interface PlayerState {
+  shipClass: ShipClassId;
   pos: Vec2;
   hp: number;
   maxHp: number;
   speed: number;
-  fireRate: number; // lower = faster
+  fireRate: number;
   bulletDamage: number;
   bulletSpeed: number;
   bulletSize: number;
   piercing: number;
-  multishot: number; // extra bullets per shot
+  multishot: number;
   spreadAngle: number;
   homing: boolean;
   homingStrength: number;
@@ -133,10 +172,10 @@ export interface PlayerState {
   upgrades: PlayerUpgrade[];
   invincTimer: number;
   magnetRange: number;
-  aura: boolean; // damage aura
+  aura: boolean;
   auraDamage: number;
   auraTimer: number;
-  lasers: number; // side laser count
+  lasers: number;
   laserTimer: number;
   rearShot: boolean;
   rearShotTimer: number;
@@ -176,8 +215,19 @@ export interface PlayerState {
   waveShotTimer: number;
   snipeMode: boolean;
   rapidMode: boolean;
+  rapidBoostTimer: number; // powerup boost
   score: number;
   kills: number;
+  combo: number;
+  comboTimer: number;
+  stats: {
+    damageDealt: number;
+    shotsFired: number;
+    shotsHit: number;
+    elitesKilled: number;
+    bossesKilled: number;
+    powerupsCollected: number;
+  };
 }
 
 export interface XpOrb {
@@ -195,4 +245,4 @@ export interface Mine {
   radius: number;
 }
 
-export type GamePhase = "menu" | "playing" | "upgrade" | "boss_intro" | "paused" | "dead" | "victory";
+export type GamePhase = "menu" | "ship_select" | "playing" | "upgrade" | "boss_intro" | "paused" | "dead" | "victory";

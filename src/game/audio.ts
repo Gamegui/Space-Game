@@ -36,7 +36,13 @@ class SoundEngine {
   public resume() {
     this.init();
     if (this.ctx && this.ctx.state === "suspended") {
-      this.ctx.resume();
+      void this.ctx.resume();
+    }
+  }
+
+  public suspend() {
+    if (this.ctx && this.ctx.state === "running") {
+      void this.ctx.suspend();
     }
   }
 

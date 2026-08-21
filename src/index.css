@@ -4,12 +4,41 @@
   box-sizing: border-box;
 }
 
-body {
-  background: #000;
+html,
+body,
+#root {
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
   overflow: hidden;
+  background: #020617;
+  overscroll-behavior: none;
+}
+
+body {
+  min-height: 100dvh;
+  color-scheme: dark;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+button:focus-visible {
+  outline: 3px solid #38bdf8;
+  outline-offset: 2px;
 }
 
 canvas {
   image-rendering: pixelated;
   image-rendering: crisp-edges;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

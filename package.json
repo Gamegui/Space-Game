@@ -1,11 +1,13 @@
 {
-  "name": "react-vite-tailwind",
+  "name": "space-shooter-ultra",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && vite build",
+    "package:yandex": "npm run build && cd dist && zip -q -r ../space-shooter-yandex.zip .",
     "preview": "vite preview"
   },
   "dependencies": {

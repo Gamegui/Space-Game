@@ -271,11 +271,6 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 
   // ─── Firing ────────────────────────────────────────────────────────────────
   player.nukeCooldown = Math.max(0, player.nukeCooldown - 1);
-  if ((keys.has("x") || keys.has("X")) && player.nukeCharges > 0 && player.nukeCooldown === 0) {
-    triggerNuke(obj, player, particles);
-    player.nukeCharges--;
-    player.nukeCooldown = 180;
-  }
 
   player.laserTimer = Math.max(0, player.laserTimer - 1);
   player.waveShotTimer = Math.max(0, player.waveShotTimer - 1);
@@ -1137,20 +1132,6 @@ function takeDamage(player: PlayerState, amount: number, particles: Particle[], 
     player.hp = 0;
     onDeath();
   }
-}
-
-function triggerNuke(obj: GameObjects, player: PlayerState, particles: Particle[]) {
-  audio.playNuke();
-  obj.screenShake = Math.max(obj.screenShake, 20);
-
-  for (const e of obj.enemies) {
-    particles.push(...makeBurst(e.pos, "#f43f5e", 20, true));
-    obj.xpOrbs.push(makeXpOrb(e.pos, e.xp));
-    player.score += Math.floor(e.xp * 10 * player.goldMultiplier);
-    player.kills++;
-  }
-  obj.enemies = [];
-  obj.bullets = obj.bullets.filter(b => b.fromPlayer);
 }
 
 function getEnemyBulletColorLocal(type: EnemyType): string {

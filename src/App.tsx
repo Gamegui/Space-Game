@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import type { PlayerState, UpgradeDef, GamePhase, ShipClassId } from "./game/types";
+import type { PlayerState, UpgradeDef, GamePhase, ShipClassId, Enemy } from "./game/types";
 import type { GameObjects } from "./game/gameLoop";
 import { stepGame, makeStars, makeInitialPlayer, W, H, uid } from "./game/gameLoop";
 import { rollUpgrades, applyUpgrade } from "./game/upgrades";
 import { getWaveComposition, isBossWave, spawnBoss, getBossName } from "./game/enemies";
 import { SHIP_CLASSES } from "./game/shipClasses";
 import { audio } from "./game/audio";
+import { yandex } from "./platform/yandex";
 import {
   drawBackground, drawStars, drawPlayer, drawEnemy, drawBullet,
   drawParticle, drawXpOrb, drawMine, drawLightning, drawBlackHole, drawExplosion,
@@ -47,6 +48,24 @@ export default function App() {
   const rafRef     = useRef(0);
   const frameRef   = useRef(0);
   const keysRef    = useRef<Set<string>>(new Set());
+  const [gameScale, setGameScale] = useState(1);
+
+  // Scale the complete 960×640 playfield uniformly. Canvas coordinates, touch input
+  // and every overlay stay aligned on phones, tablets and catalogue iframes.
+  useEffect(() => {
+    const resize = () => {
+      const horizontalPadding = window.innerWidth >= 640 ? 24 : 4;
+      const verticalPadding = window.innerHeight >= 640 ? 24 : 4;
+      setGameScale(Math.min(1, (window.innerWidth - horizontalPadding) / W, (window.innerHeight - verticalPadding) / H));
+    };
+    resize();
+    window.addEventListener("resize", resize, { passive: true });
+    window.addEventListener("orientationchange", resize, { passive: true });
+    return () => {
+      window.removeEventListener("resize", resize);
+      window.removeEventListener("orientationchange", resize);
+    };
+  }, []);
 
   // Game state refs (mutable, not causing re-renders)
   const gameRef    = useRef<GameObjects | null>(null);
@@ -71,6 +90,38 @@ export default function App() {
   const [waveNotice, setWaveNotice] = useState<string | null>(null);
   const [isMuted, setIsMuted]     = useState(false);
   const [hiscore, setHiscore]     = useState(() => { try { return parseInt(localStorage.getItem("hs") || "0"); } catch { return 0; } });
+  const [reviveUsed, setReviveUsed] = useState(false);
+  const [adPending, setAdPending] = useState(false);
+  const [adsAvailable, setAdsAvailable] = useState(false);
+
+  // Yandex Games lifecycle, cloud record and automatic pause when the tab is hidden.
+  useEffect(() => {
+    void yandex.init().then(async () => {
+      setAdsAvailable(yandex.isAvailable());
+      const cloudScore = await yandex.loadHighScore();
+      if (cloudScore !== null) setHiscore(current => Math.max(current, cloudScore));
+    });
+    const onVisibility = () => {
+      if (document.hidden && phaseRef.current === "playing") {
+        phaseRef.current = "paused";
+        setPhase("paused");
+        audio.suspend();
+      }
+      keysRef.current.clear();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("blur", onVisibility);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("blur", onVisibility);
+      yandex.setGameplay(false);
+    };
+  }, []);
+
+  useEffect(() => {
+    yandex.setGameplay(phase === "playing");
+    if (phase !== "playing") keysRef.current.clear();
+  }, [phase]);
 
   const syncUI = useCallback(() => {
     const g = gameRef.current;
@@ -106,6 +157,8 @@ export default function App() {
     setWave(1);
     setBossActive(false);
     setTimeSlow(false);
+    setReviveUsed(false);
+    setAdPending(false);
     setWaveNotice(null);
     syncUI();
   }, [selectedClass, syncUI]);
@@ -183,17 +236,25 @@ export default function App() {
   // ─── Nuke ────────────────────────────────────────────────────────────────
   const handleNuke = useCallback(() => {
     const g = gameRef.current;
-    if (!g || g.player.nukeCharges <= 0) return;
+    if (!g || g.player.nukeCharges <= 0 || g.player.nukeCooldown > 0 || phaseRef.current !== "playing") return;
     audio.playNuke();
     g.screenShake = 20;
+    const survivors: Enemy[] = [];
     for (const e of g.enemies) {
-      g.xpOrbs.push({ id: uid(), pos: { ...e.pos }, vel: { x: 0, y: -1 }, value: e.xp, attracted: true });
-      g.player.score += Math.floor(e.xp * 10);
-      g.player.kills++;
+      if (e.isBoss) {
+        // A tactical nuke heavily damages a boss but cannot skip the boss encounter.
+        e.hp = Math.max(1, e.hp - e.maxHp * 0.35);
+        survivors.push(e);
+      } else {
+        g.xpOrbs.push({ id: uid(), pos: { ...e.pos }, vel: { x: 0, y: -1 }, value: e.xp, attracted: true });
+        g.player.score += Math.floor(e.xp * 10 * g.player.goldMultiplier);
+        g.player.kills++;
+      }
     }
-    g.enemies = [];
+    g.enemies = survivors;
     g.bullets = g.bullets.filter(b => b.fromPlayer);
     g.player.nukeCharges--;
+    g.player.nukeCooldown = 180;
   }, []);
 
   // ─── Time slow ───────────────────────────────────────────────────────────
@@ -208,6 +269,36 @@ export default function App() {
     setTimeSlow(true);
   }, []);
 
+  const handleReturnToMenu = useCallback(() => {
+    const finish = () => {
+      phaseRef.current = "menu";
+      setPhase("menu");
+      gameRef.current = null;
+    };
+    yandex.showInterstitial(() => audio.suspend(), finish);
+  }, []);
+
+  const handleRevive = useCallback(async () => {
+    const g = gameRef.current;
+    if (!g || reviveUsed || adPending) return;
+    setAdPending(true);
+    const rewarded = await yandex.showRewarded(
+      () => audio.suspend(),
+      () => audio.resume(),
+    );
+    setAdPending(false);
+    if (!rewarded || !gameRef.current) return;
+    const current = gameRef.current;
+    current.player.hp = Math.max(1, current.player.maxHp * 0.5);
+    current.player.invincTimer = 240;
+    current.bullets = current.bullets.filter(b => b.fromPlayer);
+    current.screenShake = 0;
+    setReviveUsed(true);
+    phaseRef.current = "playing";
+    setPhase("playing");
+    audio.startAmbientBGM();
+  }, [adPending, reviveUsed]);
+
   // ─── Keyboard ─────────────────────────────────────────────────────────────
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -218,9 +309,12 @@ export default function App() {
         else if (phaseRef.current === "paused") { phaseRef.current = "playing"; setPhase("playing"); }
       }
       if (e.key === "m" || e.key === "M" || e.key === "ь" || e.key === "Ь") handleToggleSound();
-      if (e.key === "x" || e.key === "X" || e.key === "ч" || e.key === "Ч") handleNuke();
-      if (e.key === "c" || e.key === "C" || e.key === "с" || e.key === "С") handleTimeSlow();
-      if ((e.key === " " || e.key === "Enter") && phaseRef.current === "menu") setPhase("ship_select");
+      if (!e.repeat && (e.key === "x" || e.key === "X" || e.key === "ч" || e.key === "Ч")) handleNuke();
+      if (!e.repeat && (e.key === "c" || e.key === "C" || e.key === "с" || e.key === "С")) handleTimeSlow();
+      if ((e.key === " " || e.key === "Enter") && phaseRef.current === "menu") {
+        phaseRef.current = "ship_select";
+        setPhase("ship_select");
+      }
     };
     const onKeyUp = (e: KeyboardEvent) => keysRef.current.delete(e.key);
     window.addEventListener("keydown", onKeyDown);
@@ -228,98 +322,49 @@ export default function App() {
     return () => { window.removeEventListener("keydown", onKeyDown); window.removeEventListener("keyup", onKeyUp); };
   }, [startGame, handleNuke, handleTimeSlow, handleToggleSound]);
 
-  // ─── Game loop ────────────────────────────────────────────────────────────
+  // ─── Game loop (fixed 60 Hz simulation, independent from monitor refresh rate) ──
   useEffect(() => {
     const canvas = canvasRef.current!;
-    const ctx = canvas.getContext("2d")!;
+    const ctx = canvas.getContext("2d", { alpha: false })!;
+    const fixedStep = 1000 / 60;
+    let lastTimestamp = performance.now();
+    let accumulator = 0;
     let uiSyncCounter = 0;
 
-    function loop() {
-      rafRef.current = requestAnimationFrame(loop);
-      const g = gameRef.current;
-      const frame = ++frameRef.current;
+    function drawWorld(g: GameObjects, frame: number) {
+      for (const ex of g.explosions) drawExplosion(ctx, ex.pos, ex.radius, ex.progress);
+      for (const particle of g.particles) drawParticle(ctx, particle);
+      if (g.blackHolePos) drawBlackHole(ctx, g.blackHolePos, frame);
+      for (const lightning of g.lightnings) drawLightning(ctx, lightning);
+      for (const mine of g.mines) drawMine(ctx, mine, frame);
+      for (const orb of g.xpOrbs) drawXpOrb(ctx, orb, frame);
+      for (const powerup of g.powerups) drawPowerup(ctx, powerup, frame);
+      for (const bullet of g.bullets) drawBullet(ctx, bullet);
+      for (const enemy of g.enemies) drawEnemy(ctx, enemy, frame);
+      drawPlayer(ctx, g.player, frame);
+      for (const text of g.floatingTexts) drawFloatingText(ctx, text);
+    }
 
-      ctx.save();
-      // Apply screen shake
-      if (g && g.screenShake > 0) {
-        const sx = (Math.random() - 0.5) * g.screenShake;
-        const sy = (Math.random() - 0.5) * g.screenShake;
-        ctx.translate(sx, sy);
+    function updateGame(g: GameObjects) {
+      const slowNow = g.player.timeSlowTimer > 0;
+      if (slowNow !== timeSlowRef.current) {
+        timeSlowRef.current = slowNow;
+        setTimeSlow(slowNow);
       }
 
-      drawBackground(ctx, frame);
-      if (g) drawStars(ctx, g.stars);
-
-      if (!g || phaseRef.current === "menu" || phaseRef.current === "ship_select" || phaseRef.current === "dead") {
-        ctx.restore();
-        return;
-      }
-
-      // Boss intro countdown
-      if (phaseRef.current === "boss_intro") {
-        bossIntroTimerRef.current--;
-        if (bossIntroTimerRef.current <= 0) {
-          phaseRef.current = "playing";
-          setPhase("playing");
-        }
-        ctx.save();
-        const alpha = Math.min(1, bossIntroTimerRef.current / 60);
-        ctx.fillStyle = `rgba(0,0,0,${alpha * 0.65})`;
-        ctx.fillRect(0, 0, W, H);
-        ctx.globalAlpha = alpha;
-        ctx.fillStyle = "#ef4444";
-        ctx.font = "bold 40px monospace";
-        ctx.textAlign = "center";
-        ctx.shadowBlur = 30; ctx.shadowColor = "#ef4444";
-        ctx.fillText("⚠ ПРИБЛИЖАЕТСЯ БОСС ⚠", W / 2, H / 2 - 25);
-        ctx.font = "24px monospace";
-        ctx.fillStyle = "#fca5a5";
-        ctx.shadowBlur = 0;
-        ctx.fillText(bossName, W / 2, H / 2 + 25);
-        ctx.restore();
-        for (const e of g.enemies) drawEnemy(ctx, e, frame);
-        drawPlayer(ctx, g.player, frame);
-        ctx.restore();
-        return;
-      }
-
-      if (phaseRef.current === "paused") {
-        for (const p of g.particles) drawParticle(ctx, p);
-        for (const b of g.bullets) drawBullet(ctx, b);
-        for (const e of g.enemies) drawEnemy(ctx, e, frame);
-        for (const orb of g.xpOrbs) drawXpOrb(ctx, orb, frame);
-        drawPlayer(ctx, g.player, frame);
-        ctx.restore();
-        return;
-      }
-
-      if (phaseRef.current !== "playing" && phaseRef.current !== "upgrade") {
-        ctx.restore();
-        return;
-      }
-
-      // Time slow management
-      const p = g.player;
-      if (p.timeSlowTimer > 0) {
-        timeSlowRef.current = true;
-        setTimeSlow(true);
-      } else {
-        timeSlowRef.current = false;
-        setTimeSlow(false);
-      }
-
-      // Step game
+      const simulationFrame = ++frameRef.current;
       stepGame(g, {
         keys: keysRef.current,
         wave: waveRef.current,
-        frame,
+        frame: simulationFrame,
         timeSlow: timeSlowRef.current,
         onLevelUp: handleLevelUp,
         onDeath: () => {
           audio.stopAmbientBGM();
           const hs = Math.max(g.player.score, hiscore);
-          localStorage.setItem("hs", String(hs));
+          try { localStorage.setItem("hs", String(hs)); } catch { /* storage may be blocked */ }
           setHiscore(hs);
+          void yandex.saveHighScore(hs);
           phaseRef.current = "dead";
           setPhase("dead");
         },
@@ -329,9 +374,7 @@ export default function App() {
           setBossActive(false);
         },
         onWaveComplete: () => {
-          if (phaseRef.current === "playing") {
-            advanceWave();
-          }
+          if (phaseRef.current === "playing") advanceWave();
         },
         onKill: (_xp, _pos, isBoss) => {
           if (isBoss) {
@@ -344,32 +387,72 @@ export default function App() {
       });
 
       if (g.bossActive && g.enemies.length > 0) {
-        g.boss = g.enemies.find(e => e.isBoss) || null;
+        g.boss = g.enemies.find(enemy => enemy.isBoss) || null;
         if (!g.boss) { g.bossActive = false; setBossActive(false); }
       }
+      if (++uiSyncCounter >= 6) { uiSyncCounter = 0; syncUI(); }
+    }
 
-      // ─── Draw ─────────────────────────────────────────────────────────────
-      for (const ex of g.explosions) drawExplosion(ctx, ex.pos, ex.radius, ex.progress);
-      for (const p2 of g.particles) drawParticle(ctx, p2);
-      if (g.blackHolePos) drawBlackHole(ctx, g.blackHolePos, frame);
-      for (const l of g.lightnings) drawLightning(ctx, l);
-      for (const m of g.mines) drawMine(ctx, m, frame);
-      for (const orb of g.xpOrbs) drawXpOrb(ctx, orb, frame);
-      for (const pu of g.powerups) drawPowerup(ctx, pu, frame);
-      for (const b of g.bullets) drawBullet(ctx, b);
-      for (const e of g.enemies) drawEnemy(ctx, e, frame);
-      drawPlayer(ctx, g.player, frame);
-      for (const ft of g.floatingTexts) drawFloatingText(ctx, ft);
+    function loop(timestamp: number) {
+      rafRef.current = requestAnimationFrame(loop);
+      const elapsed = Math.min(100, Math.max(0, timestamp - lastTimestamp));
+      lastTimestamp = timestamp;
+      accumulator += elapsed;
+      let steps = Math.min(5, Math.floor(accumulator / fixedStep));
+      if (steps > 0) accumulator -= steps * fixedStep;
 
+      const g = gameRef.current;
+      const frame = Math.floor(timestamp / fixedStep);
+      const currentPhase = phaseRef.current;
+
+      // Only active gameplay advances. Upgrade selection and pause now freeze combat.
+      if (g && currentPhase === "playing") {
+        while (steps-- > 0 && phaseRef.current === "playing") updateGame(g);
+      } else if (currentPhase === "boss_intro") {
+        if (steps > 0) bossIntroTimerRef.current -= steps;
+        if (bossIntroTimerRef.current <= 0) {
+          phaseRef.current = "playing";
+          setPhase("playing");
+        }
+      } else {
+        accumulator = 0;
+      }
+
+      ctx.save();
+      if (g && g.screenShake > 0 && currentPhase === "playing") {
+        ctx.translate((Math.random() - 0.5) * g.screenShake, (Math.random() - 0.5) * g.screenShake);
+      }
+      drawBackground(ctx, frame);
+      if (g) drawStars(ctx, g.stars);
+
+      if (!g || currentPhase === "menu" || currentPhase === "ship_select" || currentPhase === "dead") {
+        ctx.restore();
+        return;
+      }
+
+      drawWorld(g, frame);
+      if (currentPhase === "boss_intro") {
+        const alpha = Math.min(1, bossIntroTimerRef.current / 60);
+        ctx.fillStyle = `rgba(0,0,0,${alpha * 0.65})`;
+        ctx.fillRect(0, 0, W, H);
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = "#ef4444";
+        ctx.font = "bold 40px monospace";
+        ctx.textAlign = "center";
+        ctx.shadowBlur = 30;
+        ctx.shadowColor = "#ef4444";
+        ctx.fillText("⚠ ПРИБЛИЖАЕТСЯ БОСС ⚠", W / 2, H / 2 - 25);
+        ctx.font = "24px monospace";
+        ctx.fillStyle = "#fca5a5";
+        ctx.shadowBlur = 0;
+        ctx.fillText(bossName, W / 2, H / 2 + 25);
+      }
       ctx.restore();
-
-      uiSyncCounter++;
-      if (uiSyncCounter >= 6) { uiSyncCounter = 0; syncUI(); }
     }
 
     rafRef.current = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [advanceWave, handleLevelUp, hiscore, syncUI]);
+  }, [advanceWave, handleLevelUp, hiscore, syncUI, bossName]);
 
   // ─── Mouse / Touch controls ───────────────────────────────────────────────
   const isMouseDownRef = useRef(false);
@@ -410,8 +493,8 @@ export default function App() {
   const handleTouchMove = (e: React.TouchEvent) => {
     if (!touchRef.current || !gameRef.current) return;
     const t = e.touches[0];
-    const dx = (t.clientX - touchRef.current.x) * 1.0;
-    const dy = (t.clientY - touchRef.current.y) * 1.0;
+    const dx = (t.clientX - touchRef.current.x) / gameScale;
+    const dy = (t.clientY - touchRef.current.y) / gameScale;
     const player = gameRef.current.player;
     player.pos.x = Math.max(25, Math.min(W - 25, player.pos.x + dx));
     player.pos.y = Math.max(60, Math.min(H - 32, player.pos.y + dy));
@@ -431,11 +514,12 @@ export default function App() {
   const accuracy = playerStats.shotsFired > 0 ? Math.round((playerStats.shotsHit / playerStats.shotsFired) * 100) : 0;
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-950 p-2 sm:p-4 font-sans">
-      <div
-        className="relative select-none overflow-hidden rounded-2xl shadow-2xl shadow-cyan-950/40 border border-slate-800"
-        style={{ width: W, height: H }}
-      >
+    <div className="flex min-h-[100dvh] w-screen items-center justify-center overflow-hidden bg-slate-950 font-sans">
+      <div className="relative shrink-0" style={{ width: W * gameScale, height: H * gameScale }}>
+        <div
+          className="absolute left-0 top-0 select-none overflow-hidden rounded-2xl shadow-2xl shadow-cyan-950/40 border border-slate-800"
+          style={{ width: W, height: H, transform: `scale(${gameScale})`, transformOrigin: "top left" }}
+        >
         {/* Canvas */}
         <canvas
           ref={canvasRef}
@@ -505,7 +589,7 @@ export default function App() {
               <p>Ядерный заряд: <span className="text-red-400 font-bold">X</span> | Замедление времени: <span className="text-cyan-400 font-bold">C</span> | Звук: <span className="text-yellow-400 font-bold">M</span></p>
             </div>
             <button
-              onClick={() => { phaseRef.current = "playing"; setPhase("playing"); }}
+              onClick={() => { audio.resume(); phaseRef.current = "playing"; setPhase("playing"); }}
               className="px-10 py-3.5 bg-sky-600 hover:bg-sky-500 text-white font-black text-lg rounded-full transition-all active:scale-95 shadow-lg shadow-sky-900/50 cursor-pointer mb-3"
             >
               ПРОДОЛЖИТЬ ИГРУ
@@ -557,7 +641,7 @@ export default function App() {
               )}
 
               <button
-                onClick={() => { audio.resume(); setPhase("ship_select"); }}
+                onClick={() => { audio.resume(); phaseRef.current = "ship_select"; setPhase("ship_select"); }}
                 className="px-14 py-4 bg-gradient-to-r from-sky-500 via-blue-600 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white font-black text-2xl rounded-full shadow-2xl shadow-blue-900/60 transition-all active:scale-95 cursor-pointer"
               >
                 ВЫБРАТЬ КОРАБЛЬ И В БОЙ
@@ -608,7 +692,7 @@ export default function App() {
 
             <div className="flex gap-4">
               <button
-                onClick={() => setPhase("menu")}
+                onClick={() => { phaseRef.current = "menu"; setPhase("menu"); }}
                 className="px-8 py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-sm rounded-full transition-all cursor-pointer"
               >
                 НАЗАД
@@ -666,15 +750,25 @@ export default function App() {
                 </div>
               </div>
 
+              {!reviveUsed && adsAvailable && (
+                <button
+                  onClick={handleRevive}
+                  disabled={adPending}
+                  className="w-full mb-3 py-3 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 disabled:opacity-50 text-white font-black text-base rounded-full shadow-xl transition-all active:scale-95 cursor-pointer"
+                >
+                  {adPending ? "ЗАГРУЗКА ВИДЕО…" : "🎬 ЭКСТРЕННЫЙ РЕМОНТ · +50% HP"}
+                </button>
+              )}
+
               <div className="flex gap-3">
                 <button
-                  onClick={() => setPhase("ship_select")}
+                  onClick={() => { phaseRef.current = "ship_select"; setPhase("ship_select"); }}
                   className="flex-1 py-3.5 bg-gradient-to-r from-red-600 via-orange-600 to-amber-600 hover:from-red-500 hover:to-amber-500 text-white font-black text-base rounded-full shadow-xl transition-all active:scale-95 cursor-pointer"
                 >
                   ПОВТОРИТЬ МИССИЮ
                 </button>
                 <button
-                  onClick={() => { phaseRef.current = "menu"; setPhase("menu"); gameRef.current = null; }}
+                  onClick={handleReturnToMenu}
                   className="px-6 py-3.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-sm rounded-full transition-all cursor-pointer"
                 >
                   ГЛАВНОЕ МЕНЮ
@@ -683,6 +777,7 @@ export default function App() {
             </div>
           </div>
         )}
+        </div>
       </div>
     </div>
   );

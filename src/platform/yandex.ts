@@ -15,6 +15,7 @@ type YandexPlayer = {
 };
 
 type YandexSDK = {
+  environment?: { i18n?: { lang?: string; tld?: string } };
   features?: { LoadingAPI?: { ready: () => void }; GameplayAPI?: { start: () => void; stop: () => void } };
   adv?: {
     showFullscreenAdv: (options: { callbacks: AdCallbacks }) => void;
@@ -36,6 +37,7 @@ class YandexPlatform {
   private initPromise: Promise<void> | null = null;
   private playing = false;
   private lastInterstitial = 0;
+  private language = "ru";
 
   init(): Promise<void> {
     if (this.initPromise) return this.initPromise;
@@ -43,6 +45,12 @@ class YandexPlatform {
       try {
         if (!window.YaGames) return;
         this.sdk = await window.YaGames.init();
+        // The current release has one moderated locale: Russian. We still take the
+        // requested locale from the SDK and apply a documented Russian fallback.
+        const supportedLanguages = ["ru"];
+        const requestedLanguage = this.sdk.environment?.i18n?.lang?.toLowerCase().split("-")[0];
+        this.language = supportedLanguages.find(language => language === requestedLanguage) ?? supportedLanguages[0];
+        document.documentElement.lang = this.language;
         try { this.player = await this.sdk.getPlayer?.({ scopes: false }) ?? null; } catch { /* guest mode */ }
         if (this.playing) {
           try { this.sdk.features?.GameplayAPI?.start(); } catch { /* older SDK */ }
@@ -59,6 +67,10 @@ class YandexPlatform {
 
   isAvailable() {
     return Boolean(this.sdk?.adv);
+  }
+
+  getLanguage() {
+    return this.language;
   }
 
   setGameplay(active: boolean) {

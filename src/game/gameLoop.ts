@@ -10,7 +10,7 @@ import { audio } from "./audio";
 import { applyShipClassStats } from "./shipClasses";
 
 export const W = 960;
-export const H = 540;
+export const H = 720;
 let _id = 100000;
 export const uid = () => ++_id;
 

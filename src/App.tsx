@@ -50,7 +50,7 @@ export default function App() {
   const keysRef    = useRef<Set<string>>(new Set());
   const [gameScale, setGameScale] = useState(1);
 
-  // Scale the complete 960×640 playfield uniformly. Canvas coordinates, touch input
+  // Scale the complete 960×540 (16:9) playfield uniformly. Canvas coordinates, touch input
   // and every overlay stay aligned on phones, tablets and catalogue iframes.
   useEffect(() => {
     const resize = () => {

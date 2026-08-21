@@ -63,7 +63,8 @@ export function makeInitialPlayer(shipClass: ShipClassId = "interceptor"): Playe
     explosiveBullets: false, explosionRadius: 60,
     ricochet: false, ricochetCount: 1,
     mineCount: 0, mineTimer: 0,
-    timeSlow: false, timeSlowTimer: 0, timeSlowCooldown: 0,
+    // Chrono-slow is a core ability advertised in the controls, not a hidden upgrade.
+    timeSlow: true, timeSlowTimer: 0, timeSlowCooldown: 0,
     critChance: 0.05, critMultiplier: 2,
     lifeSteal: 0,
     burnChance: 0, freezeChance: 0, poisonChance: 0,
@@ -218,7 +219,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   const isDashing = player.dashTimer > 0;
   const dashSpeedMult = isDashing ? 2.4 : 1.0;
 
-  if ((keys.has("Shift") || keys.has("f") || keys.has("F")) && player.dashCooldown <= 0) {
+  if ((keys.has("ShiftLeft") || keys.has("ShiftRight") || keys.has("Shift")) && player.dashCooldown <= 0) {
     player.dashCooldown = 150; // 2.5s cooldown
     player.dashTimer = 16;
     player.invincTimer = Math.max(player.invincTimer, 20);
@@ -227,11 +228,13 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   }
 
   // ─── Player movement ───────────────────────────────────────────────────────
-  const spd = player.speed * dashSpeedMult * timeScale;
-  if ((keys.has("ArrowLeft")  || keys.has("a") || keys.has("A")) && player.pos.x > 25) player.pos.x -= spd;
-  if ((keys.has("ArrowRight") || keys.has("d") || keys.has("D")) && player.pos.x < W - 25) player.pos.x += spd;
-  if ((keys.has("ArrowUp")    || keys.has("w") || keys.has("W")) && player.pos.y > 60)   player.pos.y -= spd;
-  if ((keys.has("ArrowDown")  || keys.has("s") || keys.has("S")) && player.pos.y < H - 32) player.pos.y += spd;
+  // Physical KeyW/A/S/D codes make movement independent from keyboard layout.
+  // The chrono ability slows the world, not the player's own ship.
+  const spd = player.speed * dashSpeedMult;
+  if ((keys.has("ArrowLeft")  || keys.has("KeyA")) && player.pos.x > 25) player.pos.x -= spd;
+  if ((keys.has("ArrowRight") || keys.has("KeyD")) && player.pos.x < W - 25) player.pos.x += spd;
+  if ((keys.has("ArrowUp")    || keys.has("KeyW")) && player.pos.y > 60) player.pos.y -= spd;
+  if ((keys.has("ArrowDown")  || keys.has("KeyS")) && player.pos.y < H - 32) player.pos.y += spd;
 
   player.pos.x = Math.max(25, Math.min(W - 25, player.pos.x));
   player.pos.y = Math.max(60, Math.min(H - 32, player.pos.y));

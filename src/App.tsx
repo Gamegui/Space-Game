@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import type { PlayerState, UpgradeDef, GamePhase, ShipClassId, Enemy } from "./game/types";
 import type { GameObjects } from "./game/gameLoop";
 import { stepGame, makeStars, makeInitialPlayer, W, H, uid } from "./game/gameLoop";
-import { rollUpgrades, applyUpgrade } from "./game/upgrades";
+import { rollUpgrades, applyUpgrade, getUpgradeLevel } from "./game/upgrades";
 import { getWaveComposition, isBossWave, spawnBoss, getBossName } from "./game/enemies";
 import { SHIP_CLASSES } from "./game/shipClasses";
 import { audio } from "./game/audio";
@@ -263,8 +263,9 @@ export default function App() {
     if (!g || !g.player.timeSlow) return;
     if (g.player.timeSlowCooldown > 0 || g.player.timeSlowTimer > 0) return;
     audio.playTimeSlow();
-    g.player.timeSlowTimer = 300;
-    g.player.timeSlowCooldown = g.player.timeSlowCooldown || 500;
+    const chronoLevel = getUpgradeLevel(g.player, "time_slow");
+    g.player.timeSlowTimer = 300 + chronoLevel * 120;
+    g.player.timeSlowCooldown = Math.max(300, 600 - chronoLevel * 90);
     timeSlowRef.current = true;
     setTimeSlow(true);
   }, []);
@@ -303,20 +304,28 @@ export default function App() {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       audio.resume();
+      // `code` identifies the physical key and therefore works with English,
+      // Russian and every other keyboard layout. Keep `key` for arrows/legacy.
+      keysRef.current.add(e.code);
       keysRef.current.add(e.key);
-      if (e.key === "Escape") {
+      if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(e.code)) e.preventDefault();
+
+      if (!e.repeat && e.code === "Escape") {
         if (phaseRef.current === "playing") { phaseRef.current = "paused"; setPhase("paused"); }
         else if (phaseRef.current === "paused") { phaseRef.current = "playing"; setPhase("playing"); }
       }
-      if (e.key === "m" || e.key === "M" || e.key === "ь" || e.key === "Ь") handleToggleSound();
-      if (!e.repeat && (e.key === "x" || e.key === "X" || e.key === "ч" || e.key === "Ч")) handleNuke();
-      if (!e.repeat && (e.key === "c" || e.key === "C" || e.key === "с" || e.key === "С")) handleTimeSlow();
-      if ((e.key === " " || e.key === "Enter") && phaseRef.current === "menu") {
+      if (!e.repeat && e.code === "KeyM") handleToggleSound();
+      if (!e.repeat && e.code === "KeyX") handleNuke();
+      if (!e.repeat && e.code === "KeyC") handleTimeSlow();
+      if (!e.repeat && (e.code === "Space" || e.code === "Enter") && phaseRef.current === "menu") {
         phaseRef.current = "ship_select";
         setPhase("ship_select");
       }
     };
-    const onKeyUp = (e: KeyboardEvent) => keysRef.current.delete(e.key);
+    const onKeyUp = (e: KeyboardEvent) => {
+      keysRef.current.delete(e.code);
+      keysRef.current.delete(e.key);
+    };
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     return () => { window.removeEventListener("keydown", onKeyDown); window.removeEventListener("keyup", onKeyUp); };
@@ -611,7 +620,7 @@ export default function App() {
               <h1 className="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-sky-300 via-blue-400 to-indigo-400 tracking-tight mb-1">
                 SPACE SHOOTER ULTRA
               </h1>
-              <p className="text-blue-300/80 font-mono text-xs tracking-widest mb-6">КОСМИЧЕСКИЙ РОГАЛИК · СИНТЕЗАТОР ЗВУКА · 100+ УЛУЧШЕНИЙ</p>
+              <p className="text-blue-300/80 font-mono text-xs tracking-widest mb-6">КОСМИЧЕСКИЙ РОГАЛИК · СИНТЕЗАТОР ЗВУКА · 80+ УЛУЧШЕНИЙ</p>
 
               <div className="grid grid-cols-2 gap-3 text-xs mb-5 font-mono">
                 <div className="bg-slate-900/80 rounded-xl p-3 border border-slate-700 text-left">

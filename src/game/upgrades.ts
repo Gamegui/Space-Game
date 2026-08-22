@@ -333,8 +333,9 @@ export function canUpgrade(state: PlayerState, def: UpgradeDef): boolean {
   return lvl < def.maxLevel && state.level >= rarityLevelGate[def.rarity];
 }
 
-export function rollUpgrades(state: PlayerState, count = 3): UpgradeDef[] {
-  const available = ALL_UPGRADES.filter(u => canUpgrade(state, u));
+export function rollUpgrades(state: PlayerState, count = 3, excludeIds: string[] = []): UpgradeDef[] {
+  const excluded = new Set(excludeIds);
+  const available = ALL_UPGRADES.filter(u => canUpgrade(state, u) && !excluded.has(u.id));
   if (available.length === 0) return [];
 
   const weighted: UpgradeDef[] = [];
@@ -360,6 +361,18 @@ export function rollUpgrades(state: PlayerState, count = 3): UpgradeDef[] {
     }
   }
   return picked;
+}
+
+export function rollHighRarityUpgrade(state: PlayerState, excludeIds: string[] = []): UpgradeDef | null {
+  const excluded = new Set(excludeIds);
+  const available = ALL_UPGRADES.filter(upgrade =>
+    (upgrade.rarity === "epic" || upgrade.rarity === "legendary")
+    && canUpgrade(state, upgrade)
+    && !excluded.has(upgrade.id)
+  );
+  if (available.length === 0) return null;
+  const weighted = available.flatMap(upgrade => Array(upgrade.rarity === "epic" ? 4 : 1).fill(upgrade) as UpgradeDef[]);
+  return weighted[Math.floor(Math.random() * weighted.length)];
 }
 
 export function applyUpgrade(state: PlayerState, def: UpgradeDef): PlayerState {

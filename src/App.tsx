@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import type { PlayerState, UpgradeDef, GamePhase, ShipClassId, Enemy } from "./game/types";
 import type { GameObjects } from "./game/gameLoop";
 import { stepGame, makeStars, makeInitialPlayer, getNextLevelXp, W, H, uid } from "./game/gameLoop";
-import { ALL_UPGRADES, rollUpgrades, applyUpgrade, getUpgradeLevel, getAdaptiveDifficulty } from "./game/upgrades";
+import { ALL_UPGRADES, rollUpgrades, rollHighRarityUpgrade, applyUpgrade, getUpgradeLevel, getAdaptiveDifficulty } from "./game/upgrades";
 import { getWaveComposition, isBossWave, spawnBoss, getBossName } from "./game/enemies";
 import { SHIP_CLASSES } from "./game/shipClasses";
 import { audio } from "./game/audio";
@@ -114,6 +114,9 @@ export default function App() {
   const [adminOpen, setAdminOpen] = useState(true);
   const [adminGod, setAdminGod] = useState(false);
   const [synergyNotice, setSynergyNotice] = useState<string | null>(null);
+  const [rerollsLeft, setRerollsLeft] = useState(3);
+  const [upgradeAdPending, setUpgradeAdPending] = useState(false);
+  const [bonusChoiceUsed, setBonusChoiceUsed] = useState(false);
   const adminEnabled = import.meta.env.DEV && import.meta.env.VITE_ADMIN === "true";
 
   // Yandex Games lifecycle, cloud record and automatic pause when the tab is hidden.
@@ -191,6 +194,9 @@ export default function App() {
     setTimeSlow(false);
     setReviveUsed(false);
     setAdPending(false);
+    setRerollsLeft(3);
+    setUpgradeAdPending(false);
+    setBonusChoiceUsed(false);
     setWaveNotice(null);
     syncUI();
   }, [premiumUnlocked, selectedClass, syncUI]);
@@ -281,6 +287,7 @@ export default function App() {
       const choices = rollUpgrades(player, 3);
       upgradeChoicesRef.current = choices;
       setUpgradeChoices(choices);
+      setBonusChoiceUsed(false);
       phaseRef.current = "upgrade";
       setPhase("upgrade");
     }
@@ -302,11 +309,57 @@ export default function App() {
       const choices = rollUpgrades(g.player, 3);
       upgradeChoicesRef.current = choices;
       setUpgradeChoices(choices);
+      setBonusChoiceUsed(false);
     } else {
       phaseRef.current = "playing";
       setPhase("playing");
     }
   }, []);
+
+  const rerollUpgradeChoices = useCallback(() => {
+    const g = gameRef.current;
+    if (!g) return;
+    const previousIds = upgradeChoicesRef.current.map(choice => choice.id);
+    const choices = rollUpgrades(g.player, 3, previousIds);
+    if (choices.length === 0) return;
+    upgradeChoicesRef.current = choices;
+    setUpgradeChoices(choices);
+    audio.playPowerup();
+  }, []);
+
+  const handleFreeReroll = useCallback(() => {
+    if (rerollsLeft <= 0 || upgradeAdPending) return;
+    setRerollsLeft(value => value - 1);
+    rerollUpgradeChoices();
+  }, [rerollUpgradeChoices, rerollsLeft, upgradeAdPending]);
+
+  const handleAdReroll = useCallback(async () => {
+    if (upgradeAdPending) return;
+    if (adminEnabled) { rerollUpgradeChoices(); return; }
+    setUpgradeAdPending(true);
+    const rewarded = await yandex.showRewarded(() => audio.suspend(), () => audio.resume());
+    setUpgradeAdPending(false);
+    if (rewarded) rerollUpgradeChoices();
+  }, [adminEnabled, rerollUpgradeChoices, upgradeAdPending]);
+
+  const handleAdBonusChoice = useCallback(async () => {
+    const g = gameRef.current;
+    if (!g || bonusChoiceUsed || upgradeAdPending || g.player.level < 7) return;
+    let rewarded = adminEnabled;
+    if (!adminEnabled) {
+      setUpgradeAdPending(true);
+      rewarded = await yandex.showRewarded(() => audio.suspend(), () => audio.resume());
+      setUpgradeAdPending(false);
+    }
+    if (!rewarded || !gameRef.current) return;
+    const bonus = rollHighRarityUpgrade(gameRef.current.player, upgradeChoicesRef.current.map(choice => choice.id));
+    if (!bonus) return;
+    const choices = [...upgradeChoicesRef.current, bonus];
+    upgradeChoicesRef.current = choices;
+    setUpgradeChoices(choices);
+    setBonusChoiceUsed(true);
+    audio.playPowerup();
+  }, [adminEnabled, bonusChoiceUsed, upgradeAdPending]);
 
   // ─── Nuke ────────────────────────────────────────────────────────────────
   const handleNuke = useCallback(() => {
@@ -780,6 +833,13 @@ export default function App() {
             player={gameRef.current.player}
             onChoose={handleChooseUpgrade}
             level={playerLevel}
+            rerollsLeft={rerollsLeft}
+            adAvailable={adsAvailable || adminEnabled}
+            adPending={upgradeAdPending}
+            bonusChoiceUsed={bonusChoiceUsed}
+            onReroll={handleFreeReroll}
+            onAdReroll={handleAdReroll}
+            onAdBonusChoice={handleAdBonusChoice}
           />
         )}
 

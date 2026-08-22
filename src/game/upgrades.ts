@@ -274,12 +274,53 @@ export const ALL_UPGRADES: UpgradeDef[] = [
   { id: "hyperdrive", name: "Гипердвигатель", icon: "💫", rarity: "epic", category: "защита", maxLevel: 2, description: "+20% скорости и периодическая фазовая защита", apply: (s, _l) => { s.speed *= 1.2; s.ghostMode = true; } },
   { id: "omnidirectional", name: "Круговая батарея", icon: "🔄", rarity: "epic", category: "атака", maxLevel: 2, description: "+6 снарядов с круговым разбросом", apply: (s, _l) => { s.multishot += 6; s.spreadAngle = 360; } },
   { id: "power_surge", name: "Энергетический всплеск", icon: "🌩️", rarity: "epic", category: "атака", maxLevel: 2, description: "+15% урона и +10% скорострельности", apply: (s, _l) => { s.bulletDamage *= 1.15; s.fireRate *= 0.9; } },
+  // ═══ СИНЕРГИИ ПОЗДНЕЙ ИГРЫ ═══
+  { id: "adaptive_armor", name: "Адаптивная броня", icon: "🧬", rarity: "rare", category: "защита", maxLevel: 3, description: "+20 HP и +15 к ёмкости щита", apply: (s, _l) => { s.maxHp += 20; s.hp += 20; if (s.shield) { s.shield.maxHp += 15; s.shield.hp += 15; } } },
+  { id: "drone_link", name: "Нейросвязь дронов", icon: "🔗", rarity: "rare", category: "спутники", maxLevel: 3, description: "Повышает уровень всех дронов и спутников", apply: (s, _l) => { s.drones.forEach(d => d.level++); s.satellites.forEach(sat => sat.level++); } },
+  { id: "singularity_rounds", name: "Сингулярные снаряды", icon: "🌌", rarity: "epic", category: "особое", maxLevel: 2, description: "Самонаведение, взрывы и увеличенный радиус поражения", apply: (s, _l) => { s.homing = true; s.explosiveBullets = true; s.explosionRadius += 25; } },
+  { id: "phase_ammo", name: "Фазовые боеприпасы", icon: "👁️", rarity: "epic", category: "стихии", maxLevel: 2, description: "+2 пробития и +20% шанс заморозки", apply: (s, _l) => { s.piercing += 2; s.freezeChance += 0.2; } },
+  { id: "overdrive_reactor", name: "Реактор перегрузки", icon: "🔋", rarity: "rare", category: "атака", maxLevel: 3, description: "+12% урона и скорострельности", apply: (s, _l) => { s.bulletDamage *= 1.12; s.fireRate *= 0.88; } },
+  { id: "collector_core", name: "Ядро сборщика", icon: "🧲", rarity: "common", category: "утилиты", maxLevel: 4, description: "Быстрее притягивает опыт и повышает множитель очков", apply: (s, _l) => { s.magnetRange += 45; s.goldMultiplier += 0.15; } },
+  { id: "guardian_protocol", name: "Протокол хранителя", icon: "💎", rarity: "epic", category: "защита", maxLevel: 2, description: "Усиливает регенерацию корпуса и щита", apply: (s, _l) => { s.regenRate += 0.5; if (s.shield) { s.shield.maxHp += 35; s.shield.hp += 35; } } },
+  { id: "hunter_protocol", name: "Протокол охотника", icon: "🦅", rarity: "rare", category: "атака", maxLevel: 3, description: "Самонаведение и +12% критического шанса", apply: (s, _l) => { s.homing = true; s.homingStrength += 0.025; s.critChance += 0.12; } },
+  { id: "void_arsenal", name: "Арсенал Бездны", icon: "🌑", rarity: "legendary", category: "особое", maxLevel: 1, description: "Мощная комбинация пробития, молний и фазовой защиты", apply: (s, _l) => { s.piercing += 3; s.lightningChance += 0.2; s.lightningChain += 2; s.ghostMode = true; } },
   {
     id: "stellar_core", name: "Звёздное ядро", icon: "🌟", rarity: "legendary", category: "атака", maxLevel: 1,
     description: "Абсолютная мощь: +100% ко всему наносимому урону",
     apply: (s, _l) => { s.bulletDamage *= 2; s.auraDamage *= 2; },
   },
 ];
+
+export function calculatePlayerPower(state: PlayerState): number {
+  const rarityPoints = { common: 1, rare: 2.5, epic: 5, legendary: 9 } as const;
+  let upgradePoints = 0;
+  for (const owned of state.upgrades) {
+    const definition = ALL_UPGRADES.find(upgrade => upgrade.id === owned.id);
+    if (definition) upgradePoints += owned.level * rarityPoints[definition.rarity];
+  }
+
+  // Effective stats account for powerful combinations, not just card count.
+  const offense = state.bulletDamage * 3.5
+    + state.multishot * 2.2
+    + Math.max(0, 12 - state.fireRate) * 1.8
+    + state.piercing * 1.4
+    + state.critChance * state.critMultiplier * 10
+    + state.satellites.length * 3
+    + state.drones.length * 3.5;
+  const defense = state.maxHp / 25
+    + (state.shield?.maxHp ?? 0) / 20
+    + state.regenRate * 5
+    + state.lifeSteal * 60;
+  return Math.max(1, Math.round(upgradePoints + offense + defense));
+}
+
+export function getAdaptiveDifficulty(state: PlayerState, wave: number): { power: number; scale: number } {
+  const power = calculatePlayerPower(state);
+  if (wave <= 25) return { power, scale: 1 };
+  const expectedPower = 58 + (wave - 25) * 2.2;
+  const excessPower = Math.max(0, power - expectedPower);
+  return { power, scale: 1 + Math.min(1.6, excessPower / 85) };
+}
 
 export function getUpgradeLevel(state: PlayerState, id: string): number {
   const u = state.upgrades.find(u => u.id === id);

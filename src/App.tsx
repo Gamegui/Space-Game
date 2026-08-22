@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import type { PlayerState, UpgradeDef, GamePhase, ShipClassId, Enemy } from "./game/types";
 import type { GameObjects } from "./game/gameLoop";
 import { stepGame, makeStars, makeInitialPlayer, getNextLevelXp, W, H, uid } from "./game/gameLoop";
-import { ALL_UPGRADES, rollUpgrades, applyUpgrade, getUpgradeLevel } from "./game/upgrades";
+import { ALL_UPGRADES, rollUpgrades, applyUpgrade, getUpgradeLevel, getAdaptiveDifficulty } from "./game/upgrades";
 import { getWaveComposition, isBossWave, spawnBoss, getBossName } from "./game/enemies";
 import { SHIP_CLASSES } from "./game/shipClasses";
 import { audio } from "./game/audio";
@@ -39,6 +39,8 @@ function makeInitialObjects(player: PlayerState): GameObjects {
     boss: null,
     waveTimer: 0,
     screenShake: 0,
+    powerRating: 0,
+    adaptiveDifficulty: 1,
   };
 }
 
@@ -159,6 +161,9 @@ export default function App() {
 
     const player = makeInitialPlayer(shipClass);
     const objects = makeInitialObjects(player);
+    const initialDifficulty = getAdaptiveDifficulty(player, 1);
+    objects.powerRating = initialDifficulty.power;
+    objects.adaptiveDifficulty = initialDifficulty.scale;
     gameRef.current = objects;
     waveRef.current = 1;
     timeSlowRef.current = false;
@@ -190,6 +195,9 @@ export default function App() {
     setWave(newWave);
     g.bossActive = false;
     g.boss = null;
+    const adaptive = getAdaptiveDifficulty(g.player, newWave);
+    g.powerRating = adaptive.power;
+    g.adaptiveDifficulty = adaptive.scale;
 
     // A modest recovery keeps attrition meaningful in long runs.
     const recovery = newWave <= 10 ? 15 : 8;
@@ -203,7 +211,7 @@ export default function App() {
 
     if (isBossWave(newWave)) {
       audio.playBossWarning();
-      const boss = spawnBoss(newWave);
+      const boss = spawnBoss(newWave, g.adaptiveDifficulty);
       g.enemies = [boss];
       g.boss = boss;
       g.bossActive = true;
@@ -216,10 +224,18 @@ export default function App() {
       setPhase("boss_intro");
       bossIntroTimerRef.current = 180;
     } else {
-      const composition = getWaveComposition(newWave);
+      const composition = getWaveComposition(newWave, g.powerRating);
       g.waveEnemyQueue = composition.map(c => ({ ...c }));
       g.waveSpawnTimer = 50;
       setBossActive(false);
+      const newThreats: Record<number, string> = {
+        26: "НОВАЯ УГРОЗА: СТРАЖИ ЗАЩИЩАЮТ СОЮЗНИКОВ",
+        31: "НОВАЯ УГРОЗА: ФАНТОМЫ УХОДЯТ В ФАЗУ",
+        36: "НОВАЯ УГРОЗА: ПОЖИРАТЕЛИ КРАДУТ ЭНЕРГИЮ",
+        41: "НОВАЯ УГРОЗА: НОСИТЕЛИ ВЫПУСКАЮТ ЭСКОРТ",
+        46: "НОВАЯ УГРОЗА: СИНГУЛЯРНОСТИ ИСКАЖАЮТ ПОЛЕ",
+      };
+      if (newThreats[newWave]) setWaveNotice(newThreats[newWave]);
     }
   }, []);
 
@@ -563,9 +579,12 @@ export default function App() {
     g.boss = null;
     g.bossActive = false;
     waveTransitioningRef.current = false;
+    const adaptive = getAdaptiveDifficulty(g.player, targetWave);
+    g.powerRating = adaptive.power;
+    g.adaptiveDifficulty = adaptive.scale;
 
     if (isBossWave(targetWave)) {
-      const boss = spawnBoss(targetWave);
+      const boss = spawnBoss(targetWave, g.adaptiveDifficulty);
       g.enemies.push(boss);
       g.boss = boss;
       g.bossActive = true;
@@ -573,7 +592,7 @@ export default function App() {
       setBossActive(true);
       setBossHpPct(1);
     } else {
-      g.waveEnemyQueue = getWaveComposition(targetWave).map(item => ({ ...item }));
+      g.waveEnemyQueue = getWaveComposition(targetWave, g.powerRating).map(item => ({ ...item }));
       g.waveSpawnTimer = 1;
       setBossActive(false);
     }
@@ -656,6 +675,9 @@ export default function App() {
                   <button onClick={() => startGame(selectedClass)} className="admin-button bg-emerald-700">БЫСТРЫЙ СТАРТ</button>
                 ) : (
                   <>
+                    <div className="mb-2 rounded bg-slate-900 p-2 text-[10px] text-cyan-300">
+                      СИЛА: {gameRef.current.powerRating} · ×{gameRef.current.adaptiveDifficulty.toFixed(2)}
+                    </div>
                     <button onClick={adminToggleGod} className={`admin-button ${adminGod ? "bg-emerald-700" : "bg-slate-700"}`}>
                       БЕССМЕРТИЕ: {adminGod ? "ВКЛ" : "ВЫКЛ"}
                     </button>
@@ -663,7 +685,7 @@ export default function App() {
                     <button onClick={adminGiveLegendary} className="admin-button bg-amber-700">+ СЛУЧАЙНОЕ ЛЕГЕНД.</button>
                     <button onClick={() => { const g = gameRef.current; if (g) g.bullets = g.bullets.filter(b => b.fromPlayer); }} className="admin-button bg-cyan-800">ОЧИСТИТЬ ПУЛИ</button>
                     <div className="mt-2 grid grid-cols-3 gap-1">
-                      {[5, 10, 15, 16, 20, 25].map(target => (
+                      {[25, 26, 30, 31, 40, 50, 60].map(target => (
                         <button key={target} onClick={() => adminSetWave(target)} className="rounded bg-rose-900 px-1 py-1.5 font-bold hover:bg-rose-700 cursor-pointer">
                           В{target}
                         </button>
@@ -751,7 +773,7 @@ export default function App() {
               <h1 className="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-sky-300 via-blue-400 to-indigo-400 tracking-tight mb-1">
                 SPACE SHOOTER ULTRA
               </h1>
-              <p className="text-blue-300/80 font-mono text-xs tracking-widest mb-6">КОСМИЧЕСКИЙ РОГАЛИК · СИНТЕЗАТОР ЗВУКА · 80+ УЛУЧШЕНИЙ</p>
+              <p className="text-blue-300/80 font-mono text-xs tracking-widest mb-6">КОСМИЧЕСКИЙ РОГАЛИК · СИНТЕЗАТОР ЗВУКА · 90 УЛУЧШЕНИЙ</p>
 
               <div className="grid grid-cols-2 gap-3 text-xs mb-5 font-mono">
                 <div className="bg-slate-900/80 rounded-xl p-3 border border-slate-700 text-left">

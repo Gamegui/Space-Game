@@ -65,11 +65,12 @@ export function getBossType(wave: number): EnemyType {
   return bosses[Math.min(bossWaveIndex - 1, bosses.length - 1)];
 }
 
-export function getEnemyDef(type: EnemyType, wave: number): EnemyDef {
+export function getEnemyDef(type: EnemyType, wave: number, adaptiveScale = 1): EnemyDef {
   // Builds grow multiplicatively, so late enemies need an accelerating curve.
-  // Early waves remain approachable; after wave 15 pressure rises noticeably.
+  // After wave 25 the hidden build rating adds HP without flooding the screen.
   const lateGame = Math.max(0, wave - 12);
-  const scale = 1 + (wave - 1) * 0.09 + Math.pow(lateGame, 1.3) * 0.035;
+  const baseScale = 1 + (wave - 1) * 0.09 + Math.pow(lateGame, 1.3) * 0.035;
+  const scale = baseScale * adaptiveScale;
 
   switch (type) {
     case "scout":
@@ -96,6 +97,16 @@ export function getEnemyDef(type: EnemyType, wave: number): EnemyDef {
       return { type, hp: 9.0 * scale, speed: 0.85, shootInterval: 100, movePattern: "hover", xp: 28, isBoss: false, shieldHp: 0, drops: true };
     case "artillery":
       return { type, hp: 14.0 * scale, speed: 0.45, shootInterval: 80, movePattern: "hover", xp: 32, isBoss: false, shieldHp: 0, drops: true };
+    case "warden":
+      return { type, hp: 34 * scale, speed: 0.55, shootInterval: 105, movePattern: "hover", xp: 55, isBoss: false, shieldHp: 28 * adaptiveScale, drops: true };
+    case "phantom":
+      return { type, hp: 22 * scale, speed: 1.45, shootInterval: 82, movePattern: "sine", xp: 62, isBoss: false, shieldHp: 0, drops: true };
+    case "leecher":
+      return { type, hp: 38 * scale, speed: 1.35, shootInterval: 75, movePattern: "dive", xp: 72, isBoss: false, shieldHp: 8 * adaptiveScale, drops: true };
+    case "carrier":
+      return { type, hp: 70 * scale, speed: 0.42, shootInterval: 95, movePattern: "patrol", xp: 95, isBoss: false, shieldHp: 20 * adaptiveScale, drops: true };
+    case "singularity":
+      return { type, hp: 90 * scale, speed: 0.5, shootInterval: 68, movePattern: "circle", xp: 125, isBoss: false, shieldHp: 35 * adaptiveScale, drops: true };
 
     case "boss_destroyer":
       return { type, hp: 240 * scale, speed: 0.7, shootInterval: 42, movePattern: "hover", xp: 250, isBoss: true, shieldHp: 40, drops: true };
@@ -114,8 +125,8 @@ export function getEnemyDef(type: EnemyType, wave: number): EnemyDef {
   }
 }
 
-export function spawnEnemy(type: EnemyType, wave: number): Enemy {
-  const def = getEnemyDef(type, wave);
+export function spawnEnemy(type: EnemyType, wave: number, adaptiveScale = 1): Enemy {
+  const def = getEnemyDef(type, wave, adaptiveScale);
   const size = getEnemySize(type);
   const minX = size + 40;
   const maxX = W - size - 40;
@@ -161,9 +172,9 @@ export function spawnEnemy(type: EnemyType, wave: number): Enemy {
   };
 }
 
-export function spawnBoss(wave: number): Enemy {
+export function spawnBoss(wave: number, adaptiveScale = 1): Enemy {
   const type = getBossType(wave);
-  const e = spawnEnemy(type, wave);
+  const e = spawnEnemy(type, wave, adaptiveScale);
   e.pos = { x: W / 2, y: -120 };
   e.targetY = 140;
   e.centerX = W / 2;
@@ -171,7 +182,17 @@ export function spawnBoss(wave: number): Enemy {
   return e;
 }
 
-export function getWaveComposition(wave: number): { type: EnemyType; count: number }[] {
+function getUnlockedSpecialEnemies(wave: number): EnemyType[] {
+  const unlocked: EnemyType[] = [];
+  if (wave >= 26) unlocked.push("warden");
+  if (wave >= 31) unlocked.push("phantom");
+  if (wave >= 36) unlocked.push("leecher");
+  if (wave >= 41) unlocked.push("carrier");
+  if (wave >= 46) unlocked.push("singularity");
+  return unlocked;
+}
+
+export function getWaveComposition(wave: number, playerPower = 0): { type: EnemyType; count: number }[] {
   if (isBossWave(wave)) return [];
 
   if (wave === 1) return [{ type: "scout", count: 10 }];
@@ -185,21 +206,30 @@ export function getWaveComposition(wave: number): { type: EnemyType; count: numb
 
   // Defensive filter: a malformed late-wave pool can never mass-spawn bosses.
   const types = getWaveEnemyTypes(wave).filter(type => !type.startsWith("boss_"));
-  const baseCount = Math.min(48, 10 + Math.floor(wave * 2.2));
+  const specialTypes = getUnlockedSpecialEnemies(wave);
+  const specialCount = specialTypes.length * 2;
+  const powerExtra = wave > 25 ? Math.min(10, Math.floor(Math.max(0, playerPower - 65) / 28)) : 0;
+
+  // Before wave 50 difficulty comes from quality and stats, not a crowded screen.
+  // After 50 density is allowed to rise gradually, still under engine budgets.
+  const densityCap = wave < 50 ? 48 : Math.min(78, 52 + Math.floor((wave - 50) * 1.3));
+  const desiredCount = 10 + Math.floor(wave * 1.65) + powerExtra;
+  const regularCount = Math.max(12, Math.min(densityCap - specialCount, desiredCount - specialCount));
   const result: { type: EnemyType; count: number }[] = [];
 
   const leadType = types[0] || "scout";
-  const leadCount = Math.max(4, Math.floor(baseCount * 0.35));
+  const leadCount = Math.max(4, Math.floor(regularCount * 0.35));
   result.push({ type: leadType, count: leadCount });
 
   const extras = types.slice(1);
   if (extras.length > 0) {
-    const remaining = baseCount - leadCount;
+    const remaining = regularCount - leadCount;
     const perType = Math.max(2, Math.floor(remaining / Math.min(extras.length, 4)));
     for (let i = 0; i < extras.length && i < 4; i++) {
       result.push({ type: extras[i], count: perType });
     }
   }
+  for (const specialType of specialTypes) result.push({ type: specialType, count: 2 });
 
   return result;
 }
@@ -218,6 +248,11 @@ export function getEnemyColors(type: EnemyType): [string, string, string] {
     case "charger":    return ["#f97316", "#ea580c", "#fb923c"];
     case "healer":     return ["#4ade80", "#22c55e", "#86efac"];
     case "artillery":  return ["#38bdf8", "#0ea5e9", "#7dd3fc"];
+    case "warden":     return ["#22d3ee", "#0891b2", "#a5f3fc"];
+    case "phantom":    return ["#d8b4fe", "#9333ea", "#f3e8ff"];
+    case "leecher":    return ["#fb7185", "#be123c", "#fecdd3"];
+    case "carrier":    return ["#fb923c", "#c2410c", "#fed7aa"];
+    case "singularity":return ["#818cf8", "#4338ca", "#c7d2fe"];
     case "boss_destroyer":  return ["#ef4444", "#b91c1c", "#fca5a5"];
     case "boss_mothership": return ["#8b5cf6", "#7c3aed", "#c4b5fd"];
     case "boss_dreadnought":return ["#f59e0b", "#d97706", "#fde68a"];
@@ -235,6 +270,11 @@ export function getEnemySize(type: EnemyType): number {
     case "charger": return 26;
     case "healer": return 22;
     case "artillery": return 24;
+    case "warden": return 30;
+    case "phantom": return 23;
+    case "leecher": return 27;
+    case "carrier": return 38;
+    case "singularity": return 34;
     case "boss_destroyer": return 52;
     case "boss_mothership": return 65;
     case "boss_dreadnought": return 70;

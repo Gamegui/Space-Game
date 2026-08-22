@@ -80,6 +80,7 @@ export interface Enemy {
 export type EnemyType =
   | "scout" | "fighter" | "bomber" | "sniper" | "splitter" | "tank"
   | "stealth" | "healer" | "charger" | "spinner" | "kamikaze" | "artillery"
+  | "warden" | "phantom" | "leecher" | "carrier" | "singularity"
   | "boss_destroyer" | "boss_mothership" | "boss_dreadnought"
   | "boss_eclipse" | "boss_titan" | "boss_omega";
 

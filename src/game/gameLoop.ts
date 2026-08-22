@@ -169,6 +169,8 @@ export interface GameObjects {
   boss: Enemy | null;
   waveTimer: number;
   screenShake: number;
+  powerRating: number;
+  adaptiveDifficulty: number;
 }
 
 export interface StepInput {
@@ -495,7 +497,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   obj.waveSpawnTimer = Math.max(0, obj.waveSpawnTimer - 1);
   if (obj.waveEnemyQueue.length > 0 && obj.waveSpawnTimer <= 0) {
     const next = obj.waveEnemyQueue[0];
-    enemies.push(spawnEnemy(next.type, wave));
+    enemies.push(spawnEnemy(next.type, wave, obj.adaptiveDifficulty));
     next.count--;
     if (next.count <= 0) obj.waveEnemyQueue.shift();
     obj.waveSpawnTimer = Math.max(20, 50 - wave * 2);
@@ -527,6 +529,29 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         hurtAlly.hp = Math.min(hurtAlly.maxHp, hurtAlly.hp + 4);
         particles.push(...makeBurst(hurtAlly.pos, "#4ade80", 4));
         lightnings.push({ id: uid(), from: { ...e.pos }, to: { ...hurtAlly.pos }, life: 10 });
+      }
+    }
+
+    // Warden periodically reinforces nearby allies with temporary shielding.
+    if (e.type === "warden" && frame % 150 === 0) {
+      for (const ally of enemies) {
+        const dx = ally.pos.x - e.pos.x, dy = ally.pos.y - e.pos.y;
+        if (ally.id !== e.id && dx * dx + dy * dy < 190 * 190) {
+          ally.maxShieldHp = Math.max(ally.maxShieldHp, 18);
+          ally.shieldHp = Math.min(ally.maxShieldHp, ally.shieldHp + 12);
+          lightnings.push({ id: uid(), from: { ...e.pos }, to: { ...ally.pos }, life: 12 });
+        }
+      }
+    }
+
+    // Singularity units gently pull the player out of safe positions.
+    if (e.type === "singularity" && e.pos.y >= targetY) {
+      const dx = e.pos.x - player.pos.x, dy = e.pos.y - player.pos.y;
+      const distanceSq = dx * dx + dy * dy;
+      if (distanceSq < 320 * 320 && distanceSq > 25 * 25) {
+        const distance = Math.sqrt(distanceSq);
+        player.pos.x += (dx / distance) * 0.32 * ets;
+        player.pos.y += (dy / distance) * 0.32 * ets;
       }
     }
 
@@ -614,7 +639,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     e.shootTimer -= ets;
     if (e.shootTimer <= 0) {
       e.shootTimer = e.shootInterval * (e.frozen > 0 ? 3 : 1);
-      shootEnemy(e, player, bullets, wave);
+      shootEnemy(e, player, bullets, wave, obj.adaptiveDifficulty);
     }
   }
 
@@ -691,6 +716,8 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     if (!b.fromPlayer || bulletsToRemove.has(b.id)) continue;
     for (const e of enemies) {
       if (enemiesToRemove.has(e.id)) continue;
+      // Phantoms are intangible during the dim phase of their cycle.
+      if (e.type === "phantom" && Math.floor(e.patternTimer / 90) % 3 === 0) continue;
       const size = getEnemySize(e.type);
       const dx = b.pos.x - e.pos.x, dy = b.pos.y - e.pos.y;
       if (dx * dx + dy * dy < (size + b.size) * (size + b.size)) {
@@ -763,9 +790,10 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
             explodeArea(e.pos, player.explosionRadius, enemies, enemiesToRemove, particles, obj.explosions, player);
           }
 
-          // Splitter mechanic: spawns 2 mini scouts on defeat
-          if (e.type === "splitter") {
-            for (let s = -1; s <= 1; s += 2) {
+          // Splitters release 2 scouts; late-game carriers release 4 escorts.
+          if (e.type === "splitter" || e.type === "carrier") {
+            const offsets = e.type === "carrier" ? [-2, -1, 1, 2] : [-1, 1];
+            for (const s of offsets) {
               spawnedFromSplit.push({
                 id: uid(),
                 pos: { x: e.pos.x + s * 16, y: e.pos.y },
@@ -847,7 +875,9 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         const dx = e.pos.x - player.pos.x, dy = e.pos.y - player.pos.y;
         const size = getEnemySize(e.type);
         if (dx * dx + dy * dy < (size + 16) * (size + 16)) {
-          takeDamage(player, e.isBoss ? 28 + wave * 0.8 : 11 + wave * 0.18, particles, obj, input.onDeath);
+          const contactDamage = e.isBoss ? 28 + wave * 0.8 : 11 + wave * 0.18;
+          takeDamage(player, contactDamage, particles, obj, input.onDeath);
+          if (e.type === "leecher") e.hp = Math.min(e.maxHp, e.hp + contactDamage * 2);
           break;
         }
       }
@@ -1088,12 +1118,13 @@ function firePlayerBullets(bullets: Bullet[], player: PlayerState, _enemies: Ene
   }
 }
 
-function shootEnemy(e: Enemy, player: PlayerState, bullets: Bullet[], wave: number) {
+function shootEnemy(e: Enemy, player: PlayerState, bullets: Bullet[], wave: number, adaptiveScale = 1) {
   const dx = player.pos.x - e.pos.x, dy = player.pos.y - e.pos.y;
   const dist = Math.sqrt(dx * dx + dy * dy);
   const spd = 3.6 + wave * 0.08;
   const color = getEnemyBulletColorLocal(e.type);
-  const dmg = e.isBoss ? 2.5 + wave * 0.22 : 1 + wave * 0.035;
+  const baseDamage = e.isBoss ? 2.5 + wave * 0.22 : 1 + wave * 0.035;
+  const dmg = baseDamage * (1 + Math.max(0, adaptiveScale - 1) * 0.35);
   const size = e.isBoss ? 6.5 : 4.5;
 
   switch (e.type) {
@@ -1119,6 +1150,39 @@ function shootEnemy(e: Enemy, player: PlayerState, bullets: Bullet[], wave: numb
       for (let i = 0; i < 4; i++) {
         const a = (i / 4) * Math.PI * 2 + e.angle;
         bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd, y: Math.sin(a) * spd }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
+      }
+      break;
+    }
+    case "warden": {
+      const baseAngle = Math.atan2(dy, dx);
+      for (const offset of [-0.22, 0, 0.22]) {
+        const angle = baseAngle + offset;
+        bullets.push({ id: uid(), pos: { ...e.pos }, vel: { x: Math.cos(angle) * spd, y: Math.sin(angle) * spd }, fromPlayer: false, damage: dmg, size: size + 1, color, pierce: 0, homing: false });
+      }
+      break;
+    }
+    case "phantom": {
+      if (Math.floor(e.patternTimer / 90) % 3 !== 0) {
+        bullets.push({ id: uid(), pos: { ...e.pos }, vel: { x: (dx / dist) * spd * 1.65, y: (dy / dist) * spd * 1.65 }, fromPlayer: false, damage: dmg * 1.25, size, color, pierce: 0, homing: false });
+      }
+      break;
+    }
+    case "leecher": {
+      bullets.push({ id: uid(), pos: { ...e.pos }, vel: { x: (dx / dist) * spd * 1.25, y: (dy / dist) * spd * 1.25 }, fromPlayer: false, damage: dmg * 1.6, size: size + 3, color, pierce: 1, homing: false });
+      break;
+    }
+    case "carrier": {
+      const baseAngle = Math.atan2(dy, dx);
+      for (let i = -2; i <= 2; i++) {
+        const angle = baseAngle + i * 0.18;
+        bullets.push({ id: uid(), pos: { ...e.pos }, vel: { x: Math.cos(angle) * spd * 0.9, y: Math.sin(angle) * spd * 0.9 }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
+      }
+      break;
+    }
+    case "singularity": {
+      for (let i = 0; i < 8; i++) {
+        const angle = (i / 8) * Math.PI * 2 + e.angle;
+        bullets.push({ id: uid(), pos: { ...e.pos }, vel: { x: Math.cos(angle) * spd * 0.72, y: Math.sin(angle) * spd * 0.72 }, fromPlayer: false, damage: dmg * 1.15, size: size + 1, color, pierce: 0, homing: false });
       }
       break;
     }
@@ -1252,6 +1316,11 @@ function getEnemyBulletColorLocal(type: EnemyType): string {
     case "healer": return "#4ade80";
     case "artillery": return "#38bdf8";
     case "charger": return "#f97316";
+    case "warden": return "#22d3ee";
+    case "phantom": return "#d8b4fe";
+    case "leecher": return "#fb7185";
+    case "carrier": return "#fb923c";
+    case "singularity": return "#818cf8";
     case "boss_destroyer": return "#ef4444";
     case "boss_mothership": return "#8b5cf6";
     case "boss_dreadnought": return "#f59e0b";

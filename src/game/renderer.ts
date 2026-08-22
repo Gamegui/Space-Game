@@ -274,6 +274,15 @@ export function drawEnemy(ctx: CanvasRenderingContext2D, e: Enemy, frame: number
     case "charger": drawCharger(ctx, fill, stroke, size); break;
     case "healer": drawHealer(ctx, fill, stroke, size, frame); break;
     case "artillery": drawArtillery(ctx, fill, stroke, size); break;
+    case "warden": drawTank(ctx, fill, stroke, light, size); break;
+    case "phantom":
+      ctx.globalAlpha = Math.floor(e.patternTimer / 90) % 3 === 0 ? 0.22 : 0.85;
+      drawScout(ctx, fill, stroke, size);
+      ctx.globalAlpha = 1;
+      break;
+    case "leecher": drawCharger(ctx, fill, stroke, size); break;
+    case "carrier": drawBomber(ctx, fill, stroke, size); break;
+    case "singularity": ctx.rotate(rot); drawSpinner(ctx, fill, stroke, size); break;
     case "boss_destroyer":  drawBossDestroyer(ctx, fill, stroke, light, size, frame); break;
     case "boss_mothership": drawBossMothership(ctx, fill, stroke, light, size, frame); break;
     case "boss_dreadnought":drawBossDreadnought(ctx, fill, stroke, light, size, frame); break;

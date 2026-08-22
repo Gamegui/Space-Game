@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { PlayerState, UpgradeDef, GamePhase, ShipClassId, Enemy } from "./game/types";
 import type { GameObjects } from "./game/gameLoop";
-import { stepGame, makeStars, makeInitialPlayer, W, H, uid } from "./game/gameLoop";
-import { rollUpgrades, applyUpgrade, getUpgradeLevel } from "./game/upgrades";
+import { stepGame, makeStars, makeInitialPlayer, getNextLevelXp, W, H, uid } from "./game/gameLoop";
+import { ALL_UPGRADES, rollUpgrades, applyUpgrade, getUpgradeLevel } from "./game/upgrades";
 import { getWaveComposition, isBossWave, spawnBoss, getBossName } from "./game/enemies";
 import { SHIP_CLASSES } from "./game/shipClasses";
 import { audio } from "./game/audio";
@@ -76,6 +76,7 @@ export default function App() {
   const pendingLevelUpsRef = useRef(0);
   const bossIntroTimerRef = useRef(0);
   const waveTransitioningRef = useRef(false);
+  const adminGodRef = useRef(false);
 
   // UI state (causes re-renders)
   const [phase, setPhase]         = useState<GamePhase>("menu");
@@ -96,6 +97,9 @@ export default function App() {
   const [adsAvailable, setAdsAvailable] = useState(false);
   const [premiumUnlocked, setPremiumUnlocked] = useState(false);
   const [purchasePending, setPurchasePending] = useState(false);
+  const [adminOpen, setAdminOpen] = useState(true);
+  const [adminGod, setAdminGod] = useState(false);
+  const adminEnabled = import.meta.env.DEV && import.meta.env.VITE_ADMIN === "true";
 
   // Yandex Games lifecycle, cloud record and automatic pause when the tab is hidden.
   useEffect(() => {
@@ -395,6 +399,12 @@ export default function App() {
         timeSlow: timeSlowRef.current,
         onLevelUp: handleLevelUp,
         onDeath: () => {
+          if (adminEnabled && adminGodRef.current) {
+            g.player.hp = g.player.maxHp;
+            g.player.shield && (g.player.shield.hp = g.player.shield.maxHp);
+            g.player.invincTimer = 120;
+            return;
+          }
           audio.stopAmbientBGM();
           const hs = Math.max(g.player.score, hiscore);
           try { localStorage.setItem("hs", String(hs)); } catch { /* storage may be blocked */ }
@@ -539,6 +549,65 @@ export default function App() {
     touchRef.current = null;
   };
 
+  // ─── Development admin tools (excluded from the Yandex production build) ──
+  const adminSetWave = useCallback((targetWave: number) => {
+    const g = gameRef.current;
+    if (!g) return;
+    waveRef.current = targetWave;
+    setWave(targetWave);
+    g.enemies.length = 0;
+    g.bullets.length = 0;
+    g.particles.length = 0;
+    g.xpOrbs.length = 0;
+    g.waveEnemyQueue = [];
+    g.boss = null;
+    g.bossActive = false;
+    waveTransitioningRef.current = false;
+
+    if (isBossWave(targetWave)) {
+      const boss = spawnBoss(targetWave);
+      g.enemies.push(boss);
+      g.boss = boss;
+      g.bossActive = true;
+      setBossName(getBossName(boss.type));
+      setBossActive(true);
+      setBossHpPct(1);
+    } else {
+      g.waveEnemyQueue = getWaveComposition(targetWave).map(item => ({ ...item }));
+      g.waveSpawnTimer = 1;
+      setBossActive(false);
+    }
+    phaseRef.current = "playing";
+    setPhase("playing");
+    syncUI();
+  }, [syncUI]);
+
+  const adminLevelUp = useCallback(() => {
+    const g = gameRef.current;
+    if (!g) return;
+    g.player.level++;
+    g.player.xp = 0;
+    g.player.xpToNext = getNextLevelXp(g.player.level);
+    handleLevelUp(g.player);
+    syncUI();
+  }, [handleLevelUp, syncUI]);
+
+  const adminGiveLegendary = useCallback(() => {
+    const g = gameRef.current;
+    if (!g) return;
+    const available = ALL_UPGRADES.filter(upgrade => upgrade.rarity === "legendary" && getUpgradeLevel(g.player, upgrade.id) < upgrade.maxLevel);
+    if (available.length === 0) return;
+    applyUpgrade(g.player, available[Math.floor(Math.random() * available.length)]);
+    syncUI();
+  }, [syncUI]);
+
+  const adminToggleGod = useCallback(() => {
+    setAdminGod(current => {
+      adminGodRef.current = !current;
+      return !current;
+    });
+  }, []);
+
   const playerStats = gameRef.current?.player.stats || {
     damageDealt: 0, shotsFired: 0, shotsHit: 0, elitesKilled: 0, bossesKilled: 0, powerupsCollected: 0
   };
@@ -570,6 +639,42 @@ export default function App() {
           onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
         />
+
+        {/* Development-only admin panel */}
+        {adminEnabled && (
+          <div className="absolute left-3 top-3 z-50 font-mono text-[11px]">
+            <button
+              onClick={() => setAdminOpen(open => !open)}
+              className="rounded-lg border border-fuchsia-400 bg-fuchsia-950/95 px-3 py-2 font-black text-fuchsia-100 shadow-lg cursor-pointer"
+            >
+              🛠 ADMIN {adminOpen ? "−" : "+"}
+            </button>
+            {adminOpen && (
+              <div className="mt-2 w-52 rounded-xl border border-fuchsia-700 bg-slate-950/95 p-3 text-slate-200 shadow-2xl backdrop-blur-md">
+                <div className="mb-2 text-[10px] text-fuchsia-300">ТЕСТОВАЯ СБОРКА · НЕ ДЛЯ РЕЛИЗА</div>
+                {!gameRef.current ? (
+                  <button onClick={() => startGame(selectedClass)} className="admin-button bg-emerald-700">БЫСТРЫЙ СТАРТ</button>
+                ) : (
+                  <>
+                    <button onClick={adminToggleGod} className={`admin-button ${adminGod ? "bg-emerald-700" : "bg-slate-700"}`}>
+                      БЕССМЕРТИЕ: {adminGod ? "ВКЛ" : "ВЫКЛ"}
+                    </button>
+                    <button onClick={adminLevelUp} className="admin-button bg-indigo-700">+1 УРОВЕНЬ / ВЫБОР</button>
+                    <button onClick={adminGiveLegendary} className="admin-button bg-amber-700">+ СЛУЧАЙНОЕ ЛЕГЕНД.</button>
+                    <button onClick={() => { const g = gameRef.current; if (g) g.bullets = g.bullets.filter(b => b.fromPlayer); }} className="admin-button bg-cyan-800">ОЧИСТИТЬ ПУЛИ</button>
+                    <div className="mt-2 grid grid-cols-3 gap-1">
+                      {[5, 10, 15, 16, 20, 25].map(target => (
+                        <button key={target} onClick={() => adminSetWave(target)} className="rounded bg-rose-900 px-1 py-1.5 font-bold hover:bg-rose-700 cursor-pointer">
+                          В{target}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Audio Mute Button */}
         <button

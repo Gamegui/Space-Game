@@ -28,6 +28,20 @@ button:focus-visible {
   outline-offset: 2px;
 }
 
+.admin-button {
+  display: block;
+  width: 100%;
+  margin-top: 0.35rem;
+  padding: 0.45rem 0.5rem;
+  border-radius: 0.4rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition: filter 120ms ease, transform 120ms ease;
+}
+
+.admin-button:hover { filter: brightness(1.2); }
+.admin-button:active { transform: scale(0.97); }
+
 canvas {
   image-rendering: pixelated;
   image-rendering: crisp-edges;

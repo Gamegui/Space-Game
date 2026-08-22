@@ -181,7 +181,7 @@ export const ALL_UPGRADES: UpgradeDef[] = [
   },
   {
     id: "magnet", name: "Магнитный гравизахват", icon: "🧲", rarity: "common", category: "утилиты", maxLevel: 4,
-    description: "Увеличивает скорость и дистанцию притяжения опыта",
+    description: "Заметно ускоряет притяжение всех сфер опыта",
     apply: (s, _l) => { s.magnetRange += 60; },
   },
   {
@@ -341,6 +341,14 @@ export function applyUpgrade(state: PlayerState, def: UpgradeDef): PlayerState {
   state.freezeChance = Math.min(state.freezeChance, 0.6);
   state.poisonChance = Math.min(state.poisonChance, 0.65);
   state.lightningChance = Math.min(state.lightningChance, 0.5);
+  state.lifeSteal = Math.min(state.lifeSteal, 0.06);
+  state.regenRate = Math.min(state.regenRate, 1.5);
+  state.maxHp = Math.min(state.maxHp, 300);
+  state.hp = Math.min(state.hp, state.maxHp);
+  if (state.shield) {
+    state.shield.maxHp = Math.min(state.shield.maxHp, 220);
+    state.shield.hp = Math.min(state.shield.hp, state.shield.maxHp);
+  }
   if (state.satellites.length > 6) state.satellites.length = 6;
   if (state.drones.length > 5) state.drones.length = 5;
   return state;

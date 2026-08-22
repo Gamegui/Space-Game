@@ -220,11 +220,23 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   const dashSpeedMult = isDashing ? 2.4 : 1.0;
 
   if ((keys.has("ShiftLeft") || keys.has("ShiftRight") || keys.has("Shift")) && player.dashCooldown <= 0) {
-    player.dashCooldown = 150; // 2.5s cooldown
-    player.dashTimer = 16;
-    player.invincTimer = Math.max(player.invincTimer, 20);
+    player.dashCooldown = 120; // 2s cooldown
+    player.dashTimer = 24;
+    player.invincTimer = Math.max(player.invincTimer, 30);
     audio.playDash();
-    particles.push(...makeBurst(player.pos, "#38bdf8", 12));
+    particles.push(...makeBurst(player.pos, "#38bdf8", 18));
+
+    // Dash now has a tactical purpose: clear nearby hostile projectiles and
+    // damage enemies crossed at close range.
+    for (let i = bullets.length - 1; i >= 0; i--) {
+      const bullet = bullets[i];
+      const dx = bullet.pos.x - player.pos.x, dy = bullet.pos.y - player.pos.y;
+      if (!bullet.fromPlayer && dx * dx + dy * dy < 120 * 120) bullets.splice(i, 1);
+    }
+    for (const enemy of enemies) {
+      const dx = enemy.pos.x - player.pos.x, dy = enemy.pos.y - player.pos.y;
+      if (dx * dx + dy * dy < 95 * 95) enemy.hp = Math.max(0, enemy.hp - player.bulletDamage * 5);
+    }
   }
 
   // ─── Player movement ───────────────────────────────────────────────────────
@@ -241,9 +253,16 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 
   // ─── Ghost mode ─────────────────────────────────────────────────────────────
   if (player.ghostMode) {
-    player.ghostTimer--;
-    if (player.ghostTimer <= 0) {
-      player.ghostTimer = player.ghostTimer < -400 ? 120 : -500;
+    // Positive = active phase, negative = cooldown. The previous code always
+    // decremented negatives and reactivated every second frame, making the
+    // player effectively immortal after obtaining Phase Shift.
+    if (player.ghostTimer > 0) {
+      player.ghostTimer--;
+      if (player.ghostTimer === 0) player.ghostTimer = -500;
+    } else if (player.ghostTimer < 0) {
+      player.ghostTimer++;
+    } else {
+      player.ghostTimer = 120;
     }
   }
 
@@ -385,7 +404,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       for (const e of enemies) {
         const dx = e.pos.x - player.pos.x, dy = e.pos.y - player.pos.y;
         if (dx * dx + dy * dy < auraR * auraR) {
-          e.hp -= player.auraDamage * timeScale;
+          e.hp = Math.max(0, e.hp - player.auraDamage * timeScale);
           player.stats.damageDealt += player.auraDamage * timeScale;
           particles.push(...makeBurst({ x: e.pos.x, y: e.pos.y }, "#fde047", 1));
         }
@@ -407,7 +426,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     for (const e of enemies) {
       const dx = e.pos.x - mine.pos.x, dy = e.pos.y - mine.pos.y;
       if (dx * dx + dy * dy < mine.radius * mine.radius) {
-        e.hp -= 6 * player.bulletDamage;
+        e.hp = Math.max(0, e.hp - 6 * player.bulletDamage);
         player.stats.damageDealt += 6 * player.bulletDamage;
         particles.push(...makeBurst(mine.pos, "#f59e0b", 20, true));
         obj.explosions.push({ id: uid(), pos: { ...mine.pos }, radius: mine.radius * 1.5, progress: 0 });
@@ -439,13 +458,33 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           e.pos.x += (dx / dist) * 3 * timeScale;
           e.pos.y += (dy / dist) * 3 * timeScale;
           if (dist < 25) {
-            e.hp -= 3 * timeScale;
+            e.hp = Math.max(0, e.hp - 3 * timeScale);
             player.stats.damageDealt += 3 * timeScale;
           }
         }
       }
     }
     if (obj.blackHoleTimer <= 0) obj.blackHolePos = null;
+  }
+
+  // Resolve enemies finished by aura, mines, status effects, black holes or a
+  // dash. Previously they could remain alive at zero/negative HP until a bullet
+  // touched them, which also produced broken health bars.
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    const enemy = enemies[i];
+    if (enemy.hp > 0) continue;
+    enemy.hp = 0;
+    const xpBoostLevel = getUpgradeLevel(player, "xp_boost");
+    const xpGained = Math.floor(enemy.xp * (1 + xpBoostLevel * 0.2));
+    audio.playExplosion(enemy.isBoss);
+    particles.push(...makeBurst(enemy.pos, enemy.isBoss ? "#f43f5e" : "#fb923c", enemy.isBoss ? 45 : 14, enemy.isBoss));
+    xpOrbs.push(makeXpOrb(enemy.pos, xpGained));
+    player.score += Math.floor(enemy.xp * 10 * player.goldMultiplier);
+    player.kills++;
+    if (enemy.isElite) player.stats.elitesKilled++;
+    if (enemy.isBoss) player.stats.bossesKilled++;
+    enemies.splice(i, 1);
+    input.onKill(xpGained, enemy.pos, enemy.isBoss);
   }
 
   // ─── Time slow cooldown ────────────────────────────────────────────────────
@@ -552,8 +591,8 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 
     // Status effects
     if (e.frozen > 0) e.frozen -= 1;
-    if (e.burning > 0) { e.hp -= 0.18 * ets; e.burning -= ets; }
-    if (e.poisoned > 0) { e.hp -= 0.10 * ets; e.poisoned -= ets; }
+    if (e.burning > 0) { e.hp = Math.max(0, e.hp - 0.18 * ets); e.burning -= ets; }
+    if (e.poisoned > 0) { e.hp = Math.max(0, e.hp - 0.10 * ets); e.poisoned -= ets; }
 
     // Boss phase changes
     if (e.isBoss) {
@@ -678,7 +717,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           floatingTexts.push(makeFloatingText(b.pos, `${Math.ceil(dmg)}`, "#fff"));
         }
 
-        e.hp -= dmg;
+        e.hp = Math.max(0, e.hp - dmg);
         player.stats.damageDealt += dmg;
 
         // Status effects
@@ -798,15 +837,19 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       if (dx * dx + dy * dy < (18 + b.size) * (18 + b.size)) {
         bullets.splice(i, 1);
         takeDamage(player, b.damage * 8.5, particles, obj, input.onDeath);
+        break; // invulnerability starts immediately; do not stack hits in one tick
       }
     }
     // Enemy contact
-    for (const e of enemies) {
-      if (enemiesToRemove.has(e.id)) continue;
-      const dx = e.pos.x - player.pos.x, dy = e.pos.y - player.pos.y;
-      const size = getEnemySize(e.type);
-      if (dx * dx + dy * dy < (size + 16) * (size + 16)) {
-        takeDamage(player, e.isBoss ? 22 : 11, particles, obj, input.onDeath);
+    if (player.invincTimer <= 0) {
+      for (const e of enemies) {
+        if (enemiesToRemove.has(e.id)) continue;
+        const dx = e.pos.x - player.pos.x, dy = e.pos.y - player.pos.y;
+        const size = getEnemySize(e.type);
+        if (dx * dx + dy * dy < (size + 16) * (size + 16)) {
+          takeDamage(player, e.isBoss ? 28 + wave * 0.8 : 11 + wave * 0.18, particles, obj, input.onDeath);
+          break;
+        }
       }
     }
   }
@@ -850,7 +893,14 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           player.invincTimer = 180;
           break;
         case "magnet":
-          xpOrbs.forEach(o => { o.attracted = true; });
+          // XP is already auto-attracted, so merely toggling `attracted` had no
+          // effect. Instantly pull every orb in and permanently improve pickup.
+          xpOrbs.forEach(o => {
+            o.attracted = true;
+            o.pos.x = player.pos.x;
+            o.pos.y = player.pos.y;
+          });
+          player.magnetRange += 20;
           break;
         case "nuke":
           player.nukeCharges = Math.min(3, player.nukeCharges + 1);
@@ -1043,7 +1093,7 @@ function shootEnemy(e: Enemy, player: PlayerState, bullets: Bullet[], wave: numb
   const dist = Math.sqrt(dx * dx + dy * dy);
   const spd = 3.6 + wave * 0.08;
   const color = getEnemyBulletColorLocal(e.type);
-  const dmg = e.isBoss ? 2.2 + wave * 0.18 : 1;
+  const dmg = e.isBoss ? 2.5 + wave * 0.22 : 1 + wave * 0.035;
   const size = e.isBoss ? 6.5 : 4.5;
 
   switch (e.type) {
@@ -1151,7 +1201,7 @@ function chainLightning(source: Enemy, enemies: Enemy[], lightnings: Lightning[]
     }
     if (!nearest) break;
     lightnings.push({ id: uid(), from: { ...current.pos }, to: { ...nearest.pos }, life: 8 });
-    nearest.hp -= dmg * 0.7;
+    nearest.hp = Math.max(0, nearest.hp - dmg * 0.7);
     current = nearest;
   }
 }
@@ -1161,7 +1211,7 @@ function explodeArea(pos: Vec2, radius: number, enemies: Enemy[], toRemove: Set<
   for (const e of enemies) {
     const dx = e.pos.x - pos.x, dy = e.pos.y - pos.y;
     if (dx * dx + dy * dy < radius * radius) {
-      e.hp -= player.bulletDamage * 3;
+      e.hp = Math.max(0, e.hp - player.bulletDamage * 3);
       player.stats.damageDealt += player.bulletDamage * 3;
       if (e.hp <= 0) toRemove.add(e.id);
       particles.push(...makeBurst(e.pos, "#f97316", 5));

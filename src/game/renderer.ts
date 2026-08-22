@@ -298,7 +298,9 @@ export function drawEnemy(ctx: CanvasRenderingContext2D, e: Enemy, frame: number
   ctx.globalAlpha = 0.85;
   ctx.fillStyle = "#1e293b";
   ctx.fillRect(-bw / 2, by, bw, 5);
-  const pct = e.hp / e.maxHp;
+  // Damage-over-time and area effects may cross zero between simulation ticks.
+  // Clamp the visual ratio so a negative width can never stretch across canvas.
+  const pct = Math.max(0, Math.min(1, e.maxHp > 0 ? e.hp / e.maxHp : 0));
   ctx.fillStyle = pct > 0.6 ? "#4ade80" : pct > 0.3 ? "#fbbf24" : "#f87171";
   ctx.fillRect(-bw / 2, by, bw * pct, 5);
 

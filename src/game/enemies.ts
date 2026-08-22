@@ -66,7 +66,10 @@ export function getBossType(wave: number): EnemyType {
 }
 
 export function getEnemyDef(type: EnemyType, wave: number): EnemyDef {
-  const scale = 1 + (wave - 1) * 0.08;
+  // Builds grow multiplicatively, so late enemies need an accelerating curve.
+  // Early waves remain approachable; after wave 15 pressure rises noticeably.
+  const lateGame = Math.max(0, wave - 12);
+  const scale = 1 + (wave - 1) * 0.09 + Math.pow(lateGame, 1.3) * 0.035;
 
   switch (type) {
     case "scout":
@@ -133,7 +136,10 @@ export function spawnEnemy(type: EnemyType, wave: number): Enemy {
     maxHp: def.hp * hpMult,
     type: def.type,
     shootTimer: randInt(25, def.shootInterval),
-    shootInterval: isElite ? Math.floor(def.shootInterval * 0.75) : def.shootInterval,
+    shootInterval: Math.max(
+      def.isBoss ? 8 : 28,
+      Math.floor(def.shootInterval * (isElite ? 0.75 : 1) * Math.max(0.58, 1 - wave * 0.012)),
+    ),
     isBoss: def.isBoss,
     isElite,
     eliteName,

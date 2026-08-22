@@ -187,13 +187,14 @@ export default function App() {
     g.bossActive = false;
     g.boss = null;
 
-    // Wave clear bonus: restore 20 HP
-    g.player.hp = Math.min(g.player.maxHp, g.player.hp + 20);
+    // A modest recovery keeps attrition meaningful in long runs.
+    const recovery = newWave <= 10 ? 15 : 8;
+    g.player.hp = Math.min(g.player.maxHp, g.player.hp + recovery);
     if (g.player.shield) {
-      g.player.shield.hp = Math.min(g.player.shield.maxHp, g.player.shield.hp + 20);
+      g.player.shield.hp = Math.min(g.player.shield.maxHp, g.player.shield.hp + recovery);
     }
 
-    setWaveNotice(`ВОЛНА ${newWave - 1} ПРОЙДЕНА! +20 HP ВОССТАНОВЛЕНО`);
+    setWaveNotice(`ВОЛНА ${newWave - 1} ПРОЙДЕНА! +${recovery} HP`);
     setTimeout(() => setWaveNotice(null), 2400);
 
     if (isBossWave(newWave)) {

@@ -106,7 +106,12 @@ export default function App() {
   const [enemiesLeft, setEnemiesLeft] = useState(0);
   const [waveNotice, setWaveNotice] = useState<string | null>(null);
   const [isMuted, setIsMuted]     = useState(false);
-  const [hiscore, setHiscore]     = useState(() => { try { return parseInt(localStorage.getItem("hs") || "0"); } catch { return 0; } });
+  const [hiscore, setHiscore] = useState(() => {
+    try {
+      const stored = Number.parseInt(localStorage.getItem("hs") || "0", 10);
+      return Number.isFinite(stored) && stored >= 0 ? stored : 0;
+    } catch { return 0; }
+  });
   const [reviveUsed, setReviveUsed] = useState(false);
   const [adPending, setAdPending] = useState(false);
   const [adsAvailable, setAdsAvailable] = useState(false);
@@ -189,8 +194,10 @@ export default function App() {
     bossIntroTimerRef.current = 0;
     waveTransitioningRef.current = false;
     frameRef.current = 0;
-    phaseRef.current = "playing";
-    setPhase("playing");
+    let needsTutorial = false;
+    try { needsTutorial = !adminEnabled && localStorage.getItem("tutorial_complete") !== "1"; } catch { needsTutorial = !adminEnabled; }
+    phaseRef.current = needsTutorial ? "tutorial" : "playing";
+    setPhase(needsTutorial ? "tutorial" : "playing");
     setWave(1);
     setBossActive(false);
     setTimeSlow(false);
@@ -203,7 +210,7 @@ export default function App() {
     setBonusChoiceUsed(false);
     setWaveNotice(null);
     syncUI();
-  }, [premiumUnlocked, selectedClass, syncUI]);
+  }, [adminEnabled, premiumUnlocked, selectedClass, syncUI]);
 
   // ─── Wave advance ────────────────────────────────────────────────────────────
   const advanceWave = useCallback((route: RouteId = "asteroids") => {
@@ -230,11 +237,10 @@ export default function App() {
       routeDifficulty = 1.25; routeCount = 1.25; g.routeXpMultiplier = 1.6; g.routeScoreMultiplier = 1.6;
     } else {
       const dangerous = Math.random() < 0.55;
-      routeDifficulty = dangerous ? 1.38 : 0.9;
-      routeCount = dangerous ? 1.15 : 0.9;
-      g.routeXpMultiplier = dangerous ? 1.75 : 1.2;
-      g.routeScoreMultiplier = dangerous ? 1.5 : 1.1;
-      if (!dangerous) g.player.hp = Math.min(g.player.maxHp, g.player.hp + 15);
+      routeDifficulty = dangerous ? 1.38 : 1.15;
+      routeCount = dangerous ? 1.15 : 1.05;
+      g.routeXpMultiplier = dangerous ? 1.75 : 0.85;
+      g.routeScoreMultiplier = dangerous ? 1.5 : 0.85;
     }
     g.adaptiveDifficulty = adaptive.scale * routeDifficulty;
 
@@ -564,8 +570,18 @@ export default function App() {
             g.bossActive = false;
             g.boss = null;
             setBossActive(false);
-            phaseRef.current = "route";
-            setPhase("route");
+            if (waveRef.current >= 50) {
+              audio.stopAmbientBGM();
+              const hs = Math.max(g.player.score, hiscore);
+              try { localStorage.setItem("hs", String(hs)); } catch { /* optional */ }
+              setHiscore(hs);
+              void yandex.saveHighScore(hs);
+              phaseRef.current = "victory";
+              setPhase("victory");
+            } else {
+              phaseRef.current = "route";
+              setPhase("route");
+            }
           }
         },
       });
@@ -898,6 +914,26 @@ export default function App() {
           </div>
         )}
 
+        {/* First-run tutorial: simulation is paused until confirmation. */}
+        {phase === "tutorial" && (
+          <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/92 p-6 backdrop-blur-md">
+            <div className="w-full max-w-2xl rounded-3xl border border-cyan-700 bg-slate-950/95 p-7 text-center shadow-2xl shadow-cyan-950">
+              <div className="mb-2 text-5xl">🚀</div>
+              <h2 className="mb-2 text-3xl font-black text-white">ПЕРЕД ВЫЛЕТОМ</h2>
+              <p className="mb-5 text-sm text-slate-400">Орудия стреляют автоматически. Ваша задача — двигаться, уклоняться и собирать опыт.</p>
+              <div className="mb-6 grid grid-cols-2 gap-3 text-left font-mono text-sm">
+                <div className="rounded-xl bg-slate-900 p-3"><b className="text-cyan-300">WASD / СВАЙП</b><br/><span className="text-slate-400">Движение корабля</span></div>
+                <div className="rounded-xl bg-slate-900 p-3"><b className="text-indigo-300">SHIFT</b><br/><span className="text-slate-400">Рывок и очистка пуль</span></div>
+                <div className="rounded-xl bg-slate-900 p-3"><b className="text-red-300">X</b><br/><span className="text-slate-400">Ядерный заряд</span></div>
+                <div className="rounded-xl bg-slate-900 p-3"><b className="text-cyan-300">C</b><br/><span className="text-slate-400">Замедление времени</span></div>
+              </div>
+              <button onClick={() => { try { localStorage.setItem("tutorial_complete", "1"); } catch { /* optional */ } audio.resume(); phaseRef.current = "playing"; setPhase("playing"); }} className="rounded-full bg-gradient-to-r from-cyan-500 to-indigo-600 px-12 py-3.5 text-lg font-black text-white hover:brightness-110 cursor-pointer">
+                ПОНЯТНО — В БОЙ
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Paused overlay */}
         {phase === "paused" && (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/85 backdrop-blur-md z-30">
@@ -1034,6 +1070,27 @@ export default function App() {
                   ? (purchasePending ? "ОТКРЫВАЕМ МАГАЗИН…" : "ОТКРЫТЬ «НЕМЕЗИДУ» ✦")
                   : "НАЧАТЬ МИССИЮ 🚀"}
               </button>
+            </div>
+          </div>
+        )}
+
+        {/* Victory after the wave-50 Omega; endless mode remains optional. */}
+        {phase === "victory" && gameRef.current && (
+          <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/92 p-6 backdrop-blur-md">
+            <div className="w-full max-w-xl text-center">
+              <div className="mb-2 text-6xl">🏆</div>
+              <h2 className="text-4xl font-black text-amber-300">СИСТЕМА ОМЕГА УНИЧТОЖЕНА</h2>
+              <p className="mb-5 font-mono text-sm text-cyan-300">ОСНОВНАЯ МИССИЯ ЗАВЕРШЕНА</p>
+              <div className="mb-5 grid grid-cols-4 gap-2 rounded-2xl border border-amber-700/60 bg-slate-950/90 p-4 font-mono">
+                <div><div className="text-[10px] text-slate-500">СЧЁТ</div><b className="text-white">{finalScore.toLocaleString()}</b></div>
+                <div><div className="text-[10px] text-slate-500">ВОЛНА</div><b className="text-white">{finalWave}</b></div>
+                <div><div className="text-[10px] text-slate-500">УБИЙСТВА</div><b className="text-red-300">{finalKills}</b></div>
+                <div><div className="text-[10px] text-slate-500">СИНЕРГИИ</div><b className="text-fuchsia-300">{gameRef.current.player.synergies.length}</b></div>
+              </div>
+              <div className="flex justify-center gap-3">
+                <button onClick={() => { audio.resume(); audio.startAmbientBGM(); phaseRef.current = "route"; setPhase("route"); }} className="rounded-full bg-fuchsia-700 px-8 py-3 font-black text-white hover:bg-fuchsia-600 cursor-pointer">♾️ ПРОДОЛЖИТЬ БЕСКОНЕЧНО</button>
+                <button onClick={() => { phaseRef.current = "ship_select"; setPhase("ship_select"); gameRef.current = null; }} className="rounded-full bg-gradient-to-r from-amber-500 to-orange-600 px-8 py-3 font-black text-white cursor-pointer">НОВЫЙ ЗАБЕГ</button>
+              </div>
             </div>
           </div>
         )}

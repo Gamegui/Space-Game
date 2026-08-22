@@ -316,6 +316,19 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     audio.playShoot(player.snipeMode);
   }
 
+  // Side lasers are a real weapon system, not a dead stat upgrade.
+  if (player.lasers > 0 && player.laserTimer <= 0) {
+    player.laserTimer = Math.max(12, 34 - player.lasers * 6);
+    for (const side of [-1, 1]) {
+      const laser = makePlayerBullet(player, { x: player.pos.x + side * 22, y: player.pos.y - 8 }, { x: side * 0.35, y: -player.bulletSpeed * 1.45 });
+      laser.damage = player.bulletDamage * (0.55 + player.lasers * 0.15);
+      laser.pierce = Math.max(laser.pierce, 2);
+      laser.size = 2.5 + player.lasers;
+      laser.color = "#fb7185";
+      bullets.push(laser);
+    }
+  }
+
   // Spiral shot auto-fires
   if (player.spiralShot) {
     player.spiralAngle += 0.08;

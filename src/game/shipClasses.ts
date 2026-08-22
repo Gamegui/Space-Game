@@ -43,7 +43,7 @@ export const SHIP_CLASSES: ShipClassDef[] = [
     subtitle: "Премиальный фазовый охотник",
     icon: "👻",
     description: "Экспериментальный корабль Бездны с фазовой защитой и самонаводящимися орудиями.",
-    perks: ["Периодическая неуязвимость", "Самонаводящиеся снаряды", "+1 пробитие", "+20% скорость полёта"],
+    perks: ["Периодическая неуязвимость", "Мягкое самонаведение", "+1 пробитие", "Высокая скорость полёта"],
     color: "#e879f9",
     premium: true,
   },
@@ -99,17 +99,17 @@ export function applyShipClassStats(player: PlayerState, classId: ShipClassId) {
       break;
 
     case "void_wraith":
-      player.maxHp = 90;
-      player.hp = 90;
-      player.speed = 6.4;
-      player.fireRate = 10.5;
-      player.bulletDamage = 1.45;
-      player.bulletSpeed = 15;
+      player.maxHp = 85;
+      player.hp = 85;
+      player.speed = 5.9;
+      player.fireRate = 11;
+      player.bulletDamage = 1.35;
+      player.bulletSpeed = 14.5;
       player.piercing = 1;
       player.homing = true;
-      player.homingStrength = 0.08;
+      player.homingStrength = 0.065;
       player.ghostMode = true;
-      player.shield = { hp: 25, maxHp: 25, regenTimer: 0, active: true };
+      player.shield = { hp: 18, maxHp: 18, regenTimer: 0, active: true };
       break;
   }
 }

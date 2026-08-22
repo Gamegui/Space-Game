@@ -250,4 +250,4 @@ export interface Mine {
   radius: number;
 }
 
-export type GamePhase = "menu" | "ship_select" | "playing" | "upgrade" | "route" | "boss_intro" | "paused" | "dead" | "victory";
+export type GamePhase = "menu" | "ship_select" | "tutorial" | "playing" | "upgrade" | "route" | "boss_intro" | "paused" | "dead" | "victory";

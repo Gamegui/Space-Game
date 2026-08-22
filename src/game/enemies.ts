@@ -70,7 +70,9 @@ export function getEnemyDef(type: EnemyType, wave: number, adaptiveScale = 1): E
   // After wave 25 the hidden build rating adds HP without flooding the screen.
   const lateGame = Math.max(0, wave - 12);
   const baseScale = 1 + (wave - 1) * 0.09 + Math.pow(lateGame, 1.3) * 0.035;
-  const scale = baseScale * adaptiveScale;
+  // Boss adaptation is softer than regular-enemy adaptation to avoid multi-minute HP sponges.
+  const hpAdaptiveScale = type.startsWith("boss_") ? 1 + (adaptiveScale - 1) * 0.65 : adaptiveScale;
+  const scale = baseScale * hpAdaptiveScale;
 
   switch (type) {
     case "scout":
@@ -133,7 +135,8 @@ export function spawnEnemy(type: EnemyType, wave: number, adaptiveScale = 1): En
   const centerX = randRange(minX + 50, maxX - 50);
   const targetY = def.isBoss ? 130 : randRange(85, Math.min(H * 0.45, 330));
 
-  const isElite = !def.isBoss && wave >= 3 && Math.random() < 0.15;
+  const eliteChance = wave < 6 ? 0.08 : wave < 15 ? 0.12 : 0.15;
+  const isElite = !def.isBoss && wave >= 3 && Math.random() < eliteChance;
   const hpMult = isElite ? 2.5 : 1;
   const xpMult = isElite ? 3 : 1;
   const eliteNames = ["⚡ СВЕРХСКОРОСТНОЙ", "🛡️ БРОНИРОВАННЫЙ", "🔥 ИНФЕРНО", "☣️ ТОКСИЧНЫЙ"];

@@ -6,6 +6,7 @@ import { ALL_UPGRADES, rollUpgrades, applyUpgrade, getUpgradeLevel, getAdaptiveD
 import { getWaveComposition, isBossWave, spawnBoss, getBossName } from "./game/enemies";
 import { SHIP_CLASSES } from "./game/shipClasses";
 import { audio } from "./game/audio";
+import { unlockAvailableSynergies } from "./game/synergies";
 import { yandex } from "./platform/yandex";
 import {
   drawBackground, drawStars, drawPlayer, drawEnemy, drawBullet,
@@ -41,8 +42,19 @@ function makeInitialObjects(player: PlayerState): GameObjects {
     screenShake: 0,
     powerRating: 0,
     adaptiveDifficulty: 1,
+    routeXpMultiplier: 1,
+    routeScoreMultiplier: 1,
   };
 }
+
+type RouteId = "asteroids" | "warzone" | "anomaly";
+type RouteChoice = { id: RouteId; icon: string; name: string; description: string; risk: string; reward: string };
+
+const ROUTES: RouteChoice[] = [
+  { id: "asteroids", icon: "☄️", name: "ПОЯС АСТЕРОИДОВ", description: "Меньше противников, но теснее награды.", risk: "−15% врагов", reward: "+30% опыта" },
+  { id: "warzone", icon: "⚔️", name: "ВОЕННЫЙ СЕКТОР", description: "Усиленная волна ради большой добычи.", risk: "+25% врагов и HP", reward: "+60% опыта и очков" },
+  { id: "anomaly", icon: "🌀", name: "АНОМАЛИЯ", description: "Непредсказуемое искажение следующей волны.", risk: "Случайный риск", reward: "Случайный бонус" },
+];
 
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function App() {
@@ -101,6 +113,7 @@ export default function App() {
   const [purchasePending, setPurchasePending] = useState(false);
   const [adminOpen, setAdminOpen] = useState(true);
   const [adminGod, setAdminGod] = useState(false);
+  const [synergyNotice, setSynergyNotice] = useState<string | null>(null);
   const adminEnabled = import.meta.env.DEV && import.meta.env.VITE_ADMIN === "true";
 
   // Yandex Games lifecycle, cloud record and automatic pause when the tab is hidden.
@@ -183,7 +196,7 @@ export default function App() {
   }, [premiumUnlocked, selectedClass, syncUI]);
 
   // ─── Wave advance ────────────────────────────────────────────────────────────
-  const advanceWave = useCallback(() => {
+  const advanceWave = useCallback((route: RouteId = "asteroids") => {
     const g = gameRef.current;
     if (!g || waveTransitioningRef.current) return;
     // Damage from several projectiles can report the same final kill in one
@@ -197,7 +210,23 @@ export default function App() {
     g.boss = null;
     const adaptive = getAdaptiveDifficulty(g.player, newWave);
     g.powerRating = adaptive.power;
-    g.adaptiveDifficulty = adaptive.scale;
+    let routeDifficulty = 1;
+    let routeCount = 1;
+    g.routeXpMultiplier = 1;
+    g.routeScoreMultiplier = 1;
+    if (route === "asteroids") {
+      routeDifficulty = 0.94; routeCount = 0.85; g.routeXpMultiplier = 1.3;
+    } else if (route === "warzone") {
+      routeDifficulty = 1.25; routeCount = 1.25; g.routeXpMultiplier = 1.6; g.routeScoreMultiplier = 1.6;
+    } else {
+      const dangerous = Math.random() < 0.55;
+      routeDifficulty = dangerous ? 1.38 : 0.9;
+      routeCount = dangerous ? 1.15 : 0.9;
+      g.routeXpMultiplier = dangerous ? 1.75 : 1.2;
+      g.routeScoreMultiplier = dangerous ? 1.5 : 1.1;
+      if (!dangerous) g.player.hp = Math.min(g.player.maxHp, g.player.hp + 15);
+    }
+    g.adaptiveDifficulty = adaptive.scale * routeDifficulty;
 
     // A modest recovery keeps attrition meaningful in long runs.
     const recovery = newWave <= 10 ? 15 : 8;
@@ -225,9 +254,11 @@ export default function App() {
       bossIntroTimerRef.current = 180;
     } else {
       const composition = getWaveComposition(newWave, g.powerRating);
-      g.waveEnemyQueue = composition.map(c => ({ ...c }));
+      g.waveEnemyQueue = composition.map(c => ({ ...c, count: Math.max(1, Math.round(c.count * routeCount)) }));
       g.waveSpawnTimer = 50;
       setBossActive(false);
+      phaseRef.current = "playing";
+      setPhase("playing");
       const newThreats: Record<number, string> = {
         26: "НОВАЯ УГРОЗА: СТРАЖИ ЗАЩИЩАЮТ СОЮЗНИКОВ",
         31: "НОВАЯ УГРОЗА: ФАНТОМЫ УХОДЯТ В ФАЗУ",
@@ -238,6 +269,10 @@ export default function App() {
       if (newThreats[newWave]) setWaveNotice(newThreats[newWave]);
     }
   }, []);
+
+  const handleChooseRoute = useCallback((route: RouteId) => {
+    advanceWave(route);
+  }, [advanceWave]);
 
   // ─── Level up handler ─────────────────────────────────────────────────────
   const handleLevelUp = useCallback((player: PlayerState) => {
@@ -257,6 +292,11 @@ export default function App() {
     if (!g) return;
     audio.playPowerup();
     applyUpgrade(g.player, u);
+    const unlockedSynergies = unlockAvailableSynergies(g.player);
+    if (unlockedSynergies.length > 0) {
+      setSynergyNotice(`${unlockedSynergies[0].icon} СИНЕРГИЯ: ${unlockedSynergies[0].name}`);
+      setTimeout(() => setSynergyNotice(null), 3200);
+    }
     pendingLevelUpsRef.current--;
     if (pendingLevelUpsRef.current > 0) {
       const choices = rollUpgrades(g.player, 3);
@@ -435,14 +475,18 @@ export default function App() {
           setBossActive(false);
         },
         onWaveComplete: () => {
-          if (phaseRef.current === "playing") advanceWave();
+          if (phaseRef.current === "playing") {
+            phaseRef.current = "route";
+            setPhase("route");
+          }
         },
         onKill: (_xp, _pos, isBoss) => {
           if (isBoss) {
             g.bossActive = false;
             g.boss = null;
             setBossActive(false);
-            advanceWave();
+            phaseRef.current = "route";
+            setPhase("route");
           }
         },
       });
@@ -737,6 +781,32 @@ export default function App() {
             onChoose={handleChooseUpgrade}
             level={playerLevel}
           />
+        )}
+
+        {/* Route choice between waves */}
+        {phase === "route" && gameRef.current && (
+          <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/88 p-6 backdrop-blur-md">
+            <div className="mb-1 text-xs font-black tracking-[0.3em] text-cyan-400">МАРШРУТ СЛЕДУЮЩЕЙ ВОЛНЫ</div>
+            <h2 className="mb-2 text-4xl font-black text-white">КУДА ДАЛЬШЕ?</h2>
+            <p className="mb-6 text-sm text-slate-400">Выберите риск. Решение действует одну волну.</p>
+            <div className="grid w-full max-w-4xl grid-cols-3 gap-4">
+              {ROUTES.map(route => (
+                <button key={route.id} onClick={() => handleChooseRoute(route.id)} className="group rounded-2xl border-2 border-slate-700 bg-gradient-to-b from-slate-800 to-slate-950 p-5 text-left transition-all hover:scale-105 hover:border-cyan-400 cursor-pointer">
+                  <div className="mb-3 text-4xl">{route.icon}</div>
+                  <div className="mb-2 text-lg font-black text-white">{route.name}</div>
+                  <div className="mb-4 min-h-10 text-xs text-slate-400">{route.description}</div>
+                  <div className="mb-1 rounded bg-red-950/70 px-3 py-2 text-xs font-bold text-red-300">⚠ {route.risk}</div>
+                  <div className="rounded bg-emerald-950/70 px-3 py-2 text-xs font-bold text-emerald-300">✦ {route.reward}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {synergyNotice && (
+          <div className="absolute left-1/2 top-40 z-40 -translate-x-1/2 rounded-full border border-fuchsia-400 bg-fuchsia-950/95 px-7 py-3 font-mono text-lg font-black text-fuchsia-100 shadow-2xl shadow-fuchsia-900">
+            {synergyNotice}
+          </div>
         )}
 
         {/* Paused overlay */}

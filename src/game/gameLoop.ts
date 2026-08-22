@@ -55,6 +55,7 @@ export function makeInitialPlayer(shipClass: ShipClassId = "interceptor"): Playe
     shield: { hp: 20, maxHp: 20, regenTimer: 0, active: true },
     xp: 0, level: 1, xpToNext: 30,
     upgrades: [],
+    synergies: [],
     invincTimer: 0,
     magnetRange: 120,
     aura: false, auraDamage: 0.25, auraTimer: 0,
@@ -171,6 +172,8 @@ export interface GameObjects {
   screenShake: number;
   powerRating: number;
   adaptiveDifficulty: number;
+  routeXpMultiplier: number;
+  routeScoreMultiplier: number;
 }
 
 export interface StepInput {
@@ -477,11 +480,11 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     if (enemy.hp > 0) continue;
     enemy.hp = 0;
     const xpBoostLevel = getUpgradeLevel(player, "xp_boost");
-    const xpGained = Math.floor(enemy.xp * (1 + xpBoostLevel * 0.2));
+    const xpGained = Math.floor(enemy.xp * (1 + xpBoostLevel * 0.2) * obj.routeXpMultiplier);
     audio.playExplosion(enemy.isBoss);
     particles.push(...makeBurst(enemy.pos, enemy.isBoss ? "#f43f5e" : "#fb923c", enemy.isBoss ? 45 : 14, enemy.isBoss));
     xpOrbs.push(makeXpOrb(enemy.pos, xpGained));
-    player.score += Math.floor(enemy.xp * 10 * player.goldMultiplier);
+    player.score += Math.floor(enemy.xp * 10 * player.goldMultiplier * obj.routeScoreMultiplier);
     player.kills++;
     if (enemy.isElite) player.stats.elitesKilled++;
     if (enemy.isBoss) player.stats.bossesKilled++;
@@ -627,11 +630,28 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         e.shootInterval = Math.max(10, e.shootInterval - 8);
         obj.screenShake = Math.max(obj.screenShake, 8);
         audio.playBossWarning();
+        if (e.type === "boss_mothership") {
+          for (let escort = 0; escort < 4; escort++) enemies.push(spawnEnemy(escort % 2 ? "fighter" : "spinner", wave, obj.adaptiveDifficulty));
+        }
+        if (e.type === "boss_dreadnought") {
+          e.maxShieldHp = Math.max(e.maxShieldHp, e.maxHp * 0.12);
+          e.shieldHp = e.maxShieldHp;
+        }
       }
       if (bossHpPct < 0.25 && e.phase === 1) {
         e.phase = 2;
         e.shootInterval = Math.max(6, e.shootInterval - 6);
         obj.screenShake = Math.max(obj.screenShake, 10);
+        if (e.type === "boss_omega") {
+          enemies.push(spawnEnemy("phantom", wave, obj.adaptiveDifficulty), spawnEnemy("singularity", wave, obj.adaptiveDifficulty));
+          bullets.splice(0, Math.floor(bullets.length * 0.2));
+        }
+      }
+      if (e.type === "boss_eclipse" && e.phase >= 1 && frame % 3 === 0) {
+        const dx = e.pos.x - player.pos.x, dy = e.pos.y - player.pos.y;
+        const distance = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+        player.pos.x += (dx / distance) * 0.22;
+        player.pos.y += (dy / distance) * 0.22;
       }
     }
 
@@ -775,12 +795,12 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
             player.hp = Math.min(player.hp + 2 * getUpgradeLevel(player, "heal_on_kill"), player.maxHp);
           }
           const xpBoostLevel = getUpgradeLevel(player, "xp_boost");
-          const xpGained = Math.floor(e.xp * (1 + xpBoostLevel * 0.2));
+          const xpGained = Math.floor(e.xp * (1 + xpBoostLevel * 0.2) * obj.routeXpMultiplier);
           enemiesToRemove.add(e.id);
           input.onKill(xpGained, e.pos, e.isBoss);
 
           const comboBonus = 1 + (player.combo > 1 ? player.combo * 0.05 : 0);
-          player.score += Math.floor(e.xp * 10 * player.goldMultiplier * comboBonus);
+          player.score += Math.floor(e.xp * 10 * player.goldMultiplier * comboBonus * obj.routeScoreMultiplier);
           player.kills++;
           if (e.isElite) player.stats.elitesKilled++;
           if (e.isBoss) player.stats.bossesKilled++;

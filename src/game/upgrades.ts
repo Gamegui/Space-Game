@@ -1,4 +1,5 @@
 import type { UpgradeDef, PlayerState } from "./types";
+import { SYNERGIES } from "./synergies";
 
 export const ALL_UPGRADES: UpgradeDef[] = [
   // ═══ ОРУЖИЕ И УРОН ═══
@@ -318,8 +319,10 @@ export function getAdaptiveDifficulty(state: PlayerState, wave: number): { power
   const power = calculatePlayerPower(state);
   if (wave <= 25) return { power, scale: 1 };
   const expectedPower = 58 + (wave - 25) * 2.2;
-  const excessPower = Math.max(0, power - expectedPower);
-  return { power, scale: 1 + Math.min(1.6, excessPower / 85) };
+  const powerRatio = Math.max(1, power / expectedPower);
+  // Near-expected builds keep the power fantasy. Extreme completed builds no
+  // longer hit the old ×2.6 ceiling and now face proportionally tougher waves.
+  return { power, scale: Math.min(12, Math.pow(powerRatio, 0.85)) };
 }
 
 const LIMIT_BREAK: UpgradeDef = {
@@ -354,15 +357,24 @@ export function rollUpgrades(state: PlayerState, count = 3, excludeIds: string[]
   // two simultaneous levels could leave the player trapped in an empty panel.
   if (available.length === 0) return [LIMIT_BREAK];
 
+  const ownedIds = new Set(state.upgrades.map(upgrade => upgrade.id));
+  const synergyFinishers = new Set<string>();
+  for (const synergy of SYNERGIES) {
+    if (state.synergies.includes(synergy.id)) continue;
+    const missing = synergy.requires.filter(id => !ownedIds.has(id));
+    if (missing.length === 1) synergyFinishers.add(missing[0]);
+  }
+
   const weighted: UpgradeDef[] = [];
   for (const u of available) {
-    // Strong upgrades are intentionally scarce. Their chance grows only in a
-    // mature run, after enemies have scaled enough to withstand them.
-    const w = u.rarity === "common" ? 100
+    // Strong upgrades are intentionally scarce. If a build has 2/3 synergy
+    // pieces, its final component receives a visible but non-guaranteed boost.
+    const baseWeight = u.rarity === "common" ? 100
       : u.rarity === "rare" ? (state.level >= 8 ? 24 : 15)
       : u.rarity === "epic" ? (state.level >= 15 ? 8 : 3)
       : (state.level >= 20 ? 3 : 1);
-    for (let i = 0; i < w; i++) weighted.push(u);
+    const weight = baseWeight * (synergyFinishers.has(u.id) ? 3 : 1);
+    for (let i = 0; i < weight; i++) weighted.push(u);
   }
 
   const picked: UpgradeDef[] = [];
@@ -402,8 +414,13 @@ export function applyUpgrade(state: PlayerState, def: UpgradeDef): PlayerState {
   // to trivialize every boss or create thousands of projectiles per second.
   state.multishot = Math.min(state.multishot, 18);
   state.fireRate = Math.max(state.fireRate, 3);
+  state.bulletDamage = Math.min(state.bulletDamage, 75);
+  state.bulletSpeed = Math.min(state.bulletSpeed, 24);
   state.bulletSize = Math.min(state.bulletSize, 12);
   state.piercing = Math.min(state.piercing, 12);
+  state.auraDamage = Math.min(state.auraDamage, 12);
+  state.explosionRadius = Math.min(state.explosionRadius, 220);
+  state.goldMultiplier = Math.min(state.goldMultiplier, 8);
   state.speed = Math.min(state.speed, 8.5);
   state.critChance = Math.min(state.critChance, 0.65);
   state.critMultiplier = Math.min(state.critMultiplier, 6);

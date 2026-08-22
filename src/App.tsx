@@ -382,6 +382,8 @@ export default function App() {
     const choices = [...remaining, ...replacement].slice(0, targetLength);
     upgradeChoicesRef.current = choices;
     setUpgradeChoices(choices);
+    setSynergyNotice(`❌ ИЗГНАНО: ${upgrade.name}`);
+    setTimeout(() => setSynergyNotice(null), 2200);
     audio.playHit();
   }, [banishesLeft]);
 
@@ -859,6 +861,7 @@ export default function App() {
             level={playerLevel}
             rerollsLeft={rerollsLeft}
             banishesLeft={banishesLeft}
+            banishedCount={banishedUpgradeIdsRef.current.size}
             adAvailable={adsAvailable || adminEnabled}
             adPending={upgradeAdPending}
             bonusChoiceUsed={bonusChoiceUsed}

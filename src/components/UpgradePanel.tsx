@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { UpgradeDef } from "../game/types";
 import type { PlayerState } from "../game/types";
-import { getUpgradeLevel } from "../game/upgrades";
+import { ALL_UPGRADES, canUpgrade, getUpgradeLevel } from "../game/upgrades";
 import { SYNERGIES } from "../game/synergies";
 
 interface Props {
@@ -11,6 +11,7 @@ interface Props {
   level: number;
   rerollsLeft: number;
   banishesLeft: number;
+  banishedCount: number;
   adAvailable: boolean;
   adPending: boolean;
   bonusChoiceUsed: boolean;
@@ -37,10 +38,11 @@ const categoryIcon: Record<string, string> = {
 };
 
 export default function UpgradePanel({
-  choices, player, onChoose, level, rerollsLeft, banishesLeft, adAvailable, adPending,
+  choices, player, onChoose, level, rerollsLeft, banishesLeft, banishedCount, adAvailable, adPending,
   bonusChoiceUsed, onReroll, onAdReroll, onAdBonusChoice, onBanish,
 }: Props) {
   const [buildOpen, setBuildOpen] = useState(false);
+  const availablePool = Math.max(0, ALL_UPGRADES.filter(upgrade => canUpgrade(player, upgrade)).length - banishedCount);
   return (
     <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/85 backdrop-blur-md z-20 rounded-2xl p-4">
       {/* Header */}
@@ -148,7 +150,7 @@ export default function UpgradePanel({
 
       {/* Build details stay collapsed by default to keep mobile choice focused. */}
       <button onClick={() => setBuildOpen(open => !open)} className="mt-2 rounded-full border border-fuchsia-800 bg-fuchsia-950/70 px-4 py-1.5 text-[10px] font-black text-fuchsia-200 cursor-pointer">
-        🧬 БИЛД И СИНЕРГИИ · {player.upgrades.length} {buildOpen ? "▲" : "▼"}
+        🧬 БИЛД · {player.upgrades.length} · ПУЛ: {availablePool}/{ALL_UPGRADES.length} {buildOpen ? "▲" : "▼"}
       </button>
       {buildOpen && (
         <div className="mt-2 grid w-full max-w-4xl grid-cols-2 gap-3 text-left">

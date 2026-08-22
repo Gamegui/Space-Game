@@ -75,6 +75,7 @@ export default function App() {
   const upgradeChoicesRef = useRef<UpgradeDef[]>([]);
   const pendingLevelUpsRef = useRef(0);
   const bossIntroTimerRef = useRef(0);
+  const waveTransitioningRef = useRef(false);
 
   // UI state (causes re-renders)
   const [phase, setPhase]         = useState<GamePhase>("menu");
@@ -93,13 +94,20 @@ export default function App() {
   const [reviveUsed, setReviveUsed] = useState(false);
   const [adPending, setAdPending] = useState(false);
   const [adsAvailable, setAdsAvailable] = useState(false);
+  const [premiumUnlocked, setPremiumUnlocked] = useState(false);
+  const [purchasePending, setPurchasePending] = useState(false);
 
   // Yandex Games lifecycle, cloud record and automatic pause when the tab is hidden.
   useEffect(() => {
     void yandex.init().then(async () => {
       setAdsAvailable(yandex.isAvailable());
-      const cloudScore = await yandex.loadHighScore();
+      const [cloudScore, ownsPremiumShip] = await Promise.all([
+        yandex.loadHighScore(),
+        yandex.hasPermanentPurchase("void_wraith"),
+      ]);
       if (cloudScore !== null) setHiscore(current => Math.max(current, cloudScore));
+      // Outside the Yandex catalogue the ship is unlocked for development and QA.
+      setPremiumUnlocked(ownsPremiumShip || !yandex.isPlatformAvailable());
     });
     const onVisibility = () => {
       if (document.hidden && phaseRef.current === "playing") {
@@ -141,6 +149,7 @@ export default function App() {
 
   // ─── Start game with Ship Class ─────────────────────────────────────────────
   const startGame = useCallback((shipClass: ShipClassId = selectedClass) => {
+    if (shipClass === "void_wraith" && !premiumUnlocked) return;
     audio.resume();
     audio.startAmbientBGM();
 
@@ -151,6 +160,7 @@ export default function App() {
     timeSlowRef.current = false;
     pendingLevelUpsRef.current = 0;
     bossIntroTimerRef.current = 0;
+    waveTransitioningRef.current = false;
     frameRef.current = 0;
     phaseRef.current = "playing";
     setPhase("playing");
@@ -161,12 +171,16 @@ export default function App() {
     setAdPending(false);
     setWaveNotice(null);
     syncUI();
-  }, [selectedClass, syncUI]);
+  }, [premiumUnlocked, selectedClass, syncUI]);
 
   // ─── Wave advance ────────────────────────────────────────────────────────────
   const advanceWave = useCallback(() => {
     const g = gameRef.current;
-    if (!g) return;
+    if (!g || waveTransitioningRef.current) return;
+    // Damage from several projectiles can report the same final kill in one
+    // simulation frame. Lock the transition until that frame has completed.
+    waveTransitioningRef.current = true;
+    queueMicrotask(() => { waveTransitioningRef.current = false; });
     const newWave = waveRef.current + 1;
     waveRef.current = newWave;
     setWave(newWave);
@@ -269,6 +283,17 @@ export default function App() {
     timeSlowRef.current = true;
     setTimeSlow(true);
   }, []);
+
+  const handlePremiumPurchase = useCallback(async () => {
+    if (purchasePending || premiumUnlocked) return;
+    setPurchasePending(true);
+    yandex.setGameplay(false);
+    audio.suspend();
+    const purchased = await yandex.purchasePermanent("void_wraith");
+    audio.resume();
+    setPurchasePending(false);
+    if (purchased) setPremiumUnlocked(true);
+  }, [premiumUnlocked, purchasePending]);
 
   const handleReturnToMenu = useCallback(() => {
     const finish = () => {
@@ -668,7 +693,7 @@ export default function App() {
             </h2>
             <p className="text-slate-400 font-mono text-xs mb-6">Выберите класс судна и специализацию вооружения</p>
 
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 max-w-4xl w-full mb-6">
+            <div className="grid grid-cols-5 gap-2.5 max-w-[930px] w-full mb-5">
               {SHIP_CLASSES.map((sc) => {
                 const isSelected = selectedClass === sc.id;
                 return (
@@ -676,11 +701,16 @@ export default function App() {
                     key={sc.id}
                     onClick={() => { audio.playHit(); setSelectedClass(sc.id); }}
                     className={`
-                      p-4 rounded-xl border-2 text-left transition-all duration-200 cursor-pointer relative overflow-hidden flex flex-col justify-between
+                      p-3 rounded-xl border-2 text-left transition-all duration-200 cursor-pointer relative overflow-hidden flex flex-col justify-between
                       ${isSelected ? `bg-slate-900/90 shadow-xl scale-105 ring-2 ring-sky-400` : "border-slate-800 bg-slate-950/70 hover:border-slate-700 hover:scale-102"}
                     `}
                     style={{ borderColor: isSelected ? sc.color : undefined }}
                   >
+                    {sc.premium && (
+                      <div className="absolute right-2 top-2 rounded-full bg-fuchsia-600 px-2 py-0.5 text-[9px] font-black text-white">
+                        {premiumUnlocked ? "КУПЛЕН" : "ПРЕМИУМ"}
+                      </div>
+                    )}
                     <div>
                       <div className="text-4xl mb-2">{sc.icon}</div>
                       <div className="font-black text-white text-base leading-tight">{sc.name}</div>
@@ -707,10 +737,15 @@ export default function App() {
                 НАЗАД
               </button>
               <button
-                onClick={() => startGame(selectedClass)}
-                className="px-12 py-3.5 bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white font-black text-lg rounded-full shadow-xl shadow-blue-900/50 transition-all active:scale-95 cursor-pointer"
+                onClick={() => selectedClass === "void_wraith" && !premiumUnlocked
+                  ? void handlePremiumPurchase()
+                  : startGame(selectedClass)}
+                disabled={purchasePending}
+                className="px-12 py-3.5 bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 disabled:opacity-50 text-white font-black text-lg rounded-full shadow-xl shadow-blue-900/50 transition-all active:scale-95 cursor-pointer"
               >
-                НАЧАТЬ МИССИЮ 🚀
+                {selectedClass === "void_wraith" && !premiumUnlocked
+                  ? (purchasePending ? "ОТКРЫВАЕМ МАГАЗИН…" : "ОТКРЫТЬ «НЕМЕЗИДУ» ✦")
+                  : "НАЧАТЬ МИССИЮ 🚀"}
               </button>
             </div>
           </div>

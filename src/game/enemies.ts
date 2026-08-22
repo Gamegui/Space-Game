@@ -36,7 +36,16 @@ export function getWaveEnemyTypes(wave: number): EnemyType[] {
   if (wave === 12) return ["artillery", "stealth", "splitter", "kamikaze"];
   if (wave === 13) return ["tank", "artillery", "healer", "charger"];
   if (wave === 14) return ["scout", "fighter", "bomber", "sniper", "tank", "splitter", "kamikaze", "spinner", "charger", "artillery"];
-  return ["boss_dreadnought"];
+  if (wave % 5 === 0) return [getBossType(wave)];
+
+  // After wave 15 regular waves must contain regular enemies only. Previously
+  // every wave >= 15 returned boss_dreadnought, so wave 16 queued 15 bosses.
+  const lateWavePools: EnemyType[][] = [
+    ["tank", "artillery", "charger", "fighter", "spinner"],
+    ["stealth", "healer", "sniper", "kamikaze", "splitter"],
+    ["artillery", "tank", "bomber", "charger", "healer"],
+  ];
+  return lateWavePools[Math.floor((wave - 16) / 2) % lateWavePools.length];
 }
 
 export function isBossWave(wave: number): boolean {
@@ -168,8 +177,9 @@ export function getWaveComposition(wave: number): { type: EnemyType; count: numb
   if (wave === 8) return [{ type: "tank", count: 6 }, { type: "spinner", count: 6 }, { type: "fighter", count: 8 }];
   if (wave === 9) return [{ type: "stealth", count: 7 }, { type: "charger", count: 6 }, { type: "bomber", count: 5 }, { type: "splitter", count: 5 }];
 
-  const types = getWaveEnemyTypes(wave);
-  const baseCount = 10 + Math.floor(wave * 2.2);
+  // Defensive filter: a malformed late-wave pool can never mass-spawn bosses.
+  const types = getWaveEnemyTypes(wave).filter(type => !type.startsWith("boss_"));
+  const baseCount = Math.min(48, 10 + Math.floor(wave * 2.2));
   const result: { type: EnemyType; count: number }[] = [];
 
   const leadType = types[0] || "scout";

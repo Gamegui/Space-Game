@@ -14,6 +14,12 @@ type YandexPlayer = {
   setData?: (data: Record<string, unknown>, flush?: boolean) => Promise<void>;
 };
 
+type Purchase = { productID: string; purchaseToken?: string };
+type YandexPayments = {
+  getPurchases: () => Promise<Purchase[]>;
+  purchase: (options: { id: string }) => Promise<Purchase>;
+};
+
 type YandexSDK = {
   environment?: { i18n?: { lang?: string; tld?: string } };
   features?: { LoadingAPI?: { ready: () => void }; GameplayAPI?: { start: () => void; stop: () => void } };
@@ -22,6 +28,7 @@ type YandexSDK = {
     showRewardedVideo: (options: { callbacks: AdCallbacks }) => void;
   };
   getPlayer?: (options?: { scopes?: boolean }) => Promise<YandexPlayer>;
+  getPayments?: (options?: { signed?: boolean }) => Promise<YandexPayments>;
   getLeaderboards?: () => Promise<{ setLeaderboardScore: (name: string, score: number) => Promise<void> }>;
 };
 
@@ -34,6 +41,7 @@ declare global {
 class YandexPlatform {
   private sdk: YandexSDK | null = null;
   private player: YandexPlayer | null = null;
+  private payments: YandexPayments | null = null;
   private initPromise: Promise<void> | null = null;
   private playing = false;
   private lastInterstitial = 0;
@@ -69,6 +77,10 @@ class YandexPlatform {
     return Boolean(this.sdk?.adv);
   }
 
+  isPlatformAvailable() {
+    return Boolean(this.sdk);
+  }
+
   getLanguage() {
     return this.language;
   }
@@ -98,6 +110,25 @@ class YandexPlatform {
       const leaderboards = await this.sdk?.getLeaderboards?.();
       await leaderboards?.setLeaderboardScore("highscore", Math.max(0, Math.floor(score)));
     } catch { /* leaderboard may not be configured in the console yet */ }
+  }
+
+  async hasPermanentPurchase(productId: string): Promise<boolean> {
+    await this.init();
+    try {
+      this.payments ??= await this.sdk?.getPayments?.({ signed: false }) ?? null;
+      const purchases = await this.payments?.getPurchases();
+      return purchases?.some(purchase => purchase.productID === productId) ?? false;
+    } catch { return false; }
+  }
+
+  async purchasePermanent(productId: string): Promise<boolean> {
+    await this.init();
+    try {
+      this.payments ??= await this.sdk?.getPayments?.({ signed: false }) ?? null;
+      if (!this.payments) return false;
+      const purchase = await this.payments.purchase({ id: productId });
+      return purchase.productID === productId;
+    } catch { return false; }
   }
 
   showInterstitial(onPause: () => void, onResume: () => void) {

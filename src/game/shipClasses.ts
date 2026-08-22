@@ -37,6 +37,16 @@ export const SHIP_CLASSES: ShipClassDef[] = [
     perks: ["Старт с 2 сателлитами", "Старт с 1 боевым дроном", "+50% радиус магнита опыта", "+20% частота огня дронов"],
     color: "#10b981",
   },
+  {
+    id: "void_wraith",
+    name: "Призрак «Немезида»",
+    subtitle: "Премиальный фазовый охотник",
+    icon: "👻",
+    description: "Экспериментальный корабль Бездны с фазовой защитой и самонаводящимися орудиями.",
+    perks: ["Периодическая неуязвимость", "Самонаводящиеся снаряды", "+1 пробитие", "+20% скорость полёта"],
+    color: "#e879f9",
+    premium: true,
+  },
 ];
 
 export function applyShipClassStats(player: PlayerState, classId: ShipClassId) {
@@ -86,6 +96,20 @@ export function applyShipClassStats(player: PlayerState, classId: ShipClassId) {
         { id: 999, pos: { x: player.pos.x, y: player.pos.y }, angle: 0, orbitAngle: 0, orbitRadius: 110, speed: 2.2, shootTimer: 0, level: 1 },
       ];
       player.shield = { hp: 15, maxHp: 15, regenTimer: 0, active: true };
+      break;
+
+    case "void_wraith":
+      player.maxHp = 90;
+      player.hp = 90;
+      player.speed = 6.4;
+      player.fireRate = 10.5;
+      player.bulletDamage = 1.45;
+      player.bulletSpeed = 15;
+      player.piercing = 1;
+      player.homing = true;
+      player.homingStrength = 0.08;
+      player.ghostMode = true;
+      player.shield = { hp: 25, maxHp: 25, regenTimer: 0, active: true };
       break;
   }
 }

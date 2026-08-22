@@ -11,6 +11,9 @@ class SoundEngine {
   private musicOscillators: OscillatorNode[] = [];
   private xpPitchCounter: number = 0;
   private lastXpTime: number = 0;
+  private lastShootAt: number = -1;
+  private lastHitAt: number = -1;
+  private lastExplosionAt: number = -1;
 
   constructor() {}
 
@@ -24,11 +27,12 @@ class SoundEngine {
       this.masterGain.connect(this.ctx.destination);
 
       this.sfxGain = this.ctx.createGain();
-      this.sfxGain.gain.setValueAtTime(0.35, this.ctx.currentTime);
+      this.sfxGain.gain.setValueAtTime(0.26, this.ctx.currentTime);
       this.sfxGain.connect(this.masterGain);
 
       this.musicGain = this.ctx.createGain();
-      this.musicGain.gain.setValueAtTime(0.24, this.ctx.currentTime);
+      // The old constant five-oscillator drone caused listening fatigue.
+      this.musicGain.gain.setValueAtTime(0.085, this.ctx.currentTime);
       this.musicGain.connect(this.masterGain);
     } catch {}
   }
@@ -65,13 +69,16 @@ class SoundEngine {
     if (!this.ctx || !this.sfxGain) return;
 
     const t = this.ctx.currentTime;
+    if (t - this.lastShootAt < 0.035) return;
+    this.lastShootAt = t;
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
     const filter = this.ctx.createBiquadFilter();
 
     osc.type = "sine";
-    const startFreq = sniper ? 880 : 540;
-    const endFreq = sniper ? 140 : 180;
+    const pitchVariation = 0.94 + Math.random() * 0.12;
+    const startFreq = (sniper ? 880 : 540) * pitchVariation;
+    const endFreq = (sniper ? 140 : 180) * pitchVariation;
     const duration = sniper ? 0.12 : 0.06;
 
     osc.frequency.setValueAtTime(startFreq, t);
@@ -124,6 +131,8 @@ class SoundEngine {
     if (!this.ctx || !this.sfxGain) return;
 
     const t = this.ctx.currentTime;
+    if (t - this.lastHitAt < 0.045) return;
+    this.lastHitAt = t;
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
 
@@ -148,6 +157,8 @@ class SoundEngine {
     if (!this.ctx || !this.sfxGain) return;
 
     const t = this.ctx.currentTime;
+    if (!big && t - this.lastExplosionAt < 0.07) return;
+    this.lastExplosionAt = t;
     const dur = big ? 0.55 : 0.22;
 
     const bufferSize = Math.floor(this.ctx.sampleRate * dur);
@@ -385,8 +396,9 @@ class SoundEngine {
     if (this.isMusicPlaying || !this.ctx || !this.musicGain) return;
     this.isMusicPlaying = true;
 
-    // Atmospheric warm cosmic chord drone (Am9 / Dm9 space harmonics)
-    const chord = [110, 164.81, 220, 261.63, 329.63];
+    // Quiet, airy three-note pad. Sine/triangle voices avoid the tiring buzz of
+    // the previous five sawtooth oscillators, while slight detune adds movement.
+    const chord = [110, 164.81, 246.94];
     const t = this.ctx.currentTime;
 
     this.musicOscillators = chord.map((freq, i) => {
@@ -394,13 +406,14 @@ class SoundEngine {
       const gain = this.ctx!.createGain();
       const filter = this.ctx!.createBiquadFilter();
 
-      osc.type = i % 2 === 0 ? "sawtooth" : "sine";
+      osc.type = i === 1 ? "triangle" : "sine";
       osc.frequency.setValueAtTime(freq, t);
+      osc.detune.setValueAtTime((i - 1) * 5, t);
 
       filter.type = "lowpass";
-      filter.frequency.setValueAtTime(260 + i * 70, t);
+      filter.frequency.setValueAtTime(190 + i * 80, t);
 
-      gain.gain.setValueAtTime(0.07, t);
+      gain.gain.setValueAtTime(0.028, t);
 
       osc.connect(filter);
       filter.connect(gain);

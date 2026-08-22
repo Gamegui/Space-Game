@@ -1,6 +1,6 @@
 export interface Vec2 { x: number; y: number; }
 
-export type ShipClassId = "interceptor" | "dreadnought" | "tempest" | "commander";
+export type ShipClassId = "interceptor" | "dreadnought" | "tempest" | "commander" | "void_wraith";
 
 export interface ShipClassDef {
   id: ShipClassId;
@@ -10,6 +10,7 @@ export interface ShipClassDef {
   description: string;
   perks: string[];
   color: string;
+  premium?: boolean;
 }
 
 export interface FloatingText {

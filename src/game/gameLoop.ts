@@ -928,6 +928,9 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     if (ex.progress >= 1) obj.explosions.splice(i, 1);
   }
 
+  // Keep rendering and collision costs bounded even for extreme end-game builds.
+  enforceObjectBudgets(obj);
+
   // ─── Wave completion ───────────────────────────────────────────────────────
   if (obj.waveEnemyQueue.length === 0 && enemies.length === 0 && !obj.bossActive) {
     input.onWaveComplete();
@@ -935,6 +938,56 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+const OBJECT_BUDGETS = {
+  playerBullets: 450,
+  enemyBullets: 260,
+  particles: 550,
+  xpOrbs: 220,
+  floatingTexts: 100,
+  lightnings: 90,
+  mines: 60,
+  explosions: 60,
+  powerups: 30,
+  enemies: 80,
+} as const;
+
+function trimOldest<T>(items: T[], max: number) {
+  if (items.length > max) items.splice(0, items.length - max);
+}
+
+function enforceObjectBudgets(obj: GameObjects) {
+  const { bullets } = obj;
+  let playerBulletTotal = 0;
+  for (const bullet of bullets) if (bullet.fromPlayer) playerBulletTotal++;
+  const enemyBulletTotal = bullets.length - playerBulletTotal;
+  if (playerBulletTotal > OBJECT_BUDGETS.playerBullets || enemyBulletTotal > OBJECT_BUDGETS.enemyBullets) {
+    const playerBullets: Bullet[] = [];
+    const enemyBullets: Bullet[] = [];
+    for (let i = bullets.length - 1; i >= 0; i--) {
+      const bullet = bullets[i];
+      const target = bullet.fromPlayer ? playerBullets : enemyBullets;
+      const max = bullet.fromPlayer ? OBJECT_BUDGETS.playerBullets : OBJECT_BUDGETS.enemyBullets;
+      if (target.length < max) target.push(bullet);
+    }
+    bullets.length = 0;
+    bullets.push(...playerBullets.reverse(), ...enemyBullets.reverse());
+  }
+
+  if (obj.enemies.length > OBJECT_BUDGETS.enemies) {
+    const bosses = obj.enemies.filter(enemy => enemy.isBoss);
+    const regular = obj.enemies.filter(enemy => !enemy.isBoss).slice(-(OBJECT_BUDGETS.enemies - bosses.length));
+    obj.enemies.length = 0;
+    obj.enemies.push(...bosses, ...regular);
+  }
+  trimOldest(obj.particles, OBJECT_BUDGETS.particles);
+  trimOldest(obj.xpOrbs, OBJECT_BUDGETS.xpOrbs);
+  trimOldest(obj.floatingTexts, OBJECT_BUDGETS.floatingTexts);
+  trimOldest(obj.lightnings, OBJECT_BUDGETS.lightnings);
+  trimOldest(obj.mines, OBJECT_BUDGETS.mines);
+  trimOldest(obj.explosions, OBJECT_BUDGETS.explosions);
+  trimOldest(obj.powerups, OBJECT_BUDGETS.powerups);
+}
+
 function makePlayerBullet(player: PlayerState, pos: Vec2, vel: Vec2): Bullet {
   player.stats.shotsFired++;
   return {
@@ -942,7 +995,7 @@ function makePlayerBullet(player: PlayerState, pos: Vec2, vel: Vec2): Bullet {
     fromPlayer: true,
     damage: player.bulletDamage,
     size: player.bulletSize,
-    color: player.snipeMode ? "#ffffff" : (player.shipClass === "tempest" ? "#c084fc" : (player.shipClass === "dreadnought" ? "#f59e0b" : "#38bdf8")),
+    color: player.snipeMode ? "#ffffff" : (player.shipClass === "tempest" ? "#c084fc" : (player.shipClass === "dreadnought" ? "#f59e0b" : (player.shipClass === "void_wraith" ? "#e879f9" : "#38bdf8"))),
     pierce: player.piercing,
     homing: player.homing,
   };

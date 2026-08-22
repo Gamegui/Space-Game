@@ -94,7 +94,8 @@ export function drawPlayer(ctx: CanvasRenderingContext2D, state: PlayerState, fr
   const eg = ctx.createLinearGradient(0, 0, 0, 40);
   const trailColor = shipClass === "tempest" ? "rgba(168,85,247,0.9)" :
                      shipClass === "dreadnought" ? "rgba(245,158,11,0.9)" :
-                     shipClass === "commander" ? "rgba(16,185,129,0.9)" : "rgba(56,189,248,0.9)";
+                     shipClass === "commander" ? "rgba(16,185,129,0.9)" :
+                     shipClass === "void_wraith" ? "rgba(232,121,249,0.9)" : "rgba(56,189,248,0.9)";
   eg.addColorStop(0, trailColor);
   eg.addColorStop(0.5, "rgba(99,102,241,0.5)");
   eg.addColorStop(1, "rgba(0,0,0,0)");
@@ -110,7 +111,8 @@ export function drawPlayer(ctx: CanvasRenderingContext2D, state: PlayerState, fr
   // Ship body based on class
   const mainColor = shipClass === "tempest" ? "#a855f7" :
                     shipClass === "dreadnought" ? "#f59e0b" :
-                    shipClass === "commander" ? "#10b981" : "#38bdf8";
+                    shipClass === "commander" ? "#10b981" :
+                    shipClass === "void_wraith" ? "#e879f9" : "#38bdf8";
 
   ctx.shadowBlur = 15;
   ctx.shadowColor = mainColor;

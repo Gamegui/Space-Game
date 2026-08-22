@@ -288,7 +288,8 @@ export function getUpgradeLevel(state: PlayerState, id: string): number {
 
 export function canUpgrade(state: PlayerState, def: UpgradeDef): boolean {
   const lvl = getUpgradeLevel(state, def.id);
-  return lvl < def.maxLevel;
+  const rarityLevelGate = { common: 1, rare: 3, epic: 7, legendary: 12 } as const;
+  return lvl < def.maxLevel && state.level >= rarityLevelGate[def.rarity];
 }
 
 export function rollUpgrades(state: PlayerState, count = 3): UpgradeDef[] {
@@ -297,7 +298,12 @@ export function rollUpgrades(state: PlayerState, count = 3): UpgradeDef[] {
 
   const weighted: UpgradeDef[] = [];
   for (const u of available) {
-    const w = u.rarity === "common" ? 40 : u.rarity === "rare" ? 15 : u.rarity === "epic" ? 7 : 3;
+    // Strong upgrades are intentionally scarce. Their chance grows only in a
+    // mature run, after enemies have scaled enough to withstand them.
+    const w = u.rarity === "common" ? 100
+      : u.rarity === "rare" ? (state.level >= 8 ? 24 : 15)
+      : u.rarity === "epic" ? (state.level >= 15 ? 8 : 3)
+      : (state.level >= 20 ? 3 : 1);
     for (let i = 0; i < w; i++) weighted.push(u);
   }
 
@@ -321,5 +327,21 @@ export function applyUpgrade(state: PlayerState, def: UpgradeDef): PlayerState {
   def.apply(state, newLevel);
   if (existing) existing.level = newLevel;
   else state.upgrades.push({ id: def.id, level: newLevel });
+
+  // Global safety caps preserve build variety without allowing one combination
+  // to trivialize every boss or create thousands of projectiles per second.
+  state.multishot = Math.min(state.multishot, 18);
+  state.fireRate = Math.max(state.fireRate, 3);
+  state.bulletSize = Math.min(state.bulletSize, 12);
+  state.piercing = Math.min(state.piercing, 12);
+  state.speed = Math.min(state.speed, 8.5);
+  state.critChance = Math.min(state.critChance, 0.65);
+  state.critMultiplier = Math.min(state.critMultiplier, 6);
+  state.burnChance = Math.min(state.burnChance, 0.65);
+  state.freezeChance = Math.min(state.freezeChance, 0.6);
+  state.poisonChance = Math.min(state.poisonChance, 0.65);
+  state.lightningChance = Math.min(state.lightningChance, 0.5);
+  if (state.satellites.length > 6) state.satellites.length = 6;
+  if (state.drones.length > 5) state.drones.length = 5;
   return state;
 }

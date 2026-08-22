@@ -322,6 +322,20 @@ export function getAdaptiveDifficulty(state: PlayerState, wave: number): { power
   return { power, scale: 1 + Math.min(1.6, excessPower / 85) };
 }
 
+const LIMIT_BREAK: UpgradeDef = {
+  id: "limit_break",
+  name: "Прорыв предела",
+  icon: "♾️",
+  rarity: "legendary",
+  category: "особое",
+  maxLevel: 9999,
+  description: "+5% урона и ремонт 10 HP. Повторяется после завершения основного пула.",
+  apply: (state, _level) => {
+    state.bulletDamage *= 1.05;
+    state.hp = Math.min(state.maxHp, state.hp + 10);
+  },
+};
+
 export function getUpgradeLevel(state: PlayerState, id: string): number {
   const u = state.upgrades.find(u => u.id === id);
   return u ? u.level : 0;
@@ -336,7 +350,9 @@ export function canUpgrade(state: PlayerState, def: UpgradeDef): boolean {
 export function rollUpgrades(state: PlayerState, count = 3, excludeIds: string[] = []): UpgradeDef[] {
   const excluded = new Set(excludeIds);
   const available = ALL_UPGRADES.filter(u => canUpgrade(state, u) && !excluded.has(u.id));
-  if (available.length === 0) return [];
+  // A maxed-out build must still resolve queued level-ups. Without a fallback,
+  // two simultaneous levels could leave the player trapped in an empty panel.
+  if (available.length === 0) return [LIMIT_BREAK];
 
   const weighted: UpgradeDef[] = [];
   for (const u of available) {

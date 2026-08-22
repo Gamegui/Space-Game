@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { UpgradeDef } from "../game/types";
 import type { PlayerState } from "../game/types";
 import { getUpgradeLevel } from "../game/upgrades";
@@ -9,12 +10,14 @@ interface Props {
   onChoose: (u: UpgradeDef) => void;
   level: number;
   rerollsLeft: number;
+  banishesLeft: number;
   adAvailable: boolean;
   adPending: boolean;
   bonusChoiceUsed: boolean;
   onReroll: () => void;
   onAdReroll: () => void;
   onAdBonusChoice: () => void;
+  onBanish: (upgrade: UpgradeDef) => void;
 }
 
 const rarityColors: Record<string, { bg: string; border: string; text: string; badge: string }> = {
@@ -34,9 +37,10 @@ const categoryIcon: Record<string, string> = {
 };
 
 export default function UpgradePanel({
-  choices, player, onChoose, level, rerollsLeft, adAvailable, adPending,
-  bonusChoiceUsed, onReroll, onAdReroll, onAdBonusChoice,
+  choices, player, onChoose, level, rerollsLeft, banishesLeft, adAvailable, adPending,
+  bonusChoiceUsed, onReroll, onAdReroll, onAdBonusChoice, onBanish,
 }: Props) {
+  const [buildOpen, setBuildOpen] = useState(false);
   return (
     <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/85 backdrop-blur-md z-20 rounded-2xl p-4">
       {/* Header */}
@@ -52,7 +56,8 @@ export default function UpgradePanel({
           const c = rarityColors[u.rarity] || rarityColors.common;
           const currentLevel = getUpgradeLevel(player, u.id);
           const maxLevel = u.maxLevel;
-          const stars = Array.from({ length: maxLevel }, (_, i) => i < currentLevel);
+          const visiblePips = Math.min(maxLevel, 8);
+          const stars = Array.from({ length: visiblePips }, (_, i) => i < Math.min(currentLevel, visiblePips));
 
           return (
             <button
@@ -131,29 +136,42 @@ export default function UpgradePanel({
             🎬 +4-Й ЭПИЧЕСКИЙ ИЛИ ЛЕГЕНДАРНЫЙ
           </button>
         )}
+        {banishesLeft > 0 && (
+          <div className="flex items-center gap-1 rounded-lg border border-rose-800 bg-rose-950/80 px-2 py-1 text-rose-200">
+            <span className="font-black">ИЗГНАТЬ:</span>
+            {choices.filter(choice => choice.id !== "limit_break").map((choice, index) => (
+              <button key={choice.id} onClick={() => onBanish(choice)} title={`Убрать «${choice.name}» до конца забега`} className="rounded bg-rose-800 px-2 py-1 font-black hover:bg-rose-600 cursor-pointer">{index + 1}</button>
+            ))}
+          </div>
+        )}
       </div>
 
-      {/* Build progress and compact installed list never grow beyond the panel. */}
-      <div className="mt-3 grid w-full max-w-4xl grid-cols-2 gap-3 text-left">
-        <div className="rounded-xl border border-fuchsia-900/70 bg-slate-950/80 p-2.5">
-          <div className="mb-1.5 text-[10px] font-black tracking-widest text-fuchsia-300">СИНЕРГИИ БИЛДА</div>
-          <div className="grid grid-cols-2 gap-1">
-            {SYNERGIES.map(synergy => {
-              const found = synergy.requires.filter(id => getUpgradeLevel(player, id) > 0).length;
-              const active = player.synergies.includes(synergy.id);
-              return <div key={synergy.id} className={`rounded px-2 py-1 text-[10px] font-bold ${active ? "bg-fuchsia-800 text-white" : "bg-slate-900 text-slate-400"}`}>
-                {synergy.icon} {synergy.name} · {active ? "ГОТОВО" : `${found}/${synergy.requires.length}`}
-              </div>;
-            })}
+      {/* Build details stay collapsed by default to keep mobile choice focused. */}
+      <button onClick={() => setBuildOpen(open => !open)} className="mt-2 rounded-full border border-fuchsia-800 bg-fuchsia-950/70 px-4 py-1.5 text-[10px] font-black text-fuchsia-200 cursor-pointer">
+        🧬 БИЛД И СИНЕРГИИ · {player.upgrades.length} {buildOpen ? "▲" : "▼"}
+      </button>
+      {buildOpen && (
+        <div className="mt-2 grid w-full max-w-4xl grid-cols-2 gap-3 text-left">
+          <div className="rounded-xl border border-fuchsia-900/70 bg-slate-950/80 p-2.5">
+            <div className="mb-1.5 text-[10px] font-black tracking-widest text-fuchsia-300">СИНЕРГИИ БИЛДА</div>
+            <div className="grid grid-cols-2 gap-1">
+              {SYNERGIES.map(synergy => {
+                const found = synergy.requires.filter(id => getUpgradeLevel(player, id) > 0).length;
+                const active = player.synergies.includes(synergy.id);
+                return <div key={synergy.id} className={`rounded px-2 py-1 text-[10px] font-bold ${active ? "bg-fuchsia-800 text-white" : "bg-slate-900 text-slate-400"}`}>
+                  {synergy.icon} {synergy.name} · {active ? "ГОТОВО" : `${found}/${synergy.requires.length}`}
+                </div>;
+              })}
+            </div>
+          </div>
+          <div className="rounded-xl border border-slate-800 bg-slate-950/80 p-2.5">
+            <div className="mb-1.5 text-[10px] font-black tracking-widest text-slate-400">МОДИФИКАЦИИ · {player.upgrades.length}</div>
+            <div className="max-h-14 overflow-y-auto pr-1 text-[10px] leading-5 text-sky-300">
+              {player.upgrades.length === 0 ? "Пока не установлены" : player.upgrades.map(upgrade => `${upgrade.id.replace(/_/g, " ")} ×${upgrade.level}`).join(" · ")}
+            </div>
           </div>
         </div>
-        <div className="rounded-xl border border-slate-800 bg-slate-950/80 p-2.5">
-          <div className="mb-1.5 text-[10px] font-black tracking-widest text-slate-400">МОДИФИКАЦИИ · {player.upgrades.length}</div>
-          <div className="max-h-14 overflow-y-auto pr-1 text-[10px] leading-5 text-sky-300 scrollbar-thin">
-            {player.upgrades.length === 0 ? "Пока не установлены" : player.upgrades.map(upgrade => `${upgrade.id.replace(/_/g, " ")} ×${upgrade.level}`).join(" · ")}
-          </div>
-        </div>
-      </div>
+      )}
     </div>
   );
 }

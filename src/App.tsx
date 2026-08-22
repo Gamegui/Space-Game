@@ -91,6 +91,7 @@ export default function App() {
   const bossIntroTimerRef = useRef(0);
   const waveTransitioningRef = useRef(false);
   const adminGodRef = useRef(false);
+  const banishedUpgradeIdsRef = useRef<Set<string>>(new Set());
 
   // UI state (causes re-renders)
   const [phase, setPhase]         = useState<GamePhase>("menu");
@@ -115,6 +116,7 @@ export default function App() {
   const [adminGod, setAdminGod] = useState(false);
   const [synergyNotice, setSynergyNotice] = useState<string | null>(null);
   const [rerollsLeft, setRerollsLeft] = useState(3);
+  const [banishesLeft, setBanishesLeft] = useState(1);
   const [upgradeAdPending, setUpgradeAdPending] = useState(false);
   const [bonusChoiceUsed, setBonusChoiceUsed] = useState(false);
   const adminEnabled = import.meta.env.DEV && import.meta.env.VITE_ADMIN === "true";
@@ -195,6 +197,8 @@ export default function App() {
     setReviveUsed(false);
     setAdPending(false);
     setRerollsLeft(3);
+    setBanishesLeft(1);
+    banishedUpgradeIdsRef.current.clear();
     setUpgradeAdPending(false);
     setBonusChoiceUsed(false);
     setWaveNotice(null);
@@ -284,7 +288,7 @@ export default function App() {
   const handleLevelUp = useCallback((player: PlayerState) => {
     pendingLevelUpsRef.current++;
     if (phaseRef.current === "playing" && pendingLevelUpsRef.current === 1) {
-      const choices = rollUpgrades(player, 3);
+      const choices = rollUpgrades(player, 3, [...banishedUpgradeIdsRef.current]);
       upgradeChoicesRef.current = choices;
       setUpgradeChoices(choices);
       setBonusChoiceUsed(false);
@@ -306,7 +310,7 @@ export default function App() {
     }
     pendingLevelUpsRef.current--;
     if (pendingLevelUpsRef.current > 0) {
-      const choices = rollUpgrades(g.player, 3);
+      const choices = rollUpgrades(g.player, 3, [...banishedUpgradeIdsRef.current]);
       upgradeChoicesRef.current = choices;
       setUpgradeChoices(choices);
       setBonusChoiceUsed(false);
@@ -320,7 +324,7 @@ export default function App() {
     const g = gameRef.current;
     if (!g) return;
     const previousIds = upgradeChoicesRef.current.map(choice => choice.id);
-    const choices = rollUpgrades(g.player, 3, previousIds);
+    const choices = rollUpgrades(g.player, 3, [...banishedUpgradeIdsRef.current, ...previousIds]);
     if (choices.length === 0) return;
     upgradeChoicesRef.current = choices;
     setUpgradeChoices(choices);
@@ -352,7 +356,10 @@ export default function App() {
       setUpgradeAdPending(false);
     }
     if (!rewarded || !gameRef.current) return;
-    const bonus = rollHighRarityUpgrade(gameRef.current.player, upgradeChoicesRef.current.map(choice => choice.id));
+    const bonus = rollHighRarityUpgrade(gameRef.current.player, [
+      ...banishedUpgradeIdsRef.current,
+      ...upgradeChoicesRef.current.map(choice => choice.id),
+    ]);
     if (!bonus) return;
     const choices = [...upgradeChoicesRef.current, bonus];
     upgradeChoicesRef.current = choices;
@@ -360,6 +367,23 @@ export default function App() {
     setBonusChoiceUsed(true);
     audio.playPowerup();
   }, [adminEnabled, bonusChoiceUsed, upgradeAdPending]);
+
+  const handleBanishUpgrade = useCallback((upgrade: UpgradeDef) => {
+    const g = gameRef.current;
+    if (!g || banishesLeft <= 0 || upgrade.id === "limit_break") return;
+    banishedUpgradeIdsRef.current.add(upgrade.id);
+    setBanishesLeft(value => value - 1);
+    const targetLength = upgradeChoicesRef.current.length;
+    const remaining = upgradeChoicesRef.current.filter(choice => choice.id !== upgrade.id);
+    const replacement = rollUpgrades(g.player, 1, [
+      ...banishedUpgradeIdsRef.current,
+      ...remaining.map(choice => choice.id),
+    ]);
+    const choices = [...remaining, ...replacement].slice(0, targetLength);
+    upgradeChoicesRef.current = choices;
+    setUpgradeChoices(choices);
+    audio.playHit();
+  }, [banishesLeft]);
 
   // ─── Nuke ────────────────────────────────────────────────────────────────
   const handleNuke = useCallback(() => {
@@ -834,12 +858,14 @@ export default function App() {
             onChoose={handleChooseUpgrade}
             level={playerLevel}
             rerollsLeft={rerollsLeft}
+            banishesLeft={banishesLeft}
             adAvailable={adsAvailable || adminEnabled}
             adPending={upgradeAdPending}
             bonusChoiceUsed={bonusChoiceUsed}
             onReroll={handleFreeReroll}
             onAdReroll={handleAdReroll}
             onAdBonusChoice={handleAdBonusChoice}
+            onBanish={handleBanishUpgrade}
           />
         )}
 

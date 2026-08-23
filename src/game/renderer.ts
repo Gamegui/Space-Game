@@ -7,6 +7,11 @@ import { getEnemyColors, getEnemySize } from "./enemies";
 export const W = 960;
 export const H = 720;
 
+let renderPerformanceTier: 0 | 1 | 2 = 2;
+export function setRenderPerformanceTier(tier: 0 | 1 | 2) {
+  renderPerformanceTier = tier;
+}
+
 // ─── Stars ────────────────────────────────────────────────────────────────────
 export function drawStars(ctx: CanvasRenderingContext2D, stars: Star[]) {
   for (const s of stars) {
@@ -579,18 +584,22 @@ function drawBossOmega(ctx: CanvasRenderingContext2D, fill: string, stroke: stri
 export function drawBullet(ctx: CanvasRenderingContext2D, b: Bullet) {
   ctx.save();
   ctx.translate(b.pos.x, b.pos.y);
-  ctx.shadowBlur = b.fromPlayer ? 12 : 8;
+  ctx.shadowBlur = renderPerformanceTier === 0 ? 0 : renderPerformanceTier === 1 ? 4 : (b.fromPlayer ? 12 : 8);
   ctx.shadowColor = b.color;
 
   if (b.fromPlayer) {
-    const len = b.size * 3.5;
+    const len = b.size * (renderPerformanceTier === 0 ? 2.2 : 3.5);
     const angle = Math.atan2(b.vel.y, b.vel.x);
     ctx.rotate(angle + Math.PI / 2);
-    const g = ctx.createLinearGradient(0, -len, 0, len * 0.5);
-    g.addColorStop(0, "#fff");
-    g.addColorStop(0.3, b.color);
-    g.addColorStop(1, "rgba(0,0,0,0)");
-    ctx.fillStyle = g;
+    if (renderPerformanceTier === 0) {
+      ctx.fillStyle = b.color;
+    } else {
+      const g = ctx.createLinearGradient(0, -len, 0, len * 0.5);
+      g.addColorStop(0, "#fff");
+      g.addColorStop(0.3, b.color);
+      g.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = g;
+    }
     ctx.beginPath();
     ctx.ellipse(0, 0, b.size, len, 0, 0, Math.PI * 2);
     ctx.fill();
@@ -614,7 +623,7 @@ export function drawParticle(ctx: CanvasRenderingContext2D, p: Particle) {
   const alpha = (p.life / p.maxLife);
   ctx.save();
   ctx.globalAlpha = alpha;
-  if (p.glow) { ctx.shadowBlur = 8; ctx.shadowColor = p.color; }
+  if (p.glow && renderPerformanceTier > 0) { ctx.shadowBlur = renderPerformanceTier === 1 ? 3 : 8; ctx.shadowColor = p.color; }
   ctx.fillStyle = p.color;
   ctx.beginPath();
   if (p.shape === "square") {
@@ -632,13 +641,17 @@ export function drawXpOrb(ctx: CanvasRenderingContext2D, orb: XpOrb, frame: numb
   const pulse = Math.sin(frame * 0.1 + orb.id * 0.5) * 2;
   ctx.save();
   ctx.translate(orb.pos.x, orb.pos.y);
-  ctx.shadowBlur = 8;
+  ctx.shadowBlur = renderPerformanceTier === 0 ? 0 : renderPerformanceTier === 1 ? 3 : 8;
   ctx.shadowColor = "#a78bfa";
-  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 6 + pulse);
-  g.addColorStop(0, "#fff");
-  g.addColorStop(0.4, "#a78bfa");
-  g.addColorStop(1, "#7c3aed");
-  ctx.fillStyle = g;
+  if (renderPerformanceTier === 0) {
+    ctx.fillStyle = "#a78bfa";
+  } else {
+    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 6 + pulse);
+    g.addColorStop(0, "#fff");
+    g.addColorStop(0.4, "#a78bfa");
+    g.addColorStop(1, "#7c3aed");
+    ctx.fillStyle = g;
+  }
   ctx.beginPath();
   ctx.arc(0, 0, 5 + pulse, 0, Math.PI * 2);
   ctx.fill();
@@ -652,7 +665,7 @@ export function drawFloatingText(ctx: CanvasRenderingContext2D, ft: FloatingText
   ctx.globalAlpha = alpha;
   ctx.font = ft.isCrit ? `bold ${ft.size}px monospace` : `bold ${ft.size}px monospace`;
   ctx.fillStyle = ft.color;
-  ctx.shadowBlur = ft.isCrit ? 10 : 4;
+  ctx.shadowBlur = renderPerformanceTier === 0 ? 0 : ft.isCrit ? 10 : 4;
   ctx.shadowColor = ft.color;
   ctx.textAlign = "center";
   ctx.fillText(ft.text, ft.pos.x, ft.pos.y);

@@ -11,7 +11,7 @@ import { yandex } from "./platform/yandex";
 import {
   drawBackground, drawStars, drawPlayer, drawEnemy, drawBullet,
   drawParticle, drawXpOrb, drawMine, drawLightning, drawBlackHole, drawExplosion,
-  drawFloatingText, drawPowerup
+  drawFloatingText, drawPowerup, setRenderPerformanceTier
 } from "./game/renderer";
 import UpgradePanel from "./components/UpgradePanel";
 import HUD from "./components/HUD";
@@ -538,6 +538,7 @@ export default function App() {
     let healthyWindows = 0;
 
     function drawWorld(g: GameObjects, frame: number) {
+      setRenderPerformanceTier(g.performanceTier);
       const stride = g.performanceTier === 0 ? 3 : g.performanceTier === 1 ? 2 : 1;
       for (let i = frame % stride; i < g.explosions.length; i += stride) {
         const ex = g.explosions[i];
@@ -620,7 +621,8 @@ export default function App() {
         g.boss = g.enemies.find(enemy => enemy.isBoss) || null;
         if (!g.boss) { g.bossActive = false; setBossActive(false); }
       }
-      if (++uiSyncCounter >= 6) { uiSyncCounter = 0; syncUI(); }
+      // HUD at 6 Hz is responsive enough and avoids React work every few frames.
+      if (++uiSyncCounter >= 10) { uiSyncCounter = 0; syncUI(); }
     }
 
     function loop(timestamp: number) {

@@ -387,7 +387,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       }
       if (nearest) {
         const dx = nearest.pos.x - sx, dy = nearest.pos.y - sy;
-        const dist = Math.sqrt(dx * dx + dy * dy);
+        const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
         const dmg = player.bulletDamage * (0.55 + sat.level * 0.35);
         bullets.push({
           id: uid(), pos: { x: sx, y: sy },
@@ -419,7 +419,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       }
       if (nearest) {
         const dx = nearest.pos.x - drone.pos.x, dy = nearest.pos.y - drone.pos.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
+        const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
         const dmg = player.bulletDamage * (0.45 + drone.level * 0.3);
         bullets.push({
           id: uid(), pos: { ...drone.pos },
@@ -488,7 +488,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     if (obj.blackHolePos) {
       for (const e of enemies) {
         const dx = obj.blackHolePos.x - e.pos.x, dy = obj.blackHolePos.y - e.pos.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
+        const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
         if (dist < 200) {
           e.pos.x += (dx / dist) * 3 * timeScale;
           e.pos.y += (dy / dist) * 3 * timeScale;
@@ -825,9 +825,35 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   const enemiesToRemove = new Set<number>();
   const spawnedFromSplit: Enemy[] = [];
 
+  // Spatial grid avoids testing every player bullet against every enemy.
+  // 128px cells plus adjacent cells cover the largest boss collision radius.
+  const collisionCellSize = 128;
+  const collisionColumns = Math.ceil(W / collisionCellSize);
+  const enemyGrid = new Map<number, Enemy[]>();
+  for (const enemy of enemies) {
+    const cellX = Math.floor(enemy.pos.x / collisionCellSize);
+    const cellY = Math.floor(enemy.pos.y / collisionCellSize);
+    const key = cellX + cellY * collisionColumns;
+    const cell = enemyGrid.get(key);
+    if (cell) cell.push(enemy); else enemyGrid.set(key, [enemy]);
+  }
+  const collisionCandidates: Enemy[] = [];
+
   for (const b of bullets) {
     if (!b.fromPlayer || bulletsToRemove.has(b.id)) continue;
-    for (const e of enemies) {
+    collisionCandidates.length = 0;
+    const bulletCellX = Math.floor(b.pos.x / collisionCellSize);
+    const bulletCellY = Math.floor(b.pos.y / collisionCellSize);
+    for (let offsetY = -1; offsetY <= 1; offsetY++) {
+      for (let offsetX = -1; offsetX <= 1; offsetX++) {
+        const candidateX = bulletCellX + offsetX;
+        const candidateY = bulletCellY + offsetY;
+        if (candidateX < 0 || candidateX >= collisionColumns || candidateY < 0) continue;
+        const cell = enemyGrid.get(candidateX + candidateY * collisionColumns);
+        if (cell) collisionCandidates.push(...cell);
+      }
+    }
+    for (const e of collisionCandidates) {
       if (enemiesToRemove.has(e.id)) continue;
       // Phantoms are intangible during the dim phase of their cycle.
       if (e.type === "phantom" && Math.floor(e.patternTimer / 90) % 3 === 0) continue;
@@ -1145,7 +1171,8 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   // ─── Wave completion / adaptive guard response ─────────────────────────────
   if (obj.waveEnemyQueue.length === 0 && enemies.length === 0 && !obj.bossActive) {
     const clearFrames = Math.max(1, frame - obj.waveStartedFrame);
-    const fastClear = wave >= 6 && clearFrames < Math.max(720, 1050 - wave * 5);
+    // Never append a guard after boss defeat; that transition belongs to loot/route UI.
+    const fastClear = wave >= 6 && wave % 5 !== 0 && clearFrames < Math.max(720, 1050 - wave * 5);
     if (fastClear) obj.fastClearStreak = Math.min(5, obj.fastClearStreak + 1);
     else obj.fastClearStreak = Math.max(0, obj.fastClearStreak - 1);
 
@@ -1292,7 +1319,7 @@ function firePlayerBullets(bullets: Bullet[], player: PlayerState, _enemies: Ene
 
 function shootEnemy(e: Enemy, player: PlayerState, bullets: Bullet[], wave: number, adaptiveScale = 1) {
   const dx = player.pos.x - e.pos.x, dy = player.pos.y - e.pos.y;
-  const dist = Math.sqrt(dx * dx + dy * dy);
+  const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
   const spd = 3.6 + wave * 0.08;
   const color = getEnemyBulletColorLocal(e.type);
   const baseDamage = e.isBoss ? 2.5 + wave * 0.22 : 1 + wave * 0.035;

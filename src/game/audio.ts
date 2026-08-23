@@ -9,6 +9,7 @@ class SoundEngine {
   private isMuted: boolean = false;
   private isMusicPlaying: boolean = false;
   private musicOscillators: OscillatorNode[] = [];
+  private noiseBuffer: AudioBuffer | null = null;
   private xpPitchCounter: number = 0;
   private lastXpTime: number = 0;
   private lastShootAt: number = -1;
@@ -22,6 +23,12 @@ class SoundEngine {
     try {
       const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       this.ctx = new AudioCtx();
+      // Reuse one noise sample for every explosion instead of allocating and
+      // filling a new AudioBuffer during combat.
+      const noiseLength = Math.floor(this.ctx.sampleRate * 1.25);
+      this.noiseBuffer = this.ctx.createBuffer(1, noiseLength, this.ctx.sampleRate);
+      const noise = this.noiseBuffer.getChannelData(0);
+      for (let i = 0; i < noise.length; i++) noise[i] = Math.random() * 2 - 1;
       this.masterGain = this.ctx.createGain();
       this.masterGain.gain.setValueAtTime(1.0, this.ctx.currentTime);
       this.masterGain.connect(this.ctx.destination);
@@ -161,15 +168,8 @@ class SoundEngine {
     this.lastExplosionAt = t;
     const dur = big ? 0.55 : 0.22;
 
-    const bufferSize = Math.floor(this.ctx.sampleRate * dur);
-    const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
-    const output = buffer.getChannelData(0);
-    for (let i = 0; i < bufferSize; i++) {
-      output[i] = Math.random() * 2 - 1;
-    }
-
     const whiteNoise = this.ctx.createBufferSource();
-    whiteNoise.buffer = buffer;
+    whiteNoise.buffer = this.noiseBuffer;
 
     const filter = this.ctx.createBiquadFilter();
     filter.type = "lowpass";
@@ -195,7 +195,7 @@ class SoundEngine {
     sub.connect(subGain);
     subGain.connect(this.sfxGain);
 
-    whiteNoise.start(t);
+    whiteNoise.start(t, Math.random() * Math.max(0, 1.2 - dur), dur);
     whiteNoise.stop(t + dur);
     sub.start(t);
     sub.stop(t + dur);

@@ -1,6 +1,6 @@
 export interface Vec2 { x: number; y: number; }
 
-export type ShipClassId = "interceptor" | "dreadnought" | "tempest" | "commander";
+export type ShipClassId = "interceptor" | "dreadnought" | "tempest" | "commander" | "void_wraith";
 
 export interface ShipClassDef {
   id: ShipClassId;
@@ -10,6 +10,7 @@ export interface ShipClassDef {
   description: string;
   perks: string[];
   color: string;
+  premium?: boolean;
 }
 
 export interface FloatingText {
@@ -70,6 +71,15 @@ export interface Enemy {
   shieldHp: number;
   maxShieldHp: number;
   frozen: number;
+  controlResistance: number;
+  controlImmunity: number;
+  controlDecayTimer: number;
+  guardRole?: "herald" | "reaper" | "eye" | "anchor";
+  guardDamageFrame?: number;
+  guardDamageThisFrame?: number;
+  guardLinkMultiplier?: number;
+  guardFrameDamageCap?: number;
+  guardMarkedTimer?: number;
   burning: number;
   poisoned: number;
   drops: boolean;
@@ -79,6 +89,7 @@ export interface Enemy {
 export type EnemyType =
   | "scout" | "fighter" | "bomber" | "sniper" | "splitter" | "tank"
   | "stealth" | "healer" | "charger" | "spinner" | "kamikaze" | "artillery"
+  | "warden" | "phantom" | "leecher" | "carrier" | "singularity"
   | "boss_destroyer" | "boss_mothership" | "boss_dreadnought"
   | "boss_eclipse" | "boss_titan" | "boss_omega";
 
@@ -170,6 +181,7 @@ export interface PlayerState {
   level: number;
   xpToNext: number;
   upgrades: PlayerUpgrade[];
+  synergies: string[];
   invincTimer: number;
   magnetRange: number;
   aura: boolean;
@@ -247,4 +259,4 @@ export interface Mine {
   radius: number;
 }
 
-export type GamePhase = "menu" | "ship_select" | "playing" | "upgrade" | "boss_intro" | "paused" | "dead" | "victory";
+export type GamePhase = "menu" | "ship_select" | "tutorial" | "playing" | "upgrade" | "route" | "boss_intro" | "paused" | "dead" | "victory";

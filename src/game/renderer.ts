@@ -7,6 +7,46 @@ import { getEnemyColors, getEnemySize } from "./enemies";
 export const W = 960;
 export const H = 720;
 
+let renderPerformanceTier: 0 | 1 | 2 = 2;
+export function setRenderPerformanceTier(tier: 0 | 1 | 2) {
+  renderPerformanceTier = tier;
+}
+
+// ─── Void Guard omen ──────────────────────────────────────────────────────────
+export function drawVoidEye(ctx: CanvasRenderingContext2D, frame: number, target: { x: number; y: number }) {
+  const cx = W / 2, cy = H * 0.3;
+  const pulse = 1 + Math.sin(frame * 0.035) * 0.04;
+  const lookX = Math.max(-24, Math.min(24, (target.x - cx) * 0.045));
+  const lookY = Math.max(-10, Math.min(10, (target.y - cy) * 0.025));
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(pulse, pulse);
+  ctx.globalAlpha = renderPerformanceTier === 0 ? 0.2 : 0.28;
+  if (renderPerformanceTier > 0) {
+    const aura = ctx.createRadialGradient(0, 0, 15, 0, 0, 240);
+    aura.addColorStop(0, "rgba(244,63,94,0.5)");
+    aura.addColorStop(0.45, "rgba(88,28,135,0.2)");
+    aura.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = aura;
+    ctx.fillRect(-260, -180, 520, 360);
+  }
+  ctx.strokeStyle = "#a21caf";
+  ctx.lineWidth = renderPerformanceTier === 0 ? 3 : 6;
+  ctx.beginPath();
+  ctx.moveTo(-190, 0);
+  ctx.quadraticCurveTo(0, -115, 190, 0);
+  ctx.quadraticCurveTo(0, 115, -190, 0);
+  ctx.stroke();
+  ctx.fillStyle = "rgba(15,3,25,0.9)";
+  ctx.beginPath(); ctx.ellipse(0, 0, 105, 58, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.translate(lookX, lookY);
+  ctx.fillStyle = "#e11d48";
+  ctx.beginPath(); ctx.ellipse(0, 0, 28, 50, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = "#020617";
+  ctx.beginPath(); ctx.ellipse(0, 0, 10, 38, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+
 // ─── Stars ────────────────────────────────────────────────────────────────────
 export function drawStars(ctx: CanvasRenderingContext2D, stars: Star[]) {
   for (const s of stars) {
@@ -94,7 +134,8 @@ export function drawPlayer(ctx: CanvasRenderingContext2D, state: PlayerState, fr
   const eg = ctx.createLinearGradient(0, 0, 0, 40);
   const trailColor = shipClass === "tempest" ? "rgba(168,85,247,0.9)" :
                      shipClass === "dreadnought" ? "rgba(245,158,11,0.9)" :
-                     shipClass === "commander" ? "rgba(16,185,129,0.9)" : "rgba(56,189,248,0.9)";
+                     shipClass === "commander" ? "rgba(16,185,129,0.9)" :
+                     shipClass === "void_wraith" ? "rgba(232,121,249,0.9)" : "rgba(56,189,248,0.9)";
   eg.addColorStop(0, trailColor);
   eg.addColorStop(0.5, "rgba(99,102,241,0.5)");
   eg.addColorStop(1, "rgba(0,0,0,0)");
@@ -110,7 +151,8 @@ export function drawPlayer(ctx: CanvasRenderingContext2D, state: PlayerState, fr
   // Ship body based on class
   const mainColor = shipClass === "tempest" ? "#a855f7" :
                     shipClass === "dreadnought" ? "#f59e0b" :
-                    shipClass === "commander" ? "#10b981" : "#38bdf8";
+                    shipClass === "commander" ? "#10b981" :
+                    shipClass === "void_wraith" ? "#e879f9" : "#38bdf8";
 
   ctx.shadowBlur = 15;
   ctx.shadowColor = mainColor;
@@ -228,6 +270,35 @@ export function drawEnemy(ctx: CanvasRenderingContext2D, e: Enemy, frame: number
     ctx.setLineDash([]);
   }
 
+  if (e.guardRole === "herald" && (e.guardMarkedTimer ?? 0) > 0) {
+    const markerY = -size - 42 - Math.sin(frame * 0.12) * 5;
+    ctx.fillStyle = "#fbbf24";
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, markerY + 14);
+    ctx.lineTo(-10, markerY);
+    ctx.lineTo(10, markerY);
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    ctx.font = "bold 10px monospace";
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#fde68a";
+    ctx.fillText("ЦЕЛЬ №1", 0, markerY - 7);
+  }
+
+  if (e.guardRole) {
+    const roleColor = e.guardRole === "herald" ? "#f0abfc" : e.guardRole === "reaper" ? "#fb7185" : e.guardRole === "eye" ? "#c084fc" : "#818cf8";
+    ctx.strokeStyle = roleColor;
+    ctx.globalAlpha = 0.65;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(0, 0, size + 18 + Math.sin(frame * 0.08 + e.id) * 3, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    if (renderPerformanceTier > 0) { ctx.shadowBlur = 12; ctx.shadowColor = roleColor; }
+  }
+
   // Freeze tint
   if (e.frozen > 0) {
     ctx.fillStyle = "rgba(147,197,253,0.35)";
@@ -272,12 +343,27 @@ export function drawEnemy(ctx: CanvasRenderingContext2D, e: Enemy, frame: number
     case "charger": drawCharger(ctx, fill, stroke, size); break;
     case "healer": drawHealer(ctx, fill, stroke, size, frame); break;
     case "artillery": drawArtillery(ctx, fill, stroke, size); break;
+    case "warden": drawTank(ctx, fill, stroke, light, size); break;
+    case "phantom":
+      ctx.globalAlpha = Math.floor(e.patternTimer / 90) % 3 === 0 ? 0.22 : 0.85;
+      drawScout(ctx, fill, stroke, size);
+      ctx.globalAlpha = 1;
+      break;
+    case "leecher": drawCharger(ctx, fill, stroke, size); break;
+    case "carrier": drawBomber(ctx, fill, stroke, size); break;
+    case "singularity": ctx.rotate(rot); drawSpinner(ctx, fill, stroke, size); break;
     case "boss_destroyer":  drawBossDestroyer(ctx, fill, stroke, light, size, frame); break;
     case "boss_mothership": drawBossMothership(ctx, fill, stroke, light, size, frame); break;
     case "boss_dreadnought":drawBossDreadnought(ctx, fill, stroke, light, size, frame); break;
     case "boss_eclipse":    drawBossEclipse(ctx, fill, stroke, light, size, frame); break;
     case "boss_titan":      drawBossTitan(ctx, fill, stroke, light, size, frame); break;
-    case "boss_omega":      drawBossOmega(ctx, fill, stroke, light, size, frame); break;
+    case "boss_omega":
+      ctx.save();
+      ctx.scale(1 + e.phase * 0.055, 1 + e.phase * 0.055);
+      ctx.rotate(Math.sin(frame * 0.025) * e.phase * 0.025);
+      drawBossOmega(ctx, e.phase >= 3 ? "#ffffff" : fill, stroke, e.phase >= 2 ? "#f0abfc" : light, size, frame * (1 + e.phase * 0.18));
+      ctx.restore();
+      break;
   }
 
   // Shield
@@ -290,13 +376,26 @@ export function drawEnemy(ctx: CanvasRenderingContext2D, e: Enemy, frame: number
     ctx.stroke();
   }
 
+  // Temporary boss control immunity after repeated freezes.
+  if (e.isBoss && e.controlImmunity > 0) {
+    ctx.strokeStyle = "rgba(165,243,252,0.75)";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 5]);
+    ctx.beginPath();
+    ctx.arc(0, 0, size + 15, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
   // HP bar
   const bw = Math.max(size * 2, 50);
   const by = size + 12;
   ctx.globalAlpha = 0.85;
   ctx.fillStyle = "#1e293b";
   ctx.fillRect(-bw / 2, by, bw, 5);
-  const pct = e.hp / e.maxHp;
+  // Damage-over-time and area effects may cross zero between simulation ticks.
+  // Clamp the visual ratio so a negative width can never stretch across canvas.
+  const pct = Math.max(0, Math.min(1, e.maxHp > 0 ? e.hp / e.maxHp : 0));
   ctx.fillStyle = pct > 0.6 ? "#4ade80" : pct > 0.3 ? "#fbbf24" : "#f87171";
   ctx.fillRect(-bw / 2, by, bw * pct, 5);
 
@@ -549,18 +648,22 @@ function drawBossOmega(ctx: CanvasRenderingContext2D, fill: string, stroke: stri
 export function drawBullet(ctx: CanvasRenderingContext2D, b: Bullet) {
   ctx.save();
   ctx.translate(b.pos.x, b.pos.y);
-  ctx.shadowBlur = b.fromPlayer ? 12 : 8;
+  ctx.shadowBlur = renderPerformanceTier === 0 ? 0 : renderPerformanceTier === 1 ? 4 : (b.fromPlayer ? 12 : 8);
   ctx.shadowColor = b.color;
 
   if (b.fromPlayer) {
-    const len = b.size * 3.5;
+    const len = b.size * (renderPerformanceTier === 0 ? 2.2 : 3.5);
     const angle = Math.atan2(b.vel.y, b.vel.x);
     ctx.rotate(angle + Math.PI / 2);
-    const g = ctx.createLinearGradient(0, -len, 0, len * 0.5);
-    g.addColorStop(0, "#fff");
-    g.addColorStop(0.3, b.color);
-    g.addColorStop(1, "rgba(0,0,0,0)");
-    ctx.fillStyle = g;
+    if (renderPerformanceTier === 0) {
+      ctx.fillStyle = b.color;
+    } else {
+      const g = ctx.createLinearGradient(0, -len, 0, len * 0.5);
+      g.addColorStop(0, "#fff");
+      g.addColorStop(0.3, b.color);
+      g.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = g;
+    }
     ctx.beginPath();
     ctx.ellipse(0, 0, b.size, len, 0, 0, Math.PI * 2);
     ctx.fill();
@@ -584,7 +687,7 @@ export function drawParticle(ctx: CanvasRenderingContext2D, p: Particle) {
   const alpha = (p.life / p.maxLife);
   ctx.save();
   ctx.globalAlpha = alpha;
-  if (p.glow) { ctx.shadowBlur = 8; ctx.shadowColor = p.color; }
+  if (p.glow && renderPerformanceTier > 0) { ctx.shadowBlur = renderPerformanceTier === 1 ? 3 : 8; ctx.shadowColor = p.color; }
   ctx.fillStyle = p.color;
   ctx.beginPath();
   if (p.shape === "square") {
@@ -602,13 +705,17 @@ export function drawXpOrb(ctx: CanvasRenderingContext2D, orb: XpOrb, frame: numb
   const pulse = Math.sin(frame * 0.1 + orb.id * 0.5) * 2;
   ctx.save();
   ctx.translate(orb.pos.x, orb.pos.y);
-  ctx.shadowBlur = 8;
+  ctx.shadowBlur = renderPerformanceTier === 0 ? 0 : renderPerformanceTier === 1 ? 3 : 8;
   ctx.shadowColor = "#a78bfa";
-  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 6 + pulse);
-  g.addColorStop(0, "#fff");
-  g.addColorStop(0.4, "#a78bfa");
-  g.addColorStop(1, "#7c3aed");
-  ctx.fillStyle = g;
+  if (renderPerformanceTier === 0) {
+    ctx.fillStyle = "#a78bfa";
+  } else {
+    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 6 + pulse);
+    g.addColorStop(0, "#fff");
+    g.addColorStop(0.4, "#a78bfa");
+    g.addColorStop(1, "#7c3aed");
+    ctx.fillStyle = g;
+  }
   ctx.beginPath();
   ctx.arc(0, 0, 5 + pulse, 0, Math.PI * 2);
   ctx.fill();
@@ -622,7 +729,7 @@ export function drawFloatingText(ctx: CanvasRenderingContext2D, ft: FloatingText
   ctx.globalAlpha = alpha;
   ctx.font = ft.isCrit ? `bold ${ft.size}px monospace` : `bold ${ft.size}px monospace`;
   ctx.fillStyle = ft.color;
-  ctx.shadowBlur = ft.isCrit ? 10 : 4;
+  ctx.shadowBlur = renderPerformanceTier === 0 ? 0 : ft.isCrit ? 10 : 4;
   ctx.shadowColor = ft.color;
   ctx.textAlign = "center";
   ctx.fillText(ft.text, ft.pos.x, ft.pos.y);

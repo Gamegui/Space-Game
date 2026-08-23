@@ -1,4 +1,5 @@
 import type { PlayerState } from "../game/types";
+import { SYNERGIES } from "../game/synergies";
 
 interface Props {
   player: PlayerState;
@@ -165,6 +166,20 @@ export default function HUD({
           </button>
         )}
       </div>
+
+      {/* Active build synergies */}
+      {player.synergies.length > 0 && (
+        <div className="absolute bottom-24 left-3 z-10 space-y-1 pointer-events-none">
+          {player.synergies.map(id => {
+            const synergy = SYNERGIES.find(item => item.id === id);
+            return synergy ? (
+              <div key={id} className="rounded-lg border border-fuchsia-500/60 bg-fuchsia-950/90 px-3 py-1.5 text-[10px] font-black text-fuchsia-200 shadow-lg">
+                {synergy.icon} {synergy.name}
+              </div>
+            ) : null;
+          })}
+        </div>
+      )}
 
       {/* Upgrades mini-display */}
       {player.upgrades.length > 0 && (

@@ -12,6 +12,7 @@ import { applyShipClassStats } from "./shipClasses";
 export const W = 960;
 export const H = 720;
 let _id = 100000;
+let runtimePerformanceTier: 0 | 1 | 2 = 2;
 export const uid = () => ++_id;
 
 export function randRange(a: number, b: number) { return a + Math.random() * (b - a); }
@@ -136,7 +137,9 @@ export function makePowerup(pos: Vec2, type: PowerupType): PowerupItem {
 }
 
 function makeBurst(pos: Vec2, color: string, count: number, big = false): Particle[] {
-  return Array.from({ length: count }, () => ({
+  const qualityMultiplier = runtimePerformanceTier === 0 ? 0.34 : runtimePerformanceTier === 1 ? 0.65 : 1;
+  const adjustedCount = Math.max(big ? 4 : 1, Math.ceil(count * qualityMultiplier));
+  return Array.from({ length: adjustedCount }, () => ({
     id: uid(),
     pos: { x: pos.x, y: pos.y },
     vel: { x: randRange(-5, 5) * (big ? 1.5 : 1), y: randRange(-5, 5) * (big ? 1.5 : 1) },
@@ -174,6 +177,7 @@ export interface GameObjects {
   adaptiveDifficulty: number;
   routeXpMultiplier: number;
   routeScoreMultiplier: number;
+  performanceTier: 0 | 1 | 2;
 }
 
 export interface StepInput {
@@ -189,6 +193,7 @@ export interface StepInput {
 }
 
 export function stepGame(obj: GameObjects, input: StepInput): void {
+  runtimePerformanceTier = obj.performanceTier;
   const { player, bullets, enemies, particles, xpOrbs, mines, lightnings, stars, floatingTexts, powerups } = obj;
   const { keys, wave, frame, timeSlow } = input;
   const timeScale = timeSlow ? 0.5 : 1;
@@ -681,8 +686,10 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     const b = bullets[i];
     const bts = timeScale;
 
-    // Aim assist / homing for player bullets
-    if (b.fromPlayer && enemies.length > 0) {
+    // Aim assist is the hottest O(bullets × enemies) path. Recalculate steering
+    // periodically; velocity persists between recalculations with no visual loss.
+    const homingInterval = obj.performanceTier === 0 ? 5 : obj.performanceTier === 1 ? 3 : 2;
+    if (b.fromPlayer && enemies.length > 0 && (b.id + frame) % homingInterval === 0) {
       const isFullHoming = b.homing || player.homing;
       const strength = isFullHoming ? Math.max(player.homingStrength, 0.07) : 0.032;
       const maxDistance = isFullHoming ? 650 : 450;
@@ -1070,16 +1077,19 @@ function trimOldest<T>(items: T[], max: number) {
 
 function enforceObjectBudgets(obj: GameObjects) {
   const { bullets } = obj;
+  const qualityFactor = obj.performanceTier === 0 ? 0.48 : obj.performanceTier === 1 ? 0.72 : 1;
+  const playerBulletCap = obj.performanceTier === 0 ? 360 : obj.performanceTier === 1 ? 420 : OBJECT_BUDGETS.playerBullets;
+  const enemyBulletCap = obj.performanceTier === 0 ? 210 : obj.performanceTier === 1 ? 240 : OBJECT_BUDGETS.enemyBullets;
   let playerBulletTotal = 0;
   for (const bullet of bullets) if (bullet.fromPlayer) playerBulletTotal++;
   const enemyBulletTotal = bullets.length - playerBulletTotal;
-  if (playerBulletTotal > OBJECT_BUDGETS.playerBullets || enemyBulletTotal > OBJECT_BUDGETS.enemyBullets) {
+  if (playerBulletTotal > playerBulletCap || enemyBulletTotal > enemyBulletCap) {
     const playerBullets: Bullet[] = [];
     const enemyBullets: Bullet[] = [];
     for (let i = bullets.length - 1; i >= 0; i--) {
       const bullet = bullets[i];
       const target = bullet.fromPlayer ? playerBullets : enemyBullets;
-      const max = bullet.fromPlayer ? OBJECT_BUDGETS.playerBullets : OBJECT_BUDGETS.enemyBullets;
+      const max = bullet.fromPlayer ? playerBulletCap : enemyBulletCap;
       if (target.length < max) target.push(bullet);
     }
     bullets.length = 0;
@@ -1092,12 +1102,12 @@ function enforceObjectBudgets(obj: GameObjects) {
     obj.enemies.length = 0;
     obj.enemies.push(...bosses, ...regular);
   }
-  trimOldest(obj.particles, OBJECT_BUDGETS.particles);
-  trimOldest(obj.xpOrbs, OBJECT_BUDGETS.xpOrbs);
-  trimOldest(obj.floatingTexts, OBJECT_BUDGETS.floatingTexts);
-  trimOldest(obj.lightnings, OBJECT_BUDGETS.lightnings);
+  trimOldest(obj.particles, Math.ceil(OBJECT_BUDGETS.particles * qualityFactor));
+  trimOldest(obj.xpOrbs, Math.ceil(OBJECT_BUDGETS.xpOrbs * Math.max(0.75, qualityFactor)));
+  trimOldest(obj.floatingTexts, Math.ceil(OBJECT_BUDGETS.floatingTexts * qualityFactor));
+  trimOldest(obj.lightnings, Math.ceil(OBJECT_BUDGETS.lightnings * Math.max(0.6, qualityFactor)));
   trimOldest(obj.mines, OBJECT_BUDGETS.mines);
-  trimOldest(obj.explosions, OBJECT_BUDGETS.explosions);
+  trimOldest(obj.explosions, Math.ceil(OBJECT_BUDGETS.explosions * qualityFactor));
   trimOldest(obj.powerups, OBJECT_BUDGETS.powerups);
 }
 

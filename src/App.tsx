@@ -44,11 +44,20 @@ function makeInitialObjects(player: PlayerState): GameObjects {
     adaptiveDifficulty: 1,
     routeXpMultiplier: 1,
     routeScoreMultiplier: 1,
+    performanceTier: detectPerformanceTier(),
   };
 }
 
 type RouteId = "asteroids" | "warzone" | "anomaly";
 type RouteChoice = { id: RouteId; icon: string; name: string; description: string; risk: string; reward: string };
+
+function detectPerformanceTier(): 0 | 1 | 2 {
+  const cores = navigator.hardwareConcurrency || 4;
+  const memory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 4;
+  if (cores <= 4 || memory <= 3) return 0;
+  if (cores <= 8 || memory <= 6) return 1;
+  return 2;
+}
 
 const ROUTES: RouteChoice[] = [
   { id: "asteroids", icon: "☄️", name: "ПОЯС АСТЕРОИДОВ", description: "Меньше противников, но теснее награды.", risk: "−15% врагов", reward: "+30% опыта" },
@@ -507,13 +516,21 @@ export default function App() {
     const canvas = canvasRef.current!;
     const ctx = canvas.getContext("2d", { alpha: false })!;
     const fixedStep = 1000 / 60;
+    const hardwareTier = detectPerformanceTier();
     let lastTimestamp = performance.now();
     let accumulator = 0;
     let uiSyncCounter = 0;
+    let fpsFrames = 0;
+    let fpsWindowStart = performance.now();
+    let healthyWindows = 0;
 
     function drawWorld(g: GameObjects, frame: number) {
-      for (const ex of g.explosions) drawExplosion(ctx, ex.pos, ex.radius, ex.progress);
-      for (const particle of g.particles) drawParticle(ctx, particle);
+      const stride = g.performanceTier === 0 ? 3 : g.performanceTier === 1 ? 2 : 1;
+      for (let i = frame % stride; i < g.explosions.length; i += stride) {
+        const ex = g.explosions[i];
+        drawExplosion(ctx, ex.pos, ex.radius, ex.progress);
+      }
+      for (let i = frame % stride; i < g.particles.length; i += stride) drawParticle(ctx, g.particles[i]);
       if (g.blackHolePos) drawBlackHole(ctx, g.blackHolePos, frame);
       for (const lightning of g.lightnings) drawLightning(ctx, lightning);
       for (const mine of g.mines) drawMine(ctx, mine, frame);
@@ -522,7 +539,7 @@ export default function App() {
       for (const bullet of g.bullets) drawBullet(ctx, bullet);
       for (const enemy of g.enemies) drawEnemy(ctx, enemy, frame);
       drawPlayer(ctx, g.player, frame);
-      for (const text of g.floatingTexts) drawFloatingText(ctx, text);
+      for (let i = frame % stride; i < g.floatingTexts.length; i += stride) drawFloatingText(ctx, g.floatingTexts[i]);
     }
 
     function updateGame(g: GameObjects) {
@@ -604,6 +621,27 @@ export default function App() {
       const g = gameRef.current;
       const frame = Math.floor(timestamp / fixedStep);
       const currentPhase = phaseRef.current;
+
+      // Automatic quality controller: downgrade quickly under load, upgrade only
+      // after several healthy windows. It changes effects, never game speed.
+      fpsFrames++;
+      if (timestamp - fpsWindowStart >= 2000) {
+        const fps = fpsFrames * 1000 / (timestamp - fpsWindowStart);
+        if (g && currentPhase === "playing") {
+          if (fps < 43 && g.performanceTier > 0) {
+            g.performanceTier = (g.performanceTier - 1) as 0 | 1 | 2;
+            healthyWindows = 0;
+          } else if (fps > 57) {
+            healthyWindows++;
+            if (healthyWindows >= 4 && g.performanceTier < hardwareTier) {
+              g.performanceTier = (g.performanceTier + 1) as 0 | 1 | 2;
+              healthyWindows = 0;
+            }
+          } else healthyWindows = 0;
+        }
+        fpsFrames = 0;
+        fpsWindowStart = timestamp;
+      }
 
       // Only active gameplay advances. Upgrade selection and pause now freeze combat.
       if (g && currentPhase === "playing") {

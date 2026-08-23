@@ -186,6 +186,7 @@ export interface GameObjects {
   activeRoute: string;
   routeEffect: string;
   performanceTier: 0 | 1 | 2;
+  performanceAuto: boolean;
   waveStartedFrame: number;
   guardSpawnedThisWave: boolean;
   fastClearStreak: number;
@@ -689,6 +690,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     // Status effects and gradual boss control-resistance recovery.
     if (e.frozen > 0) e.frozen -= 1;
     if (e.controlImmunity > 0) e.controlImmunity--;
+    if ((e.guardMarkedTimer ?? 0) > 0) e.guardMarkedTimer = Math.max(0, (e.guardMarkedTimer ?? 0) - 1);
     if (e.controlDecayTimer > 0) e.controlDecayTimer--;
     else if (e.controlResistance > 0 && e.controlImmunity <= 0) {
       e.controlResistance--;
@@ -1206,6 +1208,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       obj.fastClearStreak = Math.max(0, obj.fastClearStreak - 2);
       const omens = ["ТВОЯ МОЩЬ БЫЛА ЗАМЕЧЕНА", "ПУСТОТА ПРОИЗНЕСЛА ТВОЁ ИМЯ", "ЧЁРНЫЙ КОРТЕЖ УЖЕ ЗДЕСЬ"];
       obj.floatingTexts.push(makeFloatingText({ x: W / 2, y: H / 2 }, omens[Math.floor(Math.random() * omens.length)], "#e879f9", true));
+      obj.floatingTexts.push(makeFloatingText({ x: W / 2, y: H / 2 + 42 }, "УНИЧТОЖЬ ПРОВОЗВЕСТНИКА ПЕРВЫМ", "#fbbf24", true));
       obj.screenShake = Math.max(obj.screenShake, 10);
       audio.playBossWarning();
     } else {
@@ -1260,6 +1263,7 @@ export function spawnAdaptiveGuard(obj: GameObjects, wave: number) {
     enemy.guardFrameDamageCap = definition.role === "herald"
       ? 0.007 - powerRatio * 0.004
       : 0.009 - powerRatio * 0.0045;
+    enemy.guardMarkedTimer = definition.role === "herald" ? 600 : 0;
     enemy.isElite = true;
     enemy.eliteName = definition.name;
     enemy.hp *= definition.hp;

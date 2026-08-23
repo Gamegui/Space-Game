@@ -69,6 +69,16 @@ class SoundEngine {
     return this.isMuted;
   }
 
+  public setMusicVolume(percent: number) {
+    this.init();
+    if (this.musicGain && this.ctx) this.musicGain.gain.setValueAtTime(0.24 * Math.max(0, Math.min(1, percent / 100)), this.ctx.currentTime);
+  }
+
+  public setSfxVolume(percent: number) {
+    this.init();
+    if (this.sfxGain && this.ctx) this.sfxGain.gain.setValueAtTime(0.48 * Math.max(0, Math.min(1, percent / 100)), this.ctx.currentTime);
+  }
+
   // ─── SFX: Soft, Pleasant Laser Shot (Quiet & non-intrusive) ───────────────────
   public playShoot(sniper = false) {
     if (this.isMuted) return;

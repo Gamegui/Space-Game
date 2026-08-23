@@ -47,6 +47,7 @@ function makeInitialObjects(player: PlayerState): GameObjects {
     activeRoute: "none",
     routeEffect: "none",
     performanceTier: detectPerformanceTier(),
+    performanceAuto: true,
     waveStartedFrame: 0,
     guardSpawnedThisWave: false,
     fastClearStreak: 0,
@@ -55,6 +56,7 @@ function makeInitialObjects(player: PlayerState): GameObjects {
 }
 
 type RouteId = "asteroids" | "warzone" | "anomaly";
+type QualityMode = "auto" | "low" | "medium" | "high";
 type RouteChoice = { id: RouteId; icon: string; name: string; description: string; risk: string; reward: string };
 
 function detectPerformanceTier(): 0 | 1 | 2 {
@@ -120,7 +122,16 @@ export default function App() {
   const [timeSlow, setTimeSlow]   = useState(false);
   const [enemiesLeft, setEnemiesLeft] = useState(0);
   const [waveNotice, setWaveNotice] = useState<string | null>(null);
-  const [isMuted, setIsMuted]     = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
+  const [qualityMode, setQualityMode] = useState<QualityMode>(() => {
+    try {
+      const saved = localStorage.getItem("quality_mode") as QualityMode | null;
+      return saved && ["auto", "low", "medium", "high"].includes(saved) ? saved : "auto";
+    } catch { return "auto"; }
+  });
+  const [musicVolume, setMusicVolume] = useState(() => { try { return Math.max(0, Math.min(100, Number(localStorage.getItem("music_volume") ?? 35))); } catch { return 35; } });
+  const [sfxVolume, setSfxVolume] = useState(() => { try { return Math.max(0, Math.min(100, Number(localStorage.getItem("sfx_volume") ?? 55))); } catch { return 55; } });
+  const [confirmExit, setConfirmExit] = useState(false);
   const [hiscore, setHiscore] = useState(() => {
     try {
       const stored = Number.parseInt(localStorage.getItem("hs") || "0", 10);
@@ -176,6 +187,25 @@ export default function App() {
     if (phase !== "playing") keysRef.current.clear();
   }, [phase]);
 
+  useEffect(() => {
+    audio.setMusicVolume(musicVolume);
+    audio.setSfxVolume(sfxVolume);
+    try {
+      localStorage.setItem("music_volume", String(musicVolume));
+      localStorage.setItem("sfx_volume", String(sfxVolume));
+    } catch { /* optional preferences */ }
+  }, [musicVolume, sfxVolume]);
+
+  useEffect(() => {
+    const tierMap: Record<Exclude<QualityMode, "auto">, 0 | 1 | 2> = { low: 0, medium: 1, high: 2 };
+    const g = gameRef.current;
+    if (g) {
+      g.performanceAuto = qualityMode === "auto";
+      g.performanceTier = qualityMode === "auto" ? detectPerformanceTier() : tierMap[qualityMode];
+    }
+    try { localStorage.setItem("quality_mode", qualityMode); } catch { /* optional preference */ }
+  }, [qualityMode]);
+
   const syncUI = useCallback(() => {
     const g = gameRef.current;
     if (!g) return;
@@ -200,6 +230,9 @@ export default function App() {
 
     const player = makeInitialPlayer(shipClass);
     const objects = makeInitialObjects(player);
+    const qualityTiers: Record<Exclude<QualityMode, "auto">, 0 | 1 | 2> = { low: 0, medium: 1, high: 2 };
+    objects.performanceAuto = qualityMode === "auto";
+    objects.performanceTier = qualityMode === "auto" ? detectPerformanceTier() : qualityTiers[qualityMode];
     const initialDifficulty = getAdaptiveDifficulty(player, 1);
     objects.powerRating = initialDifficulty.power;
     objects.adaptiveDifficulty = initialDifficulty.scale;
@@ -226,7 +259,7 @@ export default function App() {
     setBonusChoiceUsed(false);
     setWaveNotice(null);
     syncUI();
-  }, [adminEnabled, premiumUnlocked, selectedClass, syncUI]);
+  }, [adminEnabled, premiumUnlocked, qualityMode, selectedClass, syncUI]);
 
   // ─── Wave advance ────────────────────────────────────────────────────────────
   const advanceWave = useCallback((route: RouteId = "asteroids") => {
@@ -512,7 +545,7 @@ export default function App() {
 
       if (!e.repeat && e.code === "Escape") {
         if (phaseRef.current === "playing") { phaseRef.current = "paused"; setPhase("paused"); }
-        else if (phaseRef.current === "paused") { phaseRef.current = "playing"; setPhase("playing"); }
+        else if (phaseRef.current === "paused") { setConfirmExit(false); phaseRef.current = "playing"; setPhase("playing"); }
       }
       if (!e.repeat && e.code === "KeyM") handleToggleSound();
       if (!e.repeat && e.code === "KeyX") handleNuke();
@@ -649,7 +682,7 @@ export default function App() {
       fpsFrames++;
       if (timestamp - fpsWindowStart >= 2000) {
         const fps = fpsFrames * 1000 / (timestamp - fpsWindowStart);
-        if (g && currentPhase === "playing") {
+        if (g && g.performanceAuto && currentPhase === "playing") {
           if (fps < 43 && g.performanceTier > 0) {
             g.performanceTier = (g.performanceTier - 1) as 0 | 1 | 2;
             healthyWindows = 0;
@@ -895,6 +928,7 @@ export default function App() {
   const adminSetQuality = useCallback((tier: 0 | 1 | 2) => {
     if (!gameRef.current) return;
     gameRef.current.performanceTier = tier;
+    gameRef.current.performanceAuto = false;
     setAdminRefresh(value => value + 1);
   }, []);
 
@@ -913,6 +947,11 @@ export default function App() {
   const finalKills = gameRef.current?.player.kills || 0;
   const finalLevel = gameRef.current?.player.level || 1;
   const accuracy = playerStats.shotsFired > 0 ? Math.round((playerStats.shotsHit / playerStats.shotsFired) * 100) : 0;
+  const qualityLabels: Record<QualityMode, string> = { auto: "АВТО", low: "НИЗКОЕ", medium: "СРЕДНЕЕ", high: "ВЫСОКОЕ" };
+  const cycleQuality = () => {
+    const modes: QualityMode[] = ["auto", "low", "medium", "high"];
+    setQualityMode(modes[(modes.indexOf(qualityMode) + 1) % modes.length]);
+  };
 
   return (
     <div className="flex min-h-[100dvh] w-screen items-center justify-center overflow-hidden bg-slate-950 font-sans">
@@ -1104,18 +1143,28 @@ export default function App() {
               <p>Оружие: <span className="text-emerald-400 font-bold">Авто-огонь с доводкой до цели</span></p>
               <p>Ядерный заряд: <span className="text-red-400 font-bold">X</span> | Замедление времени: <span className="text-cyan-400 font-bold">C</span> | Звук: <span className="text-yellow-400 font-bold">M</span></p>
             </div>
+            <div className="mb-3 flex items-center gap-3 rounded-xl border border-slate-700 bg-slate-950/85 p-2 font-mono text-[10px]">
+              <button onClick={cycleQuality} className="rounded border border-cyan-800 bg-cyan-950 px-3 py-2 font-black text-cyan-200 cursor-pointer">⚙ {qualityLabels[qualityMode]}</button>
+              <label className="text-slate-400">🎵 {musicVolume}% <input aria-label="Громкость музыки" type="range" min="0" max="100" step="5" value={musicVolume} onChange={event => setMusicVolume(Number(event.target.value))} className="w-20 align-middle accent-fuchsia-500" /></label>
+              <label className="text-slate-400">💥 {sfxVolume}% <input aria-label="Громкость эффектов" type="range" min="0" max="100" step="5" value={sfxVolume} onChange={event => setSfxVolume(Number(event.target.value))} className="w-20 align-middle accent-cyan-500" /></label>
+            </div>
             <button
-              onClick={() => { audio.resume(); phaseRef.current = "playing"; setPhase("playing"); }}
+              onClick={() => { setConfirmExit(false); audio.resume(); phaseRef.current = "playing"; setPhase("playing"); }}
               className="px-10 py-3.5 bg-sky-600 hover:bg-sky-500 text-white font-black text-lg rounded-full transition-all active:scale-95 shadow-lg shadow-sky-900/50 cursor-pointer mb-3"
             >
               ПРОДОЛЖИТЬ ИГРУ
             </button>
-            <button
-              onClick={() => { audio.stopAmbientBGM(); phaseRef.current = "menu"; setPhase("menu"); gameRef.current = null; }}
-              className="px-6 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-sm rounded-full transition-all cursor-pointer"
-            >
-              ВЫЙТИ В ГЛАВНОЕ МЕНЮ
-            </button>
+            {!confirmExit ? (
+              <button onClick={() => setConfirmExit(true)} className="px-6 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-sm rounded-full transition-all cursor-pointer">ВЫЙТИ В ГЛАВНОЕ МЕНЮ</button>
+            ) : (
+              <div className="rounded-xl border border-red-800 bg-red-950/90 p-3 text-center">
+                <div className="mb-2 text-sm font-black text-red-200">Завершить забег? Прогресс будет потерян.</div>
+                <div className="flex justify-center gap-2">
+                  <button onClick={() => { setConfirmExit(false); audio.stopAmbientBGM(); phaseRef.current = "menu"; setPhase("menu"); gameRef.current = null; }} className="rounded-lg bg-red-700 px-5 py-2 text-xs font-black text-white cursor-pointer">ДА, ВЫЙТИ</button>
+                  <button onClick={() => setConfirmExit(false)} className="rounded-lg bg-slate-700 px-5 py-2 text-xs font-black text-white cursor-pointer">ОТМЕНА</button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -1153,8 +1202,14 @@ export default function App() {
               </div>
 
               {hiscore > 0 && (
-                <div className="text-yellow-400 font-mono text-sm mb-4 font-bold">🏆 Рекорд очков: {hiscore.toLocaleString()}</div>
+                <div className="text-yellow-400 font-mono text-sm mb-3 font-bold">🏆 Рекорд очков: {hiscore.toLocaleString()}</div>
               )}
+
+              <div className="mb-4 flex items-center justify-center gap-3 rounded-xl border border-slate-800 bg-slate-950/75 p-2 font-mono text-[10px]">
+                <button onClick={cycleQuality} className="rounded-lg border border-cyan-800 bg-cyan-950 px-3 py-2 font-black text-cyan-200 cursor-pointer">⚙ КАЧЕСТВО: {qualityLabels[qualityMode]}</button>
+                <label className="text-slate-400">🎵 {musicVolume}%<input aria-label="Громкость музыки" type="range" min="0" max="100" step="5" value={musicVolume} onChange={event => setMusicVolume(Number(event.target.value))} className="ml-2 w-20 align-middle accent-fuchsia-500" /></label>
+                <label className="text-slate-400">💥 {sfxVolume}%<input aria-label="Громкость эффектов" type="range" min="0" max="100" step="5" value={sfxVolume} onChange={event => setSfxVolume(Number(event.target.value))} className="ml-2 w-20 align-middle accent-cyan-500" /></label>
+              </div>
 
               <button
                 onClick={() => { audio.resume(); phaseRef.current = "ship_select"; setPhase("ship_select"); }}
@@ -1164,6 +1219,7 @@ export default function App() {
               </button>
               <div className="text-slate-500 font-mono text-xs mt-3">или нажмите ПРОБЕЛ / ENTER</div>
             </div>
+            <div className="absolute bottom-3 right-4 font-mono text-[10px] text-slate-600">v1.0.0 · RELEASE</div>
           </div>
         )}
 

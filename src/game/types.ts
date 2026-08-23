@@ -79,6 +79,7 @@ export interface Enemy {
   guardDamageThisFrame?: number;
   guardLinkMultiplier?: number;
   guardFrameDamageCap?: number;
+  guardMarkedTimer?: number;
   burning: number;
   poisoned: number;
   drops: boolean;

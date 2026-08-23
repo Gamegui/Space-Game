@@ -270,6 +270,23 @@ export function drawEnemy(ctx: CanvasRenderingContext2D, e: Enemy, frame: number
     ctx.setLineDash([]);
   }
 
+  if (e.guardRole === "herald" && (e.guardMarkedTimer ?? 0) > 0) {
+    const markerY = -size - 42 - Math.sin(frame * 0.12) * 5;
+    ctx.fillStyle = "#fbbf24";
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, markerY + 14);
+    ctx.lineTo(-10, markerY);
+    ctx.lineTo(10, markerY);
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    ctx.font = "bold 10px monospace";
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#fde68a";
+    ctx.fillText("ЦЕЛЬ №1", 0, markerY - 7);
+  }
+
   if (e.guardRole) {
     const roleColor = e.guardRole === "herald" ? "#f0abfc" : e.guardRole === "reaper" ? "#fb7185" : e.guardRole === "eye" ? "#c084fc" : "#818cf8";
     ctx.strokeStyle = roleColor;

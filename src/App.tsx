@@ -11,7 +11,7 @@ import { yandex } from "./platform/yandex";
 import {
   drawBackground, drawStars, drawPlayer, drawEnemy, drawBullet,
   drawParticle, drawXpOrb, drawMine, drawLightning, drawBlackHole, drawExplosion,
-  drawFloatingText, drawPowerup, setRenderPerformanceTier
+  drawFloatingText, drawPowerup, drawVoidEye, setRenderPerformanceTier
 } from "./game/renderer";
 import UpgradePanel from "./components/UpgradePanel";
 import HUD from "./components/HUD";
@@ -50,6 +50,7 @@ function makeInitialObjects(player: PlayerState): GameObjects {
     waveStartedFrame: 0,
     guardSpawnedThisWave: false,
     fastClearStreak: 0,
+    guardEventActive: false,
   };
 }
 
@@ -241,6 +242,7 @@ export default function App() {
     g.boss = null;
     g.waveStartedFrame = frameRef.current;
     g.guardSpawnedThisWave = false;
+    g.guardEventActive = false;
     const adaptive = getAdaptiveDifficulty(g.player, newWave);
     g.powerRating = adaptive.power;
     let routeDifficulty = 1;
@@ -423,7 +425,11 @@ export default function App() {
     g.screenShake = 20;
     const survivors: Enemy[] = [];
     for (const e of g.enemies) {
-      if (e.isBoss) {
+      if (e.guardRole) {
+        // The Black Cortege cannot be screen-wiped; the nuke still deals a visible chunk.
+        e.hp = Math.max(1, e.hp - e.maxHp * 0.12);
+        survivors.push(e);
+      } else if (e.isBoss) {
         // A tactical nuke heavily damages a boss but cannot skip the boss encounter.
         e.hp = Math.max(1, e.hp - e.maxHp * 0.35);
         survivors.push(e);
@@ -676,6 +682,7 @@ export default function App() {
         ctx.translate((Math.random() - 0.5) * g.screenShake, (Math.random() - 0.5) * g.screenShake);
       }
       drawBackground(ctx, frame);
+      if (g?.guardEventActive) drawVoidEye(ctx, frame, g.player.pos);
       if (g) drawStars(ctx, g.stars);
 
       if (!g || currentPhase === "menu" || currentPhase === "ship_select" || currentPhase === "dead") {
@@ -772,6 +779,7 @@ export default function App() {
     g.bossActive = false;
     g.waveStartedFrame = frameRef.current;
     g.guardSpawnedThisWave = false;
+    g.guardEventActive = false;
     waveTransitioningRef.current = false;
     const adaptive = getAdaptiveDifficulty(g.player, targetWave);
     g.powerRating = adaptive.power;

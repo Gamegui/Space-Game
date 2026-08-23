@@ -12,6 +12,41 @@ export function setRenderPerformanceTier(tier: 0 | 1 | 2) {
   renderPerformanceTier = tier;
 }
 
+// ─── Void Guard omen ──────────────────────────────────────────────────────────
+export function drawVoidEye(ctx: CanvasRenderingContext2D, frame: number, target: { x: number; y: number }) {
+  const cx = W / 2, cy = H * 0.3;
+  const pulse = 1 + Math.sin(frame * 0.035) * 0.04;
+  const lookX = Math.max(-24, Math.min(24, (target.x - cx) * 0.045));
+  const lookY = Math.max(-10, Math.min(10, (target.y - cy) * 0.025));
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(pulse, pulse);
+  ctx.globalAlpha = renderPerformanceTier === 0 ? 0.2 : 0.28;
+  if (renderPerformanceTier > 0) {
+    const aura = ctx.createRadialGradient(0, 0, 15, 0, 0, 240);
+    aura.addColorStop(0, "rgba(244,63,94,0.5)");
+    aura.addColorStop(0.45, "rgba(88,28,135,0.2)");
+    aura.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = aura;
+    ctx.fillRect(-260, -180, 520, 360);
+  }
+  ctx.strokeStyle = "#a21caf";
+  ctx.lineWidth = renderPerformanceTier === 0 ? 3 : 6;
+  ctx.beginPath();
+  ctx.moveTo(-190, 0);
+  ctx.quadraticCurveTo(0, -115, 190, 0);
+  ctx.quadraticCurveTo(0, 115, -190, 0);
+  ctx.stroke();
+  ctx.fillStyle = "rgba(15,3,25,0.9)";
+  ctx.beginPath(); ctx.ellipse(0, 0, 105, 58, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.translate(lookX, lookY);
+  ctx.fillStyle = "#e11d48";
+  ctx.beginPath(); ctx.ellipse(0, 0, 28, 50, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = "#020617";
+  ctx.beginPath(); ctx.ellipse(0, 0, 10, 38, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+
 // ─── Stars ────────────────────────────────────────────────────────────────────
 export function drawStars(ctx: CanvasRenderingContext2D, stars: Star[]) {
   for (const s of stars) {
@@ -233,6 +268,18 @@ export function drawEnemy(ctx: CanvasRenderingContext2D, e: Enemy, frame: number
     ctx.arc(0, 0, size + 12 + pulse, 0, Math.PI * 2);
     ctx.stroke();
     ctx.setLineDash([]);
+  }
+
+  if (e.guardRole) {
+    const roleColor = e.guardRole === "herald" ? "#f0abfc" : e.guardRole === "reaper" ? "#fb7185" : e.guardRole === "eye" ? "#c084fc" : "#818cf8";
+    ctx.strokeStyle = roleColor;
+    ctx.globalAlpha = 0.65;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(0, 0, size + 18 + Math.sin(frame * 0.08 + e.id) * 3, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    if (renderPerformanceTier > 0) { ctx.shadowBlur = 12; ctx.shadowColor = roleColor; }
   }
 
   // Freeze tint

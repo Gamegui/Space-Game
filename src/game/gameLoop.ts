@@ -189,6 +189,7 @@ export interface GameObjects {
   waveStartedFrame: number;
   guardSpawnedThisWave: boolean;
   fastClearStreak: number;
+  guardEventActive: boolean;
 }
 
 export interface StepInput {
@@ -256,7 +257,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     }
     for (const enemy of enemies) {
       const dx = enemy.pos.x - player.pos.x, dy = enemy.pos.y - player.pos.y;
-      if (dx * dx + dy * dy < 95 * 95) enemy.hp = Math.max(0, enemy.hp - player.bulletDamage * 5);
+      if (dx * dx + dy * dy < 95 * 95) damageEnemy(enemy, player.bulletDamage * 5, frame, enemies);
     }
   }
 
@@ -439,8 +440,8 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       for (const e of enemies) {
         const dx = e.pos.x - player.pos.x, dy = e.pos.y - player.pos.y;
         if (dx * dx + dy * dy < auraR * auraR) {
-          e.hp = Math.max(0, e.hp - player.auraDamage * timeScale);
-          player.stats.damageDealt += player.auraDamage * timeScale;
+          const auraDamage = damageEnemy(e, player.auraDamage * timeScale, frame, enemies);
+          player.stats.damageDealt += auraDamage;
           particles.push(...makeBurst({ x: e.pos.x, y: e.pos.y }, "#fde047", 1));
         }
       }
@@ -461,8 +462,8 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     for (const e of enemies) {
       const dx = e.pos.x - mine.pos.x, dy = e.pos.y - mine.pos.y;
       if (dx * dx + dy * dy < mine.radius * mine.radius) {
-        e.hp = Math.max(0, e.hp - 6 * player.bulletDamage);
-        player.stats.damageDealt += 6 * player.bulletDamage;
+        const mineDamage = damageEnemy(e, 6 * player.bulletDamage, frame, enemies);
+        player.stats.damageDealt += mineDamage;
         particles.push(...makeBurst(mine.pos, "#f59e0b", 20, true));
         obj.explosions.push({ id: uid(), pos: { ...mine.pos }, radius: mine.radius * 1.5, progress: 0 });
         obj.screenShake = Math.max(obj.screenShake, 5);
@@ -493,8 +494,8 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           e.pos.x += (dx / dist) * 3 * timeScale;
           e.pos.y += (dy / dist) * 3 * timeScale;
           if (dist < 25) {
-            e.hp = Math.max(0, e.hp - 3 * timeScale);
-            player.stats.damageDealt += 3 * timeScale;
+            const gravityDamage = damageEnemy(e, 3 * timeScale, frame, enemies);
+            player.stats.damageDealt += gravityDamage;
           }
         }
       }
@@ -567,7 +568,8 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i];
     // Bosses are slowed, never fully disabled. Ordinary enemies keep the strong freeze.
-    const ets = e.frozen > 0 ? (e.isBoss ? Math.max(0.58, timeScale * 0.58) : 0.15) : timeScale;
+    const controlResistant = e.isBoss || Boolean(e.guardRole);
+    const ets = e.frozen > 0 ? (controlResistant ? Math.max(0.58, timeScale * 0.58) : 0.15) : timeScale;
     const size = getEnemySize(e.type);
     const minX = size + 25;
     const maxX = W - size - 25;
@@ -590,6 +592,15 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         hurtAlly.hp = Math.min(hurtAlly.maxHp, hurtAlly.hp + 4);
         particles.push(...makeBurst(hurtAlly.pos, "#4ade80", 4));
         lightnings.push({ id: uid(), from: { ...e.pos }, to: { ...hurtAlly.pos }, life: 10 });
+      }
+    }
+
+    // The Herald visibly binds the Cortege; linked members take heavily reduced damage.
+    if (e.guardRole === "herald" && frame % 12 === 0) {
+      for (const linked of enemies) {
+        if (linked.guardRole && linked.guardRole !== "herald" && linked.hp > 0) {
+          lightnings.push({ id: uid(), from: { ...e.pos }, to: { ...linked.pos }, life: 14 });
+        }
       }
     }
 
@@ -683,8 +694,8 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       e.controlResistance--;
       e.controlDecayTimer = e.controlResistance > 0 ? 180 : 0;
     }
-    if (e.burning > 0) { e.hp = Math.max(0, e.hp - 0.18 * ets); e.burning -= ets; }
-    if (e.poisoned > 0) { e.hp = Math.max(0, e.hp - 0.10 * ets); e.poisoned -= ets; }
+    if (e.burning > 0) { damageEnemy(e, 0.18 * ets, frame, enemies); e.burning -= ets; }
+    if (e.poisoned > 0) { damageEnemy(e, 0.10 * ets, frame, enemies); e.poisoned -= ets; }
 
     // Boss phase changes. Omega has four real transformations; other bosses
     // retain their focused two-stage patterns.
@@ -749,7 +760,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     // Enemy shooting
     e.shootTimer -= ets;
     if (e.shootTimer <= 0) {
-      e.shootTimer = e.shootInterval * (e.frozen > 0 ? (e.isBoss ? 1.35 : 3) : 1);
+      e.shootTimer = e.shootInterval * (e.frozen > 0 ? (controlResistant ? 1.35 : 3) : 1);
       shootEnemy(e, player, bullets, wave, obj.adaptiveDifficulty);
     }
   }
@@ -865,8 +876,9 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 
         // Hit shield first
         if (e.shieldHp > 0) {
-          e.shieldHp -= b.damage * 0.6;
-          floatingTexts.push(makeFloatingText(b.pos, `${Math.ceil(b.damage)}`, "#93c5fd"));
+          const shieldDamage = limitEnemyDamage(e, b.damage * 0.6, frame, enemies);
+          e.shieldHp = Math.max(0, e.shieldHp - shieldDamage);
+          floatingTexts.push(makeFloatingText(b.pos, `${Math.ceil(shieldDamage)}`, "#93c5fd"));
           particles.push(...makeBurst(b.pos, "#93c5fd", 4));
           if (b.pierce <= 0) bulletsToRemove.add(b.id);
           continue;
@@ -883,13 +895,13 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           floatingTexts.push(makeFloatingText(b.pos, `${Math.ceil(dmg)}`, "#fff"));
         }
 
-        e.hp = Math.max(0, e.hp - dmg);
-        player.stats.damageDealt += dmg;
+        const appliedDamage = damageEnemy(e, dmg, frame, enemies);
+        player.stats.damageDealt += appliedDamage;
 
         // Status effects
         if (Math.random() < player.burnChance)   { e.burning  = Math.max(e.burning,  180); particles.push(...makeBurst(b.pos, "#f97316", 3)); }
         if (Math.random() < player.freezeChance) {
-          if (!e.isBoss) {
+          if (!e.isBoss && !e.guardRole) {
             e.frozen = Math.max(e.frozen, 120);
           } else if (e.controlImmunity <= 0) {
             // Diminishing control: 120 → 72 → 43 frames, then 3s immunity.
@@ -908,12 +920,12 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 
         // Lightning chain
         if (Math.random() < player.lightningChance) {
-          chainLightning(e, enemies, lightnings, player.lightningChain, dmg * 0.6);
+          chainLightning(e, enemies, lightnings, player.lightningChain, dmg * 0.6, frame);
         }
 
         // Life steal
         if (player.lifeSteal > 0) {
-          player.hp = Math.min(player.hp + dmg * player.lifeSteal, player.maxHp);
+          player.hp = Math.min(player.hp + appliedDamage * player.lifeSteal, player.maxHp);
         }
 
         // Heal on kill check & enemy defeat
@@ -941,7 +953,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 
           // Explosion
           if (player.explosiveBullets) {
-            explodeArea(e.pos, player.explosionRadius, enemies, enemiesToRemove, particles, obj.explosions, player);
+            explodeArea(e.pos, player.explosionRadius, enemies, enemiesToRemove, particles, obj.explosions, player, frame);
           }
 
           // Splitters release 2 scouts; late-game carriers release 4 escorts.
@@ -1170,6 +1182,15 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 
   // ─── Wave completion / adaptive guard response ─────────────────────────────
   if (obj.waveEnemyQueue.length === 0 && enemies.length === 0 && !obj.bossActive) {
+    if (obj.guardEventActive) {
+      obj.guardEventActive = false;
+      player.score += wave * 1000;
+      player.hp = Math.min(player.maxHp, player.hp + 10);
+      if (player.shield) player.shield.hp = Math.min(player.shield.maxHp, player.shield.hp + 25);
+      obj.floatingTexts.push(makeFloatingText({ x: W / 2, y: H / 2 }, "ПЕЧАТЬ ГВАРДИИ ПОЛУЧЕНА", "#e879f9", true));
+      input.onWaveComplete();
+      return;
+    }
     const clearFrames = Math.max(1, frame - obj.waveStartedFrame);
     // Never append a guard after boss defeat; that transition belongs to loot/route UI.
     const fastClear = wave >= 6 && wave % 5 !== 0 && clearFrames < Math.max(720, 1050 - wave * 5);
@@ -1181,8 +1202,10 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       spawnAdaptiveGuard(obj, wave);
       obj.guardSpawnedThisWave = true;
       obj.fastClearStreak = Math.max(0, obj.fastClearStreak - 2);
-      obj.floatingTexts.push(makeFloatingText({ x: W / 2, y: H / 2 }, "⚠ ГВАРДИЯ СЕКТОРА", "#fbbf24", true));
-      obj.screenShake = Math.max(obj.screenShake, 7);
+      const omens = ["ТВОЯ МОЩЬ БЫЛА ЗАМЕЧЕНА", "ПУСТОТА ПРОИЗНЕСЛА ТВОЁ ИМЯ", "ЧЁРНЫЙ КОРТЕЖ УЖЕ ЗДЕСЬ"];
+      obj.floatingTexts.push(makeFloatingText({ x: W / 2, y: H / 2 }, omens[Math.floor(Math.random() * omens.length)], "#e879f9", true));
+      obj.screenShake = Math.max(obj.screenShake, 10);
+      audio.playBossWarning();
     } else {
       input.onWaveComplete();
     }
@@ -1190,26 +1213,55 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-function spawnAdaptiveGuard(obj: GameObjects, wave: number) {
-  const basePool: EnemyType[] = ["tank", "charger", "artillery", "healer"];
-  if (wave >= 26) basePool.push("warden");
-  if (wave >= 31) basePool.push("phantom");
-  if (wave >= 41) basePool.push("carrier");
-  if (wave >= 46) basePool.push("singularity");
+function limitEnemyDamage(enemy: Enemy, amount: number, frame: number, enemies: Enemy[]): number {
+  if (!enemy.guardRole) return amount;
+  const heraldAlive = enemy.guardRole !== "herald" && enemies.some(other => other.guardRole === "herald" && other.hp > 0);
+  let adjusted = amount * (heraldAlive ? 0.22 : 1);
+  if (enemy.guardDamageFrame !== frame) {
+    enemy.guardDamageFrame = frame;
+    enemy.guardDamageThisFrame = 0;
+  }
+  // Even a level-300 completed build needs several seconds per Cortege stage.
+  const frameCap = enemy.maxHp * (enemy.guardRole === "herald" ? 0.003 : 0.0045);
+  const remaining = Math.max(0, frameCap - (enemy.guardDamageThisFrame ?? 0));
+  adjusted = Math.min(adjusted, remaining);
+  enemy.guardDamageThisFrame = (enemy.guardDamageThisFrame ?? 0) + adjusted;
+  return adjusted;
+}
 
-  const count = 3 + Math.min(4, Math.floor(obj.powerRating / 260));
-  const guardScale = obj.adaptiveDifficulty * Math.min(1.55, 1.05 + obj.powerRating / 1800);
-  for (let i = 0; i < count; i++) {
-    const type = basePool[(i + Math.floor(Math.random() * basePool.length)) % basePool.length];
-    const enemy = spawnEnemy(type, wave, guardScale);
+function damageEnemy(enemy: Enemy, amount: number, frame: number, enemies: Enemy[]): number {
+  const applied = limitEnemyDamage(enemy, amount, frame, enemies);
+  enemy.hp = Math.max(0, enemy.hp - applied);
+  return applied;
+}
+
+function spawnAdaptiveGuard(obj: GameObjects, wave: number) {
+  // The Black Cortege is always four readable roles, not another crowded wave.
+  const cortege: Array<{ role: NonNullable<Enemy["guardRole"]>; type: EnemyType; name: string; hp: number }> = [
+    { role: "herald", type: "warden", name: "☿ ПРОВОЗВЕСТНИК", hp: 1.15 },
+    { role: "reaper", type: "phantom", name: "† ЖНЕЦ", hp: 0.82 },
+    { role: "eye", type: "artillery", name: "◉ ОКО", hp: 0.9 },
+    { role: "anchor", type: "singularity", name: "⚓ ЯКОРЬ БЕЗДНЫ", hp: 1.05 },
+  ];
+  const powerPressure = Math.min(2.2, 1.1 + Math.sqrt(Math.max(1, obj.powerRating)) / 28);
+  const guardScale = obj.adaptiveDifficulty * powerPressure;
+  obj.guardEventActive = true;
+
+  for (const definition of cortege) {
+    const enemy = spawnEnemy(definition.type, wave, guardScale);
+    enemy.guardRole = definition.role;
+    enemy.guardDamageFrame = -1;
+    enemy.guardDamageThisFrame = 0;
     enemy.isElite = true;
-    enemy.eliteName = "🛡️ ГВАРДИЯ";
-    enemy.hp *= 1.35;
+    enemy.eliteName = definition.name;
+    enemy.hp *= definition.hp;
     enemy.maxHp = enemy.hp;
-    enemy.maxShieldHp += 14 + wave * 0.5;
+    enemy.maxShieldHp += 20 + wave * 0.65;
     enemy.shieldHp = enemy.maxShieldHp;
-    enemy.shootInterval = Math.max(18, Math.floor(enemy.shootInterval * 0.82));
-    enemy.xp *= 1.6;
+    enemy.shootInterval = Math.max(20, Math.floor(enemy.shootInterval * 0.88));
+    enemy.controlResistance = 2;
+    enemy.controlDecayTimer = 420;
+    enemy.xp *= 2;
     obj.enemies.push(enemy);
   }
 }
@@ -1460,7 +1512,7 @@ function shootEnemy(e: Enemy, player: PlayerState, bullets: Bullet[], wave: numb
   }
 }
 
-function chainLightning(source: Enemy, enemies: Enemy[], lightnings: Lightning[], chain: number, dmg: number) {
+function chainLightning(source: Enemy, enemies: Enemy[], lightnings: Lightning[], chain: number, dmg: number, frame: number) {
   let current = source;
   for (let c = 0; c < chain; c++) {
     let nearest: Enemy | null = null;
@@ -1473,18 +1525,18 @@ function chainLightning(source: Enemy, enemies: Enemy[], lightnings: Lightning[]
     }
     if (!nearest) break;
     lightnings.push({ id: uid(), from: { ...current.pos }, to: { ...nearest.pos }, life: 8 });
-    nearest.hp = Math.max(0, nearest.hp - dmg * 0.7);
+    damageEnemy(nearest, dmg * 0.7, frame, enemies);
     current = nearest;
   }
 }
 
-function explodeArea(pos: Vec2, radius: number, enemies: Enemy[], toRemove: Set<number>, particles: Particle[], explosions: { id: number; pos: Vec2; radius: number; progress: number }[], player: PlayerState) {
+function explodeArea(pos: Vec2, radius: number, enemies: Enemy[], toRemove: Set<number>, particles: Particle[], explosions: { id: number; pos: Vec2; radius: number; progress: number }[], player: PlayerState, frame: number) {
   explosions.push({ id: uid(), pos: { ...pos }, radius, progress: 0 });
   for (const e of enemies) {
     const dx = e.pos.x - pos.x, dy = e.pos.y - pos.y;
     if (dx * dx + dy * dy < radius * radius) {
-      e.hp = Math.max(0, e.hp - player.bulletDamage * 3);
-      player.stats.damageDealt += player.bulletDamage * 3;
+      const blastDamage = damageEnemy(e, player.bulletDamage * 3, frame, enemies);
+      player.stats.damageDealt += blastDamage;
       if (e.hp <= 0) toRemove.add(e.id);
       particles.push(...makeBurst(e.pos, "#f97316", 5));
     }

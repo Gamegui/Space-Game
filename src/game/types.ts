@@ -74,6 +74,9 @@ export interface Enemy {
   controlResistance: number;
   controlImmunity: number;
   controlDecayTimer: number;
+  guardRole?: "herald" | "reaper" | "eye" | "anchor";
+  guardDamageFrame?: number;
+  guardDamageThisFrame?: number;
   burning: number;
   poisoned: number;
   drops: boolean;

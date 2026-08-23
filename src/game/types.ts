@@ -77,6 +77,8 @@ export interface Enemy {
   guardRole?: "herald" | "reaper" | "eye" | "anchor";
   guardDamageFrame?: number;
   guardDamageThisFrame?: number;
+  guardLinkMultiplier?: number;
+  guardFrameDamageCap?: number;
   burning: number;
   poisoned: number;
   drops: boolean;

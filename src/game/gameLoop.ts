@@ -1044,7 +1044,8 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         const dx = e.pos.x - player.pos.x, dy = e.pos.y - player.pos.y;
         const size = getEnemySize(e.type);
         if (dx * dx + dy * dy < (size + 16) * (size + 16)) {
-          const contactDamage = e.isBoss ? 28 + wave * 0.8 : 11 + wave * 0.18;
+          const baseContactDamage = e.isBoss ? 28 + wave * 0.8 : 11 + wave * 0.18;
+          const contactDamage = baseContactDamage * (e.guardRole ? 0.65 : 1);
           takeDamage(player, contactDamage, particles, obj, input.onDeath);
           if (e.type === "leecher") e.hp = Math.min(e.maxHp, e.hp + contactDamage * 2);
           break;
@@ -1193,7 +1194,8 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     }
     const clearFrames = Math.max(1, frame - obj.waveStartedFrame);
     // Never append a guard after boss defeat; that transition belongs to loot/route UI.
-    const fastClear = wave >= 6 && wave % 5 !== 0 && clearFrames < Math.max(720, 1050 - wave * 5);
+    const cortegeEligible = wave >= 16 && player.level >= 12 && obj.powerRating >= 90;
+    const fastClear = cortegeEligible && wave % 5 !== 0 && clearFrames < Math.max(720, 1050 - wave * 5);
     if (fastClear) obj.fastClearStreak = Math.min(5, obj.fastClearStreak + 1);
     else obj.fastClearStreak = Math.max(0, obj.fastClearStreak - 1);
 
@@ -1216,13 +1218,13 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 function limitEnemyDamage(enemy: Enemy, amount: number, frame: number, enemies: Enemy[]): number {
   if (!enemy.guardRole) return amount;
   const heraldAlive = enemy.guardRole !== "herald" && enemies.some(other => other.guardRole === "herald" && other.hp > 0);
-  let adjusted = amount * (heraldAlive ? 0.22 : 1);
+  let adjusted = amount * (heraldAlive ? (enemy.guardLinkMultiplier ?? 0.4) : 1);
   if (enemy.guardDamageFrame !== frame) {
     enemy.guardDamageFrame = frame;
     enemy.guardDamageThisFrame = 0;
   }
   // Even a level-300 completed build needs several seconds per Cortege stage.
-  const frameCap = enemy.maxHp * (enemy.guardRole === "herald" ? 0.003 : 0.0045);
+  const frameCap = enemy.maxHp * (enemy.guardFrameDamageCap ?? (enemy.guardRole === "herald" ? 0.004 : 0.006));
   const remaining = Math.max(0, frameCap - (enemy.guardDamageThisFrame ?? 0));
   adjusted = Math.min(adjusted, remaining);
   enemy.guardDamageThisFrame = (enemy.guardDamageThisFrame ?? 0) + adjusted;
@@ -1243,8 +1245,10 @@ function spawnAdaptiveGuard(obj: GameObjects, wave: number) {
     { role: "eye", type: "artillery", name: "◉ ОКО", hp: 0.9 },
     { role: "anchor", type: "singularity", name: "⚓ ЯКОРЬ БЕЗДНЫ", hp: 1.05 },
   ];
-  const powerPressure = Math.min(2.2, 1.1 + Math.sqrt(Math.max(1, obj.powerRating)) / 28);
+  const powerPressure = Math.min(2.0, 1 + Math.sqrt(Math.max(1, obj.powerRating)) / 34);
   const guardScale = obj.adaptiveDifficulty * powerPressure;
+  const powerRatio = Math.min(1, Math.max(0, (obj.powerRating - 80) / 1120));
+  const linkMultiplier = 0.55 - powerRatio * 0.3;
   obj.guardEventActive = true;
 
   for (const definition of cortege) {
@@ -1252,13 +1256,19 @@ function spawnAdaptiveGuard(obj: GameObjects, wave: number) {
     enemy.guardRole = definition.role;
     enemy.guardDamageFrame = -1;
     enemy.guardDamageThisFrame = 0;
+    enemy.guardLinkMultiplier = linkMultiplier;
+    enemy.guardFrameDamageCap = definition.role === "herald"
+      ? 0.007 - powerRatio * 0.004
+      : 0.009 - powerRatio * 0.0045;
     enemy.isElite = true;
     enemy.eliteName = definition.name;
     enemy.hp *= definition.hp;
     enemy.maxHp = enemy.hp;
     enemy.maxShieldHp += 20 + wave * 0.65;
     enemy.shieldHp = enemy.maxShieldHp;
-    enemy.shootInterval = Math.max(20, Math.floor(enemy.shootInterval * 0.88));
+    // Early Corteges leave larger reaction windows; late adaptive scaling closes them.
+    const attackTempo = 1.12 - powerRatio * 0.24;
+    enemy.shootInterval = Math.max(24, Math.floor(enemy.shootInterval * attackTempo));
     enemy.controlResistance = 2;
     enemy.controlDecayTimer = 420;
     enemy.xp *= 2;
@@ -1375,7 +1385,10 @@ function shootEnemy(e: Enemy, player: PlayerState, bullets: Bullet[], wave: numb
   const spd = 3.6 + wave * 0.08;
   const color = getEnemyBulletColorLocal(e.type);
   const baseDamage = e.isBoss ? 2.5 + wave * 0.22 : 1 + wave * 0.035;
-  const dmg = baseDamage * (1 + Math.max(0, adaptiveScale - 1) * 0.35);
+  const adaptiveDamage = baseDamage * (1 + Math.max(0, adaptiveScale - 1) * 0.35);
+  // The Cortege tests positioning over time instead of deleting an early player in one volley.
+  const guardDamageFactor = e.guardRole ? 0.6 + Math.min(0.22, adaptiveScale * 0.02) : 1;
+  const dmg = adaptiveDamage * guardDamageFactor;
   const size = e.isBoss ? 6.5 : 4.5;
 
   switch (e.type) {

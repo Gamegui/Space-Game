@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { PlayerState, UpgradeDef, GamePhase, ShipClassId, Enemy } from "./game/types";
 import type { GameObjects } from "./game/gameLoop";
-import { stepGame, makeStars, makeInitialPlayer, getNextLevelXp, W, H, uid } from "./game/gameLoop";
+import { stepGame, makeStars, makeInitialPlayer, getNextLevelXp, spawnAdaptiveGuard, W, H, uid } from "./game/gameLoop";
 import { ALL_UPGRADES, rollUpgrades, rollHighRarityUpgrade, applyUpgrade, getUpgradeLevel, getAdaptiveDifficulty } from "./game/upgrades";
 import { getWaveComposition, isBossWave, spawnBoss, getBossName } from "./game/enemies";
 import { SHIP_CLASSES } from "./game/shipClasses";
 import { audio } from "./game/audio";
-import { unlockAvailableSynergies } from "./game/synergies";
+import { SYNERGIES, unlockAvailableSynergies } from "./game/synergies";
 import { yandex } from "./platform/yandex";
 import {
   drawBackground, drawStars, drawPlayer, drawEnemy, drawBullet,
@@ -134,6 +134,7 @@ export default function App() {
   const [purchasePending, setPurchasePending] = useState(false);
   const [adminOpen, setAdminOpen] = useState(true);
   const [adminGod, setAdminGod] = useState(false);
+  const [, setAdminRefresh] = useState(0);
   const [synergyNotice, setSynergyNotice] = useState<string | null>(null);
   const [rerollsLeft, setRerollsLeft] = useState(3);
   const [banishesLeft, setBanishesLeft] = useState(1);
@@ -822,6 +823,81 @@ export default function App() {
     syncUI();
   }, [syncUI]);
 
+  const adminSpawnCortege = useCallback(() => {
+    const g = gameRef.current;
+    if (!g) return;
+    const testWave = Math.max(16, waveRef.current);
+    waveRef.current = testWave;
+    setWave(testWave);
+    g.enemies.length = 0;
+    g.bullets.length = 0;
+    g.waveEnemyQueue = [];
+    g.boss = null;
+    g.bossActive = false;
+    const adaptive = getAdaptiveDifficulty(g.player, testWave);
+    g.powerRating = adaptive.power;
+    g.adaptiveDifficulty = adaptive.scale;
+    g.guardSpawnedThisWave = true;
+    spawnAdaptiveGuard(g, testWave);
+    phaseRef.current = "playing";
+    setPhase("playing");
+    setBossActive(false);
+    setAdminRefresh(value => value + 1);
+    syncUI();
+  }, [syncUI]);
+
+  const adminMaxBuild = useCallback(() => {
+    const g = gameRef.current;
+    if (!g) return;
+    for (const upgrade of ALL_UPGRADES) {
+      while (getUpgradeLevel(g.player, upgrade.id) < upgrade.maxLevel) applyUpgrade(g.player, upgrade);
+    }
+    unlockAvailableSynergies(g.player);
+    g.player.level = 300;
+    g.player.xp = 0;
+    g.player.xpToNext = getNextLevelXp(300);
+    g.player.hp = g.player.maxHp;
+    if (g.player.shield) g.player.shield.hp = g.player.shield.maxHp;
+    const adaptive = getAdaptiveDifficulty(g.player, Math.max(26, waveRef.current));
+    g.powerRating = adaptive.power;
+    g.adaptiveDifficulty = adaptive.scale;
+    setPlayerLevel(300);
+    setAdminRefresh(value => value + 1);
+    syncUI();
+  }, [syncUI]);
+
+  const adminCompleteSynergies = useCallback(() => {
+    const g = gameRef.current;
+    if (!g) return;
+    for (const synergy of SYNERGIES) {
+      for (const id of synergy.requires) {
+        const upgrade = ALL_UPGRADES.find(item => item.id === id);
+        if (upgrade && getUpgradeLevel(g.player, id) === 0) applyUpgrade(g.player, upgrade);
+      }
+    }
+    unlockAvailableSynergies(g.player);
+    const adaptive = getAdaptiveDifficulty(g.player, Math.max(26, waveRef.current));
+    g.powerRating = adaptive.power;
+    g.adaptiveDifficulty = adaptive.scale;
+    setAdminRefresh(value => value + 1);
+    syncUI();
+  }, [syncUI]);
+
+  const adminBossHp = useCallback((ratio: number) => {
+    const boss = gameRef.current?.enemies.find(enemy => enemy.isBoss);
+    if (!boss) return;
+    boss.hp = Math.max(1, boss.maxHp * ratio);
+    boss.shieldHp = 0;
+    setAdminRefresh(value => value + 1);
+    syncUI();
+  }, [syncUI]);
+
+  const adminSetQuality = useCallback((tier: 0 | 1 | 2) => {
+    if (!gameRef.current) return;
+    gameRef.current.performanceTier = tier;
+    setAdminRefresh(value => value + 1);
+  }, []);
+
   const adminToggleGod = useCallback(() => {
     setAdminGod(current => {
       adminGodRef.current = !current;
@@ -871,26 +947,46 @@ export default function App() {
               🛠 ADMIN {adminOpen ? "−" : "+"}
             </button>
             {adminOpen && (
-              <div className="mt-2 w-52 rounded-xl border border-fuchsia-700 bg-slate-950/95 p-3 text-slate-200 shadow-2xl backdrop-blur-md">
+              <div className="mt-2 max-h-[650px] w-60 overflow-y-auto rounded-xl border border-fuchsia-700 bg-slate-950/95 p-3 text-slate-200 shadow-2xl backdrop-blur-md">
                 <div className="mb-2 text-[10px] text-fuchsia-300">ТЕСТОВАЯ СБОРКА · НЕ ДЛЯ РЕЛИЗА</div>
                 {!gameRef.current ? (
                   <button onClick={() => startGame(selectedClass)} className="admin-button bg-emerald-700">БЫСТРЫЙ СТАРТ</button>
                 ) : (
                   <>
                     <div className="mb-2 rounded bg-slate-900 p-2 text-[10px] text-cyan-300">
-                      СИЛА: {gameRef.current.powerRating} · ×{gameRef.current.adaptiveDifficulty.toFixed(2)}
+                      СИЛА: {gameRef.current.powerRating} · ×{gameRef.current.adaptiveDifficulty.toFixed(2)}<br/>
+                      УРОВЕНЬ: {gameRef.current.player.level} · КАЧЕСТВО: {gameRef.current.performanceTier}<br/>
+                      ВРАГИ: {gameRef.current.enemies.length} · ПУЛИ: {gameRef.current.bullets.length}
                     </div>
-                    <button onClick={adminToggleGod} className={`admin-button ${adminGod ? "bg-emerald-700" : "bg-slate-700"}`}>
-                      БЕССМЕРТИЕ: {adminGod ? "ВКЛ" : "ВЫКЛ"}
-                    </button>
+
+                    <div className="mt-2 text-[9px] font-black tracking-widest text-fuchsia-300">ИГРОК И БИЛД</div>
+                    <button onClick={adminToggleGod} className={`admin-button ${adminGod ? "bg-emerald-700" : "bg-slate-700"}`}>БЕССМЕРТИЕ: {adminGod ? "ВКЛ" : "ВЫКЛ"}</button>
                     <button onClick={adminLevelUp} className="admin-button bg-indigo-700">+1 УРОВЕНЬ / ВЫБОР</button>
+                    <button onClick={() => { for (let i = 0; i < 5; i++) adminLevelUp(); }} className="admin-button bg-indigo-800">+5 УРОВНЕЙ</button>
                     <button onClick={adminGiveLegendary} className="admin-button bg-amber-700">+ СЛУЧАЙНОЕ ЛЕГЕНД.</button>
-                    <button onClick={() => { const g = gameRef.current; if (g) g.bullets = g.bullets.filter(b => b.fromPlayer); }} className="admin-button bg-cyan-800">ОЧИСТИТЬ ПУЛИ</button>
-                    <div className="mt-2 grid grid-cols-3 gap-1">
-                      {[25, 26, 30, 31, 40, 50, 60].map(target => (
-                        <button key={target} onClick={() => adminSetWave(target)} className="rounded bg-rose-900 px-1 py-1.5 font-bold hover:bg-rose-700 cursor-pointer">
-                          В{target}
-                        </button>
+                    <button onClick={adminCompleteSynergies} className="admin-button bg-fuchsia-800">ВСЕ 4 СИНЕРГИИ</button>
+                    <button onClick={adminMaxBuild} className="admin-button bg-red-800">МАКС. БИЛД · LVL 300</button>
+                    <button onClick={() => { const g = gameRef.current; if (g) { g.player.hp = 1; if (g.player.shield) g.player.shield.hp = 0; setAdminRefresh(v => v + 1); } }} className="admin-button bg-rose-950">HP = 1</button>
+                    <button onClick={() => { const g = gameRef.current; if (g) { g.player.hp = g.player.maxHp; if (g.player.shield) g.player.shield.hp = g.player.shield.maxHp; setAdminRefresh(v => v + 1); } }} className="admin-button bg-emerald-800">ПОЛНОЕ ЛЕЧЕНИЕ</button>
+
+                    <div className="mt-2 text-[9px] font-black tracking-widest text-fuchsia-300">СОБЫТИЯ И БОССЫ</div>
+                    <button onClick={adminSpawnCortege} className="admin-button bg-purple-900">👁 ПРИЗВАТЬ ЧЁРНЫЙ КОРТЕЖ</button>
+                    <button onClick={() => adminSetWave(50)} className="admin-button bg-red-950">Ω ПРИЗВАТЬ ОМЕГУ</button>
+                    <div className="mt-1 grid grid-cols-3 gap-1">
+                      {[0.74, 0.49, 0.24].map((ratio, index) => <button key={ratio} onClick={() => adminBossHp(ratio)} className="rounded bg-orange-900 px-1 py-1.5 font-bold hover:bg-orange-700 cursor-pointer">Ф{index + 2}</button>)}
+                    </div>
+                    <button onClick={() => { const g = gameRef.current; if (g) g.enemies.forEach(enemy => { enemy.shieldHp = 0; enemy.hp = 0; }); }} className="admin-button bg-rose-800">УНИЧТОЖИТЬ ВСЕХ</button>
+                    <button onClick={() => { const g = gameRef.current; if (g) g.bullets = g.bullets.filter(b => b.fromPlayer); }} className="admin-button bg-cyan-800">ОЧИСТИТЬ ВРАЖ. ПУЛИ</button>
+
+                    <div className="mt-2 text-[9px] font-black tracking-widest text-fuchsia-300">КАЧЕСТВО РЕНДЕРА</div>
+                    <div className="grid grid-cols-3 gap-1">
+                      {([0, 1, 2] as const).map(tier => <button key={tier} onClick={() => adminSetQuality(tier)} className="rounded bg-slate-700 px-1 py-1.5 font-bold hover:bg-slate-600 cursor-pointer">Q{tier}</button>)}
+                    </div>
+
+                    <div className="mt-2 text-[9px] font-black tracking-widest text-fuchsia-300">ПЕРЕХОД К ВОЛНЕ</div>
+                    <div className="mt-1 grid grid-cols-4 gap-1">
+                      {[5, 10, 15, 16, 20, 25, 30, 31, 40, 41, 46, 50, 60].map(target => (
+                        <button key={target} onClick={() => adminSetWave(target)} className="rounded bg-rose-900 px-1 py-1.5 font-bold hover:bg-rose-700 cursor-pointer">В{target}</button>
                       ))}
                     </div>
                   </>

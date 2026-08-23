@@ -1237,7 +1237,7 @@ function damageEnemy(enemy: Enemy, amount: number, frame: number, enemies: Enemy
   return applied;
 }
 
-function spawnAdaptiveGuard(obj: GameObjects, wave: number) {
+export function spawnAdaptiveGuard(obj: GameObjects, wave: number) {
   // The Black Cortege is always four readable roles, not another crowded wave.
   const cortege: Array<{ role: NonNullable<Enemy["guardRole"]>; type: EnemyType; name: string; hp: number }> = [
     { role: "herald", type: "warden", name: "☿ ПРОВОЗВЕСТНИК", hp: 1.15 },

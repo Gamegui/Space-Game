@@ -33,7 +33,13 @@ export function getNextLevelXp(level: number): number {
   if (level === 3) return 110;
   if (level === 4) return 170;
   if (level === 5) return 240;
-  return Math.floor(240 * Math.pow(1.25, level - 5));
+  if (level <= 10) return Math.floor(240 * Math.pow(1.18, level - 5));
+
+  // The old permanent ×1.25 curve required ~6,800 XP at level 20 and grew to
+  // tens of thousands shortly afterwards. A quadratic late curve keeps roughly
+  // one meaningful upgrade per wave without making endless levels free.
+  const lateLevel = level - 10;
+  return Math.floor(550 + lateLevel * 105 + lateLevel * lateLevel * 7);
 }
 
 export function makeInitialPlayer(shipClass: ShipClassId = "interceptor"): PlayerState {
@@ -498,7 +504,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     if (enemy.hp > 0) continue;
     enemy.hp = 0;
     const xpBoostLevel = getUpgradeLevel(player, "xp_boost");
-    const xpGained = Math.floor(enemy.xp * (1 + xpBoostLevel * 0.2) * obj.routeXpMultiplier);
+    const xpGained = Math.floor(enemy.xp * (1 + xpBoostLevel * 0.25) * obj.routeXpMultiplier);
     audio.playExplosion(enemy.isBoss);
     particles.push(...makeBurst(enemy.pos, enemy.isBoss ? "#f43f5e" : "#fb923c", enemy.isBoss ? 45 : 14, enemy.isBoss));
     xpOrbs.push(makeXpOrb(enemy.pos, xpGained));
@@ -815,7 +821,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
             player.hp = Math.min(player.hp + 2 * getUpgradeLevel(player, "heal_on_kill"), player.maxHp);
           }
           const xpBoostLevel = getUpgradeLevel(player, "xp_boost");
-          const xpGained = Math.floor(e.xp * (1 + xpBoostLevel * 0.2) * obj.routeXpMultiplier);
+          const xpGained = Math.floor(e.xp * (1 + xpBoostLevel * 0.25) * obj.routeXpMultiplier);
           enemiesToRemove.add(e.id);
           input.onKill(xpGained, e.pos, e.isBoss);
 

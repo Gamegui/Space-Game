@@ -60,6 +60,7 @@ export default function UpgradePanel({
           const maxLevel = u.maxLevel;
           const visiblePips = Math.min(maxLevel, 8);
           const stars = Array.from({ length: visiblePips }, (_, i) => i < Math.min(currentLevel, visiblePips));
+          const relatedSynergies = SYNERGIES.filter(synergy => synergy.requires.includes(u.id));
 
           return (
             <button
@@ -93,6 +94,28 @@ export default function UpgradePanel({
                   <div className="text-xs opacity-60 font-mono">{categoryIcon[u.category]} {u.category}</div>
                 </div>
               </div>
+
+              {/* Synergy hint: explain why this card matters before selection. */}
+              {relatedSynergies.length > 0 && (
+                <div className="mb-2 space-y-1">
+                  {relatedSynergies.map(synergy => {
+                    const found = synergy.requires.filter(id => getUpgradeLevel(player, id) > 0).length;
+                    const afterPick = Math.min(synergy.requires.length, found + (currentLevel === 0 ? 1 : 0));
+                    const active = player.synergies.includes(synergy.id);
+                    const completes = !active && afterPick === synergy.requires.length;
+                    const style = active
+                      ? "border-emerald-500/50 bg-emerald-950/70 text-emerald-200"
+                      : completes
+                        ? "border-amber-400 bg-amber-500/20 text-amber-200 animate-pulse"
+                        : "border-fuchsia-500/50 bg-fuchsia-950/70 text-fuchsia-200";
+                    return (
+                      <div key={synergy.id} className={`rounded-md border px-2 py-1 text-[9px] font-black leading-tight ${style}`}>
+                        {active ? "✓ АКТИВНА" : completes ? "✦ ЗАВЕРШАЕТ" : "🧬 ДЛЯ СИНЕРГИИ"}: {synergy.name} · {afterPick}/{synergy.requires.length}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
 
               {/* Description */}
               <div className="text-xs opacity-85 leading-relaxed mb-4 min-h-[38px]">{u.description}</div>

@@ -288,7 +288,13 @@ export function drawEnemy(ctx: CanvasRenderingContext2D, e: Enemy, frame: number
     case "boss_dreadnought":drawBossDreadnought(ctx, fill, stroke, light, size, frame); break;
     case "boss_eclipse":    drawBossEclipse(ctx, fill, stroke, light, size, frame); break;
     case "boss_titan":      drawBossTitan(ctx, fill, stroke, light, size, frame); break;
-    case "boss_omega":      drawBossOmega(ctx, fill, stroke, light, size, frame); break;
+    case "boss_omega":
+      ctx.save();
+      ctx.scale(1 + e.phase * 0.055, 1 + e.phase * 0.055);
+      ctx.rotate(Math.sin(frame * 0.025) * e.phase * 0.025);
+      drawBossOmega(ctx, e.phase >= 3 ? "#ffffff" : fill, stroke, e.phase >= 2 ? "#f0abfc" : light, size, frame * (1 + e.phase * 0.18));
+      ctx.restore();
+      break;
   }
 
   // Shield
@@ -299,6 +305,17 @@ export function drawEnemy(ctx: CanvasRenderingContext2D, e: Enemy, frame: number
     ctx.beginPath();
     ctx.arc(0, 0, size + 8, 0, Math.PI * 2);
     ctx.stroke();
+  }
+
+  // Temporary boss control immunity after repeated freezes.
+  if (e.isBoss && e.controlImmunity > 0) {
+    ctx.strokeStyle = "rgba(165,243,252,0.75)";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 5]);
+    ctx.beginPath();
+    ctx.arc(0, 0, size + 15, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
   }
 
   // HP bar

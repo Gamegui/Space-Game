@@ -71,6 +71,9 @@ export interface Enemy {
   shieldHp: number;
   maxShieldHp: number;
   frozen: number;
+  controlResistance: number;
+  controlImmunity: number;
+  controlDecayTimer: number;
   burning: number;
   poisoned: number;
   drops: boolean;

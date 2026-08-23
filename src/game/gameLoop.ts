@@ -183,7 +183,12 @@ export interface GameObjects {
   adaptiveDifficulty: number;
   routeXpMultiplier: number;
   routeScoreMultiplier: number;
+  activeRoute: string;
+  routeEffect: string;
   performanceTier: 0 | 1 | 2;
+  waveStartedFrame: number;
+  guardSpawnedThisWave: boolean;
+  fastClearStreak: number;
 }
 
 export interface StepInput {
@@ -318,6 +323,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   const hpPct = player.hp / player.maxHp;
   let baseRate = berserker ? player.fireRate * (0.5 + hpPct * 0.5) : player.fireRate;
   if (player.rapidBoostTimer > 0) baseRate *= 0.45;
+  if (obj.routeEffect === "interference") baseRate *= 1.22;
 
   const effectiveFireRate = Math.max(2, Math.floor(baseRate));
 
@@ -520,11 +526,38 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   player.timeSlowCooldown = Math.max(0, player.timeSlowCooldown - 1);
   player.timeSlowTimer = Math.max(0, player.timeSlowTimer - 1);
 
+  // ─── Route-specific battlefield rules ──────────────────────────────────────
+  if (obj.activeRoute === "asteroids" && frame % 105 === 0) {
+    const rockCount = 2 + Math.min(2, Math.floor(wave / 20));
+    for (let i = 0; i < rockCount; i++) {
+      bullets.push({ id: uid(), pos: { x: randRange(35, W - 35), y: -25 }, vel: { x: randRange(-0.7, 0.7), y: randRange(3.2, 5.2) }, fromPlayer: false, damage: 1.2 + wave * 0.025, size: randRange(8, 13), color: "#a8a29e", pierce: 0, homing: false });
+    }
+  }
+  if (obj.routeEffect === "gravity") {
+    const dx = W / 2 - player.pos.x, dy = H / 2 - player.pos.y;
+    const distance = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+    player.pos.x += (dx / distance) * 0.16;
+    player.pos.y += (dy / distance) * 0.12;
+  }
+
   // ─── Spawn enemies ─────────────────────────────────────────────────────────
-  obj.waveSpawnTimer = Math.max(0, obj.waveSpawnTimer - 1);
+  // If a strong build clears the active squad instantly, stream the next squad
+  // in instead of leaving an empty arena.
+  const spawnAcceleration = enemies.length === 0 ? 6 : enemies.length <= 2 ? 3 : 1;
+  obj.waveSpawnTimer = Math.max(0, obj.waveSpawnTimer - spawnAcceleration);
   if (obj.waveEnemyQueue.length > 0 && obj.waveSpawnTimer <= 0) {
     const next = obj.waveEnemyQueue[0];
-    enemies.push(spawnEnemy(next.type, wave, obj.adaptiveDifficulty));
+    const spawned = spawnEnemy(next.type, wave, obj.adaptiveDifficulty);
+    if (obj.activeRoute === "warzone" && !spawned.isBoss && Math.random() < 0.22) {
+      spawned.isElite = true;
+      spawned.eliteName = "⚔️ УДАРНЫЙ КОРПУС";
+      spawned.hp *= 1.65;
+      spawned.maxHp = spawned.hp;
+      spawned.maxShieldHp += 12;
+      spawned.shieldHp = spawned.maxShieldHp;
+      spawned.xp *= 1.6;
+    }
+    enemies.push(spawned);
     next.count--;
     if (next.count <= 0) obj.waveEnemyQueue.shift();
     obj.waveSpawnTimer = Math.max(20, 50 - wave * 2);
@@ -533,7 +566,8 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   // ─── Move & Heal enemies (STRICTLY STAY ON MAP) ───────────────────────────
   for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i];
-    const ets = e.frozen > 0 ? 0.15 : timeScale;
+    // Bosses are slowed, never fully disabled. Ordinary enemies keep the strong freeze.
+    const ets = e.frozen > 0 ? (e.isBoss ? Math.max(0.58, timeScale * 0.58) : 0.15) : timeScale;
     const size = getEnemySize(e.type);
     const minX = size + 25;
     const maxX = W - size - 25;
@@ -641,34 +675,67 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     e.pos.x = Math.max(minX, Math.min(maxX, e.pos.x));
     e.pos.y = Math.max(50, Math.min(H - 90, e.pos.y));
 
-    // Status effects
+    // Status effects and gradual boss control-resistance recovery.
     if (e.frozen > 0) e.frozen -= 1;
+    if (e.controlImmunity > 0) e.controlImmunity--;
+    if (e.controlDecayTimer > 0) e.controlDecayTimer--;
+    else if (e.controlResistance > 0 && e.controlImmunity <= 0) {
+      e.controlResistance--;
+      e.controlDecayTimer = e.controlResistance > 0 ? 180 : 0;
+    }
     if (e.burning > 0) { e.hp = Math.max(0, e.hp - 0.18 * ets); e.burning -= ets; }
     if (e.poisoned > 0) { e.hp = Math.max(0, e.hp - 0.10 * ets); e.poisoned -= ets; }
 
-    // Boss phase changes
+    // Boss phase changes. Omega has four real transformations; other bosses
+    // retain their focused two-stage patterns.
     if (e.isBoss) {
       const bossHpPct = e.hp / e.maxHp;
-      if (bossHpPct < 0.5 && e.phase === 0) {
-        e.phase = 1;
-        e.shootInterval = Math.max(10, e.shootInterval - 8);
-        obj.screenShake = Math.max(obj.screenShake, 8);
-        audio.playBossWarning();
-        if (e.type === "boss_mothership") {
-          for (let escort = 0; escort < 4; escort++) enemies.push(spawnEnemy(escort % 2 ? "fighter" : "spinner", wave, obj.adaptiveDifficulty));
-        }
-        if (e.type === "boss_dreadnought") {
-          e.maxShieldHp = Math.max(e.maxShieldHp, e.maxHp * 0.12);
+      if (e.type === "boss_omega") {
+        const transform = (phase: number, label: string, intervalDrop: number) => {
+          e.phase = phase;
+          e.shootInterval = Math.max(6, e.shootInterval - intervalDrop);
+          e.frozen = 0;
+          e.controlImmunity = 150;
+          obj.screenShake = Math.max(obj.screenShake, 12 + phase * 2);
+          floatingTexts.push(makeFloatingText(e.pos, label, phase === 3 ? "#ffffff" : "#f43f5e", true));
+          audio.playBossWarning();
+        };
+        if (bossHpPct < 0.75 && e.phase === 0) {
+          transform(1, "ОМЕГА: АДАПТАЦИЯ", 3);
+          e.maxShieldHp = Math.max(e.maxShieldHp, e.maxHp * 0.06);
           e.shieldHp = e.maxShieldHp;
-        }
-      }
-      if (bossHpPct < 0.25 && e.phase === 1) {
-        e.phase = 2;
-        e.shootInterval = Math.max(6, e.shootInterval - 6);
-        obj.screenShake = Math.max(obj.screenShake, 10);
-        if (e.type === "boss_omega") {
+        } else if (bossHpPct < 0.5 && e.phase === 1) {
+          transform(2, "ОМЕГА: РАЗРЫВ ФОРМЫ", 3);
+          enemies.push(spawnEnemy("carrier", wave, obj.adaptiveDifficulty), spawnEnemy("phantom", wave, obj.adaptiveDifficulty));
+        } else if (bossHpPct < 0.25 && e.phase === 2) {
+          transform(3, "ФИНАЛЬНАЯ ФОРМА ОМЕГИ", 5);
           enemies.push(spawnEnemy("phantom", wave, obj.adaptiveDifficulty), spawnEnemy("singularity", wave, obj.adaptiveDifficulty));
-          bullets.splice(0, Math.floor(bullets.length * 0.2));
+          bullets.splice(0, Math.floor(bullets.length * 0.25));
+        }
+        if (e.phase >= 3) {
+          const dx = W / 2 - player.pos.x, dy = H / 2 - player.pos.y;
+          const distance = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+          player.pos.x += (dx / distance) * 0.24;
+          player.pos.y += (dy / distance) * 0.18;
+        }
+      } else {
+        if (bossHpPct < 0.5 && e.phase === 0) {
+          e.phase = 1;
+          e.shootInterval = Math.max(10, e.shootInterval - 8);
+          obj.screenShake = Math.max(obj.screenShake, 8);
+          audio.playBossWarning();
+          if (e.type === "boss_mothership") {
+            for (let escort = 0; escort < 4; escort++) enemies.push(spawnEnemy(escort % 2 ? "fighter" : "spinner", wave, obj.adaptiveDifficulty));
+          }
+          if (e.type === "boss_dreadnought") {
+            e.maxShieldHp = Math.max(e.maxShieldHp, e.maxHp * 0.12);
+            e.shieldHp = e.maxShieldHp;
+          }
+        }
+        if (bossHpPct < 0.25 && e.phase === 1) {
+          e.phase = 2;
+          e.shootInterval = Math.max(6, e.shootInterval - 6);
+          obj.screenShake = Math.max(obj.screenShake, 10);
         }
       }
       if (e.type === "boss_eclipse" && e.phase >= 1 && frame % 3 === 0) {
@@ -682,7 +749,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     // Enemy shooting
     e.shootTimer -= ets;
     if (e.shootTimer <= 0) {
-      e.shootTimer = e.shootInterval * (e.frozen > 0 ? 3 : 1);
+      e.shootTimer = e.shootInterval * (e.frozen > 0 ? (e.isBoss ? 1.35 : 3) : 1);
       shootEnemy(e, player, bullets, wave, obj.adaptiveDifficulty);
     }
   }
@@ -690,7 +757,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   // ─── Move bullets ──────────────────────────────────────────────────────────
   for (let i = bullets.length - 1; i >= 0; i--) {
     const b = bullets[i];
-    const bts = timeScale;
+    const bts = timeScale * (!b.fromPlayer && obj.routeEffect === "bullet_storm" ? 1.22 : 1);
 
     // Aim assist is the hottest O(bullets × enemies) path. Recalculate steering
     // periodically; velocity persists between recalculations with no visual loss.
@@ -795,7 +862,22 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 
         // Status effects
         if (Math.random() < player.burnChance)   { e.burning  = Math.max(e.burning,  180); particles.push(...makeBurst(b.pos, "#f97316", 3)); }
-        if (Math.random() < player.freezeChance) { e.frozen   = Math.max(e.frozen,   120); particles.push(...makeBurst(b.pos, "#bfdbfe", 3)); }
+        if (Math.random() < player.freezeChance) {
+          if (!e.isBoss) {
+            e.frozen = Math.max(e.frozen, 120);
+          } else if (e.controlImmunity <= 0) {
+            // Diminishing control: 120 → 72 → 43 frames, then 3s immunity.
+            const duration = Math.max(24, Math.round(120 * Math.pow(0.6, e.controlResistance)));
+            e.frozen = Math.max(e.frozen, duration);
+            e.controlResistance++;
+            e.controlDecayTimer = 360;
+            if (e.controlResistance >= 3) {
+              e.controlImmunity = 180;
+              e.controlResistance = 3;
+            }
+          }
+          particles.push(...makeBurst(b.pos, "#bfdbfe", e.isBoss ? 5 : 3));
+        }
         if (Math.random() < player.poisonChance) { e.poisoned = Math.max(e.poisoned, 240); particles.push(...makeBurst(b.pos, "#4ade80", 3)); }
 
         // Lightning chain
@@ -861,6 +943,9 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
                 shieldHp: 0,
                 maxShieldHp: 0,
                 frozen: 0,
+                controlResistance: 0,
+                controlImmunity: 0,
+                controlDecayTimer: 0,
                 burning: 0,
                 poisoned: 0,
                 drops: false,
@@ -1057,13 +1142,51 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   // Keep rendering and collision costs bounded even for extreme end-game builds.
   enforceObjectBudgets(obj);
 
-  // ─── Wave completion ───────────────────────────────────────────────────────
+  // ─── Wave completion / adaptive guard response ─────────────────────────────
   if (obj.waveEnemyQueue.length === 0 && enemies.length === 0 && !obj.bossActive) {
-    input.onWaveComplete();
+    const clearFrames = Math.max(1, frame - obj.waveStartedFrame);
+    const fastClear = wave >= 6 && clearFrames < Math.max(720, 1050 - wave * 5);
+    if (fastClear) obj.fastClearStreak = Math.min(5, obj.fastClearStreak + 1);
+    else obj.fastClearStreak = Math.max(0, obj.fastClearStreak - 1);
+
+    const guardChance = Math.min(0.78, 0.12 + obj.fastClearStreak * 0.13 + Math.max(0, obj.powerRating - 100) / 1800);
+    if (fastClear && !obj.guardSpawnedThisWave && Math.random() < guardChance) {
+      spawnAdaptiveGuard(obj, wave);
+      obj.guardSpawnedThisWave = true;
+      obj.fastClearStreak = Math.max(0, obj.fastClearStreak - 2);
+      obj.floatingTexts.push(makeFloatingText({ x: W / 2, y: H / 2 }, "⚠ ГВАРДИЯ СЕКТОРА", "#fbbf24", true));
+      obj.screenShake = Math.max(obj.screenShake, 7);
+    } else {
+      input.onWaveComplete();
+    }
   }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+function spawnAdaptiveGuard(obj: GameObjects, wave: number) {
+  const basePool: EnemyType[] = ["tank", "charger", "artillery", "healer"];
+  if (wave >= 26) basePool.push("warden");
+  if (wave >= 31) basePool.push("phantom");
+  if (wave >= 41) basePool.push("carrier");
+  if (wave >= 46) basePool.push("singularity");
+
+  const count = 3 + Math.min(4, Math.floor(obj.powerRating / 260));
+  const guardScale = obj.adaptiveDifficulty * Math.min(1.55, 1.05 + obj.powerRating / 1800);
+  for (let i = 0; i < count; i++) {
+    const type = basePool[(i + Math.floor(Math.random() * basePool.length)) % basePool.length];
+    const enemy = spawnEnemy(type, wave, guardScale);
+    enemy.isElite = true;
+    enemy.eliteName = "🛡️ ГВАРДИЯ";
+    enemy.hp *= 1.35;
+    enemy.maxHp = enemy.hp;
+    enemy.maxShieldHp += 14 + wave * 0.5;
+    enemy.shieldHp = enemy.maxShieldHp;
+    enemy.shootInterval = Math.max(18, Math.floor(enemy.shootInterval * 0.82));
+    enemy.xp *= 1.6;
+    obj.enemies.push(enemy);
+  }
+}
+
 const OBJECT_BUDGETS = {
   playerBullets: 450,
   enemyBullets: 260,
@@ -1289,9 +1412,18 @@ function shootEnemy(e: Enemy, player: PlayerState, bullets: Bullet[], wave: numb
       break;
     }
     case "boss_omega": {
-      for (let i = 0; i < 16; i++) {
-        const a = (i / 16) * Math.PI * 2 + e.angle * 0.03;
-        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd * 1.15, y: Math.sin(a) * spd * 1.15 }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
+      const count = 12 + e.phase * 4;
+      for (let i = 0; i < count; i++) {
+        const a = (i / count) * Math.PI * 2 + e.angle * (0.025 + e.phase * 0.008);
+        const speedBand = e.phase >= 2 && i % 2 === 0 ? 0.72 : 1.08 + e.phase * 0.08;
+        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd * speedBand, y: Math.sin(a) * spd * speedBand }, fromPlayer: false, damage: dmg * (e.phase >= 3 ? 1.15 : 1), size: size + e.phase, color, pierce: 0, homing: false });
+      }
+      if (e.phase >= 1) {
+        const aim = Math.atan2(dy, dx);
+        for (const offset of e.phase >= 3 ? [-0.3, -0.1, 0.1, 0.3] : [-0.14, 0.14]) {
+          const angle = aim + offset;
+          bullets.push({ id: uid(), pos: { ...e.pos }, vel: { x: Math.cos(angle) * spd * 1.65, y: Math.sin(angle) * spd * 1.65 }, fromPlayer: false, damage: dmg * 1.25, size: size + 2, color: "#ffffff", pierce: 1, homing: false });
+        }
       }
       break;
     }

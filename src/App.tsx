@@ -44,7 +44,12 @@ function makeInitialObjects(player: PlayerState): GameObjects {
     adaptiveDifficulty: 1,
     routeXpMultiplier: 1,
     routeScoreMultiplier: 1,
+    activeRoute: "none",
+    routeEffect: "none",
     performanceTier: detectPerformanceTier(),
+    waveStartedFrame: 0,
+    guardSpawnedThisWave: false,
+    fastClearStreak: 0,
   };
 }
 
@@ -60,9 +65,9 @@ function detectPerformanceTier(): 0 | 1 | 2 {
 }
 
 const ROUTES: RouteChoice[] = [
-  { id: "asteroids", icon: "☄️", name: "ПОЯС АСТЕРОИДОВ", description: "Меньше противников, но теснее награды.", risk: "−15% врагов", reward: "+30% опыта" },
-  { id: "warzone", icon: "⚔️", name: "ВОЕННЫЙ СЕКТОР", description: "Усиленная волна ради большой добычи.", risk: "+25% врагов и HP", reward: "+60% опыта и очков" },
-  { id: "anomaly", icon: "🌀", name: "АНОМАЛИЯ", description: "Непредсказуемое искажение следующей волны.", risk: "Случайный риск", reward: "Случайный бонус" },
+  { id: "asteroids", icon: "☄️", name: "ПОЯС АСТЕРОИДОВ", description: "Каменный дождь пересекает арену и заставляет постоянно маневрировать.", risk: "Метеоры · −15% врагов", reward: "+30% опыта" },
+  { id: "warzone", icon: "⚔️", name: "ВОЕННЫЙ СЕКТОР", description: "Ударный корпус присылает усиленные элитные эскадрильи.", risk: "+25% врагов · элиты", reward: "+60% опыта и очков" },
+  { id: "anomaly", icon: "🌀", name: "АНОМАЛИЯ", description: "Гравитация, ускоренные пули или помехи оружия меняют правила волны.", risk: "Случайное правило", reward: "Рискованная награда" },
 ];
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -234,12 +239,16 @@ export default function App() {
     setWave(newWave);
     g.bossActive = false;
     g.boss = null;
+    g.waveStartedFrame = frameRef.current;
+    g.guardSpawnedThisWave = false;
     const adaptive = getAdaptiveDifficulty(g.player, newWave);
     g.powerRating = adaptive.power;
     let routeDifficulty = 1;
     let routeCount = 1;
     g.routeXpMultiplier = 1;
     g.routeScoreMultiplier = 1;
+    g.activeRoute = route;
+    g.routeEffect = "none";
     if (route === "asteroids") {
       routeDifficulty = 0.94; routeCount = 0.85; g.routeXpMultiplier = 1.3;
     } else if (route === "warzone") {
@@ -250,7 +259,11 @@ export default function App() {
       routeCount = dangerous ? 1.15 : 1.05;
       g.routeXpMultiplier = dangerous ? 1.75 : 0.85;
       g.routeScoreMultiplier = dangerous ? 1.5 : 0.85;
+      const anomalyEffects = dangerous ? ["gravity", "bullet_storm"] : ["interference", "gravity"];
+      g.routeEffect = anomalyEffects[Math.floor(Math.random() * anomalyEffects.length)];
     }
+    const routeLabels: Record<RouteId, string> = { asteroids: "☄️ ПОЯС АСТЕРОИДОВ", warzone: "⚔️ ВОЕННЫЙ СЕКТОР", anomaly: "🌀 АНОМАЛИЯ" };
+    setWaveNotice(`МАРШРУТ: ${routeLabels[route]}`);
     g.adaptiveDifficulty = adaptive.scale * routeDifficulty;
 
     // A modest recovery keeps attrition meaningful in long runs.
@@ -755,6 +768,8 @@ export default function App() {
     g.waveEnemyQueue = [];
     g.boss = null;
     g.bossActive = false;
+    g.waveStartedFrame = frameRef.current;
+    g.guardSpawnedThisWave = false;
     waveTransitioningRef.current = false;
     const adaptive = getAdaptiveDifficulty(g.player, targetWave);
     g.powerRating = adaptive.power;

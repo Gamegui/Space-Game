@@ -1,4 +1,4 @@
-# Space Shooter Ultra — handoff
+# Космический Штурм: Ультра — handoff
 
 ## Release state
 
@@ -123,3 +123,18 @@ Before clicking Publish in Yandex Games, manually verify in the platform draft:
 6. One clean run through wave 50 and Omega
 
 Do not add more large systems before release. Future changes should be limited to reproducible bug fixes and measured balance adjustments.
+
+## Final release handoff — 2026-08-24
+
+The release title is exactly `Космический Штурм: Ультра` everywhere: in the game UI, page title, metadata, README, handoff notes, and the Yandex Games draft. The latest archive is `space-shooter-yandex.zip` in the repository root.
+
+The focus-loss handling was hardened: browser `blur` now suspends audio, pauses active combat, and clears pressed keys. This addresses the Yandex Games requirement that sound stop when the game loses focus.
+
+The Yandex Games archive is ready for upload. Do not add RСЯ/RTB advertising code or custom banners: the game monetizes only through Yandex Games SDK advertising. The RСЯ partner notification about creating an RTB block is for an external website and is not needed for this game.
+
+Before future changes, preserve the exact title and the Yandex console identifiers:
+- Russian title: `Космический Штурм: Ультра`
+- Leaderboard: `highscore`
+- Permanent purchase: `void_wraith`
+
+Next-chat note: treat this as the final release state unless the user reports a concrete moderation or gameplay issue. If asked to provide the build, use the latest `space-shooter-yandex.zip`; if asked about Yandex ads, explain the distinction between Yandex Games SDK ads and external RСЯ/RTB website blocks.

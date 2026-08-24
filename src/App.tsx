@@ -165,19 +165,26 @@ export default function App() {
       // Outside the Yandex catalogue the ship is unlocked for development and QA.
       setPremiumUnlocked(ownsPremiumShip || !yandex.isPlatformAvailable());
     });
-    const onVisibility = () => {
-      if (document.hidden && phaseRef.current === "playing") {
+    const pauseForFocusLoss = () => {
+      // Yandex checks focus loss independently of document.visibilityState. Some
+      // browsers fire blur while the document is still visible, so always stop
+      // audio and freeze combat here instead of relying only on document.hidden.
+      audio.suspend();
+      if (phaseRef.current === "playing") {
         phaseRef.current = "paused";
         setPhase("paused");
-        audio.suspend();
       }
       keysRef.current.clear();
     };
+    const onVisibility = () => {
+      if (document.hidden) pauseForFocusLoss();
+      else keysRef.current.clear();
+    };
     document.addEventListener("visibilitychange", onVisibility);
-    window.addEventListener("blur", onVisibility);
+    window.addEventListener("blur", pauseForFocusLoss);
     return () => {
       document.removeEventListener("visibilitychange", onVisibility);
-      window.removeEventListener("blur", onVisibility);
+      window.removeEventListener("blur", pauseForFocusLoss);
       yandex.setGameplay(false);
     };
   }, []);

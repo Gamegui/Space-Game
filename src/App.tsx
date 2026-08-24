@@ -165,19 +165,26 @@ export default function App() {
       // Outside the Yandex catalogue the ship is unlocked for development and QA.
       setPremiumUnlocked(ownsPremiumShip || !yandex.isPlatformAvailable());
     });
-    const onVisibility = () => {
-      if (document.hidden && phaseRef.current === "playing") {
+    const pauseForFocusLoss = () => {
+      // Yandex checks focus loss independently of document.visibilityState. Some
+      // browsers fire blur while the document is still visible, so always stop
+      // audio and freeze combat here instead of relying only on document.hidden.
+      audio.suspend();
+      if (phaseRef.current === "playing") {
         phaseRef.current = "paused";
         setPhase("paused");
-        audio.suspend();
       }
       keysRef.current.clear();
     };
+    const onVisibility = () => {
+      if (document.hidden) pauseForFocusLoss();
+      else keysRef.current.clear();
+    };
     document.addEventListener("visibilitychange", onVisibility);
-    window.addEventListener("blur", onVisibility);
+    window.addEventListener("blur", pauseForFocusLoss);
     return () => {
       document.removeEventListener("visibilitychange", onVisibility);
-      window.removeEventListener("blur", onVisibility);
+      window.removeEventListener("blur", pauseForFocusLoss);
       yandex.setGameplay(false);
     };
   }, []);
@@ -1174,7 +1181,7 @@ export default function App() {
             <div className="text-center max-w-xl px-6">
               <div className="text-8xl mb-2 animate-pulse">🚀</div>
               <h1 className="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-sky-300 via-blue-400 to-indigo-400 tracking-tight mb-1">
-                SPACE SHOOTER ULTRA
+                Космический Штурм: Ультра
               </h1>
               <p className="text-blue-300/80 font-mono text-xs tracking-widest mb-6">КОСМИЧЕСКИЙ РОГАЛИК · СИНТЕЗАТОР ЗВУКА · 90 УЛУЧШЕНИЙ</p>
 

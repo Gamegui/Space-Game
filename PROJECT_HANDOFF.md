@@ -1,4 +1,4 @@
-# Space Shooter Ultra — handoff
+# Космический Штурм: Ультра — handoff
 
 ## Release state
 

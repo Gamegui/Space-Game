@@ -1181,7 +1181,7 @@ export default function App() {
             <div className="text-center max-w-xl px-6">
               <div className="text-8xl mb-2 animate-pulse">🚀</div>
               <h1 className="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-sky-300 via-blue-400 to-indigo-400 tracking-tight mb-1">
-                КОСМИЧЕСКИЙ ШТУРМ: УЛЬТРА
+                Космический Штурм: Ультра
               </h1>
               <p className="text-blue-300/80 font-mono text-xs tracking-widest mb-6">КОСМИЧЕСКИЙ РОГАЛИК · СИНТЕЗАТОР ЗВУКА · 90 УЛУЧШЕНИЙ</p>
 

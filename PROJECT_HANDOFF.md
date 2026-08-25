@@ -126,6 +126,16 @@ Before clicking Publish in Yandex Games, manually verify in the platform draft:
 
 Do not add more large systems before release. Future changes should be limited to reproducible bug fixes and measured balance adjustments.
 
+## Store-compliance fixes — 2026-08-25
+
+- The purchase CTA now renders the numeric price and the portal currency (name + icon) from `payments.getCatalog()` instead of hardcoded text (Game Requirements §1.13.2, §1.13.4 — passes the debug currency-mock test).
+- The purchase is hidden entirely when the console product is absent or inactive, so the in-game list always matches the developer console (§1.13, catalog parity).
+- Payments initialize once lazily (`ensurePayments`), so concurrent startup calls share a single `getPayments()` request.
+
+Downloading the release archive: the latest production ZIP is tracked in the repository root. Direct raw link on `main`:
+`https://raw.githubusercontent.com/Gamegui/Space-Game/main/space-shooter-yandex.zip`
+Rebuild before publishing with `npm run package:yandex`, commit the refreshed ZIP, and the same link always serves the newest archive.
+
 ## Final release handoff — 2026-08-24
 
 The release title is exactly `Космический Штурм: Ультра` everywhere: in the game UI, page title, metadata, README, handoff notes, and the Yandex Games draft. The latest archive is `space-shooter-yandex.zip` in the repository root.

@@ -15,9 +15,34 @@ type YandexPlayer = {
 };
 
 type Purchase = { productID: string; purchaseToken?: string };
+
+type CatalogProduct = {
+  id: string;
+  title?: string;
+  description?: string;
+  imageURI?: string;
+  price?: string;
+  priceValue?: string;
+  priceCurrencyCode?: string;
+  getPriceCurrencyImage?: (size: "small" | "medium" | "svg") => string;
+};
+
 type YandexPayments = {
   getPurchases: () => Promise<Purchase[]>;
+  getCatalog: () => Promise<CatalogProduct[]>;
   purchase: (options: { id: string }) => Promise<Purchase>;
+};
+
+/** Store data for one active console product. `price` already contains the
+ *  numeric price plus the portal currency code (e.g. "75 YAN"), and the icon
+ *  URL comes from the SDK, so the moderation currency-mock test flips both
+ *  automatically (Game Requirements §1.13.2). */
+export type StoreOffer = {
+  id: string;
+  title: string;
+  price: string;
+  currencyCode: string;
+  currencyIconUrl: string | null;
 };
 
 type YandexSDK = {
@@ -42,6 +67,7 @@ class YandexPlatform {
   private sdk: YandexSDK | null = null;
   private player: YandexPlayer | null = null;
   private payments: YandexPayments | null = null;
+  private paymentsPromise: Promise<YandexPayments | null> | null = null;
   private initPromise: Promise<void> | null = null;
   private playing = false;
   private lastInterstitial = 0;
@@ -112,21 +138,58 @@ class YandexPlatform {
     } catch { /* leaderboard may not be configured in the console yet */ }
   }
 
+  /** Lazily preloads the payments module once; concurrent callers share one init. */
+  private ensurePayments(): Promise<YandexPayments | null> {
+    if (this.payments) return Promise.resolve(this.payments);
+    this.paymentsPromise ??= (async () => {
+      try {
+        this.payments = (await this.sdk?.getPayments?.({ signed: false })) ?? null;
+      } catch {
+        this.paymentsPromise = null; // allow a retry after a transient failure
+      }
+      return this.payments;
+    })();
+    return this.paymentsPromise;
+  }
+
   async hasPermanentPurchase(productId: string): Promise<boolean> {
     await this.init();
     try {
-      this.payments ??= await this.sdk?.getPayments?.({ signed: false }) ?? null;
-      const purchases = await this.payments?.getPurchases();
-      return purchases?.some(purchase => purchase.productID === productId) ?? false;
+      const payments = await this.ensurePayments();
+      const purchases = await payments?.getPurchases();
+      return Array.isArray(purchases) && purchases.some(purchase => purchase.productID === productId);
     } catch { return false; }
+  }
+
+  /** Returns the active console catalog entry for a product, or null when the
+   *  product is missing/inactive — in that case the game must not display the
+   *  purchase at all (Game Requirements §1.13, list must match the console). */
+  async getCatalogOffer(productId: string): Promise<StoreOffer | null> {
+    await this.init();
+    try {
+      const payments = await this.ensurePayments();
+      const catalog = await payments?.getCatalog?.();
+      if (!Array.isArray(catalog)) return null;
+      const product = catalog.find(entry => entry?.id === productId);
+      if (!product) return null;
+      let currencyIconUrl: string | null = null;
+      try { currencyIconUrl = product.getPriceCurrencyImage?.("medium") ?? null; } catch { /* text-only fallback */ }
+      return {
+        id: product.id,
+        title: product.title ?? "",
+        price: product.price ?? "",
+        currencyCode: product.priceCurrencyCode ?? "",
+        currencyIconUrl,
+      };
+    } catch { return null; }
   }
 
   async purchasePermanent(productId: string): Promise<boolean> {
     await this.init();
     try {
-      this.payments ??= await this.sdk?.getPayments?.({ signed: false }) ?? null;
-      if (!this.payments) return false;
-      const purchase = await this.payments.purchase({ id: productId });
+      const payments = await this.ensurePayments();
+      if (!payments) return false;
+      const purchase = await payments.purchase({ id: productId });
       return purchase.productID === productId;
     } catch { return false; }
   }

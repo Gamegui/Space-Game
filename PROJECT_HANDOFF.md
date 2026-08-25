@@ -51,7 +51,8 @@ Integrated APIs:
 - Leaderboards
 - Rewarded ads
 - Fullscreen ads
-- Permanent purchases and purchase restoration
+- Permanent purchases and purchase restoration (`getPurchases()` on every launch — the documented permanent-product flow)
+- Store catalog (`getCatalog()`): the purchase CTA shows the numeric price and the portal currency name/icon straight from the SDK (Game Requirements §1.13.2 and §1.13.4), and the purchase is hidden whenever the product is absent or inactive in the console (§1.13, catalog parity)
 
 Real advertisements, purchases and leaderboard writes must be tested in a Yandex Games draft; local development safely falls back when the SDK is unavailable.
 
@@ -118,11 +119,22 @@ Before clicking Publish in Yandex Games, manually verify in the platform draft:
 1. Rewarded ad completed, closed early, and error cases
 2. Fullscreen ad after a run
 3. Purchase, cancellation, and restoration of `void_wraith`
-4. Cloud high score and `highscore` leaderboard
-5. Android browser and iPhone Safari touch controls
-6. One clean run through wave 50 and Omega
+4. Price/currency shown on the purchase button flip to the debug currency mock (TST/¥) — §1.13.2
+5. Cloud high score and `highscore` leaderboard
+6. Android browser and iPhone Safari touch controls
+7. One clean run through wave 50 and Omega
 
 Do not add more large systems before release. Future changes should be limited to reproducible bug fixes and measured balance adjustments.
+
+## Store-compliance fixes — 2026-08-25
+
+- The purchase CTA now renders the numeric price and the portal currency (name + icon) from `payments.getCatalog()` instead of hardcoded text (Game Requirements §1.13.2, §1.13.4 — passes the debug currency-mock test).
+- The purchase is hidden entirely when the console product is absent or inactive, so the in-game list always matches the developer console (§1.13, catalog parity).
+- Payments initialize once lazily (`ensurePayments`), so concurrent startup calls share a single `getPayments()` request.
+
+Downloading the release archive: the latest production ZIP is tracked in the repository root. Direct raw link on `main`:
+`https://raw.githubusercontent.com/Gamegui/Space-Game/main/space-shooter-yandex.zip`
+Rebuild before publishing with `npm run package:yandex`, commit the refreshed ZIP, and the same link always serves the newest archive.
 
 ## Final release handoff — 2026-08-24
 

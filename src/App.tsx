@@ -7,7 +7,7 @@ import { getWaveComposition, isBossWave, spawnBoss, getBossName } from "./game/e
 import { SHIP_CLASSES } from "./game/shipClasses";
 import { audio } from "./game/audio";
 import { SYNERGIES, unlockAvailableSynergies } from "./game/synergies";
-import { yandex } from "./platform/yandex";
+import { yandex, type StoreOffer } from "./platform/yandex";
 import {
   drawBackground, drawStars, drawPlayer, drawEnemy, drawBullet,
   drawParticle, drawXpOrb, drawMine, drawLightning, drawBlackHole, drawExplosion,
@@ -143,6 +143,10 @@ export default function App() {
   const [adsAvailable, setAdsAvailable] = useState(false);
   const [premiumUnlocked, setPremiumUnlocked] = useState(false);
   const [purchasePending, setPurchasePending] = useState(false);
+  // Store offer for the premium ship, provided by the SDK catalog: the numeric
+  // price and the portal currency (name + icon) are always taken from Yandex.
+  const [premiumOffer, setPremiumOffer] = useState<StoreOffer | null>(null);
+  const [premiumCatalogChecked, setPremiumCatalogChecked] = useState(false);
   const [adminOpen, setAdminOpen] = useState(true);
   const [adminGod, setAdminGod] = useState(false);
   const [, setAdminRefresh] = useState(0);
@@ -157,13 +161,18 @@ export default function App() {
   useEffect(() => {
     void yandex.init().then(async () => {
       setAdsAvailable(yandex.isAvailable());
-      const [cloudScore, ownsPremiumShip] = await Promise.all([
+      const [cloudScore, ownsPremiumShip, catalogOffer] = await Promise.all([
         yandex.loadHighScore(),
         yandex.hasPermanentPurchase("void_wraith"),
+        yandex.getCatalogOffer("void_wraith"),
       ]);
       if (cloudScore !== null) setHiscore(current => Math.max(current, cloudScore));
       // Outside the Yandex catalogue the ship is unlocked for development and QA.
       setPremiumUnlocked(ownsPremiumShip || !yandex.isPlatformAvailable());
+      // When the product is inactive in the console the purchase must be
+      // absent from the game, so the offer stays null and the CTA never shows.
+      setPremiumOffer(catalogOffer);
+      setPremiumCatalogChecked(true);
     });
     const pauseForFocusLoss = () => {
       // Yandex checks focus loss independently of document.visibilityState. Some
@@ -500,7 +509,7 @@ export default function App() {
   }, []);
 
   const handlePremiumPurchase = useCallback(async () => {
-    if (purchasePending || premiumUnlocked) return;
+    if (purchasePending || premiumUnlocked || !premiumOffer) return;
     setPurchasePending(true);
     yandex.setGameplay(false);
     audio.suspend();
@@ -508,7 +517,13 @@ export default function App() {
     audio.resume();
     setPurchasePending(false);
     if (purchased) setPremiumUnlocked(true);
-  }, [premiumUnlocked, purchasePending]);
+  }, [premiumUnlocked, premiumOffer, purchasePending]);
+
+  // The purchase gate opens only when the console product is active (an offer
+  // was loaded); otherwise the premium ship stays unselectable and unpurchasable.
+  const premiumGate = selectedClass === "void_wraith" && !premiumUnlocked;
+  const premiumOfferReady = premiumCatalogChecked && premiumOffer !== null;
+  const shipSelectButtonDisabled = purchasePending || (premiumGate && !premiumOfferReady);
 
   const handleReturnToMenu = useCallback(() => {
     const finish = () => {
@@ -1252,8 +1267,10 @@ export default function App() {
                     style={{ borderColor: isSelected ? sc.color : undefined }}
                   >
                     {sc.premium && (
-                      <div className="absolute right-2 top-2 rounded-full bg-fuchsia-600 px-2 py-0.5 text-[9px] font-black text-white">
-                        {premiumUnlocked ? "КУПЛЕН" : "ПРЕМИУМ"}
+                      <div className={`absolute right-2 top-2 rounded-full px-2 py-0.5 text-[9px] font-black text-white ${
+                        premiumUnlocked || (premiumCatalogChecked && premiumOffer !== null) ? "bg-fuchsia-600" : "bg-slate-600"
+                      }`}>
+                        {premiumUnlocked ? "КУПЛЕН" : premiumCatalogChecked && !premiumOffer ? "НЕДОСТУПЕН" : "ПРЕМИУМ"}
                       </div>
                     )}
                     <div>
@@ -1282,15 +1299,32 @@ export default function App() {
                 НАЗАД
               </button>
               <button
-                onClick={() => selectedClass === "void_wraith" && !premiumUnlocked
-                  ? void handlePremiumPurchase()
-                  : startGame(selectedClass)}
-                disabled={purchasePending}
+                onClick={() => {
+                  if (!premiumGate) { startGame(selectedClass); return; }
+                  if (premiumOfferReady) void handlePremiumPurchase();
+                }}
+                disabled={shipSelectButtonDisabled}
                 className="px-12 py-3.5 bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 disabled:opacity-50 text-white font-black text-lg rounded-full shadow-xl shadow-blue-900/50 transition-all active:scale-95 cursor-pointer"
               >
-                {selectedClass === "void_wraith" && !premiumUnlocked
-                  ? (purchasePending ? "ОТКРЫВАЕМ МАГАЗИН…" : "ОТКРЫТЬ «НЕМЕЗИДУ» ✦")
-                  : "НАЧАТЬ МИССИЮ 🚀"}
+                {!premiumGate
+                  ? "НАЧАТЬ МИССИЮ 🚀"
+                  : purchasePending
+                    ? "ОТКРЫВАЕМ МАГАЗИН…"
+                    : !premiumCatalogChecked
+                      ? "ПРОВЕРЯЕМ МАГАЗИН…"
+                      : premiumOffer
+                        ? (
+                          // The numeric price and the portal currency (icon + code)
+                          // always come from the SDK catalog (Requirements §1.13.2).
+                          <span className="inline-flex items-center justify-center gap-2">
+                            <span>ОТКРЫТЬ «НЕМЕЗИДУ»</span>
+                            {premiumOffer.currencyIconUrl && (
+                              <img src={premiumOffer.currencyIconUrl} alt={premiumOffer.currencyCode} className="h-5 w-5" />
+                            )}
+                            <span className="font-mono tabular-nums">{premiumOffer.price}</span>
+                          </span>
+                        )
+                        : "СЕЙЧАС НЕДОСТУПНО"}
               </button>
             </div>
           </div>

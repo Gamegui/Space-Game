@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { PlayerState, UpgradeDef, GamePhase, ShipClassId, Enemy } from "./game/types";
 import type { GameObjects } from "./game/gameLoop";
-import { stepGame, makeStars, makeInitialPlayer, makeMaterializeBurst, getNextLevelXp, spawnAdaptiveGuard, W, H, uid } from "./game/gameLoop";
+import { stepGame, makeStars, makeInitialPlayer, makeMaterializeBurst, devourSoul, getNextLevelXp, spawnAdaptiveGuard, W, H, uid } from "./game/gameLoop";
 import { ALL_UPGRADES, rollUpgrades, rollPremiumUpgradeChoices, rollHighRarityUpgrade, applyUpgrade, getUpgradeLevel, getAdaptiveDifficulty } from "./game/upgrades";
 import { getWaveComposition, isBossWave, spawnBoss, getBossName } from "./game/enemies";
 import { SHIP_CLASSES } from "./game/shipClasses";
@@ -499,6 +499,7 @@ export default function App() {
         g.xpOrbs.push({ id: uid(), pos: { ...e.pos }, vel: { x: 0, y: -1 }, value: e.xp, attracted: true });
         g.player.score += Math.floor(e.xp * 10 * g.player.goldMultiplier);
         g.player.kills++;
+        devourSoul(g.player, e, g.particles, g.floatingTexts);
       }
     }
     g.enemies = survivors;

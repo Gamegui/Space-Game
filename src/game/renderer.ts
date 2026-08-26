@@ -147,6 +147,7 @@ function drawWraithBody(ctx: CanvasRenderingContext2D, frame: number, phased: bo
 
 // Arena-wide void tint while the Wraith's phase window is open.
 export function drawVoidPhaseVignette(ctx: CanvasRenderingContext2D, frame: number, intensity: number) {
+  if (renderPerformanceTier === 0) return; // per-frame gradient: too dear for low-end
   const a = (0.07 + 0.05 * Math.sin(frame * 0.35)) * Math.min(1, intensity + 0.45);
   const g = ctx.createRadialGradient(W / 2, H / 2, H * 0.3, W / 2, H / 2, H * 0.72);
   g.addColorStop(0, "rgba(168,85,247,0)");
@@ -160,14 +161,25 @@ export function drawPlayer(ctx: CanvasRenderingContext2D, state: PlayerState, fr
 
   // Phase echo: the Wraith's fading clone left behind by the blink. Drawn
   // before the damage-blink early return so it survives the ship's flash.
+  // Low-end tiers draw a cheap glow instead of a full second ship body.
   if (shipClass === "void_wraith" && state.voidEchoTimer > 0) {
     const echoAlpha = 0.1 + 0.42 * (state.voidEchoTimer / 120);
     ctx.save();
     ctx.globalAlpha = echoAlpha;
     ctx.translate(state.voidEchoPos.x, state.voidEchoPos.y);
-    ctx.shadowBlur = 14;
-    ctx.shadowColor = "#e879f9";
-    drawWraithBody(ctx, frame, false);
+    if (renderPerformanceTier === 0) {
+      const eg = ctx.createRadialGradient(0, 0, 2, 0, 0, 26);
+      eg.addColorStop(0, "rgba(232,121,249,0.5)");
+      eg.addColorStop(1, "rgba(232,121,249,0)");
+      ctx.fillStyle = eg;
+      ctx.beginPath();
+      ctx.arc(0, 0, 26, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.shadowBlur = renderPerformanceTier === 1 ? 10 : 14;
+      ctx.shadowColor = "#e879f9";
+      drawWraithBody(ctx, frame, false);
+    }
     ctx.restore();
   }
 
@@ -235,7 +247,7 @@ export function drawPlayer(ctx: CanvasRenderingContext2D, state: PlayerState, fr
   ctx.fill();
 
   // The Wraith drags two side plasma wisps behind its blade hull.
-  if (shipClass === "void_wraith") {
+  if (shipClass === "void_wraith" && renderPerformanceTier >= 1) {
     const wg = ctx.createLinearGradient(0, 14, 0, 14 + trailH * 0.9);
     wg.addColorStop(0, "rgba(168,85,247,0.65)");
     wg.addColorStop(1, "rgba(0,0,0,0)");
@@ -260,33 +272,43 @@ export function drawPlayer(ctx: CanvasRenderingContext2D, state: PlayerState, fr
     const phased = state.ghostTimer > 0;
     // Phase window: full glow plus an expanding shock ring; idle: subtle
     // shimmer that sells the "phased" identity even without a blink.
+    // Gradient glow and double-exposure cost real canvas time, so they are
+    // tier-gated (Auto/Low drop them first, High keeps everything).
     const phaseAlpha = phased ? state.ghostTimer / 120 : 0;
     if (phased) {
-      const ringRadius = 30 + (120 - state.ghostTimer) * 0.7;
-      ctx.strokeStyle = `rgba(232,121,249,${(0.5 * phaseAlpha).toFixed(3)})`;
-      ctx.lineWidth = 2.5;
-      ctx.beginPath();
-      ctx.arc(0, 0, ringRadius, 0, Math.PI * 2);
-      ctx.stroke();
-      const pg = ctx.createRadialGradient(0, 0, 8, 0, 0, 58);
-      pg.addColorStop(0, `rgba(232,121,249,${(0.3 * phaseAlpha).toFixed(3)})`);
-      pg.addColorStop(1, "rgba(232,121,249,0)");
-      ctx.fillStyle = pg;
-      ctx.beginPath();
-      ctx.arc(0, 0, 58, 0, Math.PI * 2);
-      ctx.fill();
+      if (renderPerformanceTier >= 1) {
+        const ringRadius = 30 + (120 - state.ghostTimer) * 0.7;
+        ctx.strokeStyle = `rgba(232,121,249,${(0.5 * phaseAlpha).toFixed(3)})`;
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.arc(0, 0, ringRadius, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      if (renderPerformanceTier === 2) {
+        const pg = ctx.createRadialGradient(0, 0, 8, 0, 0, 58);
+        pg.addColorStop(0, `rgba(232,121,249,${(0.3 * phaseAlpha).toFixed(3)})`);
+        pg.addColorStop(1, "rgba(232,121,249,0)");
+        ctx.fillStyle = pg;
+        ctx.beginPath();
+        ctx.arc(0, 0, 58, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
     ctx.globalAlpha = phased ? 1 : 0.82 + 0.18 * Math.sin(frame * 0.22);
-    if (phased) {
-      // Double-exposure ghosting while phased.
+    if (phased && renderPerformanceTier === 2) {
+      // Double-exposure ghosting while phased (high tier only).
+      for (const gx of [3, -3]) {
+        ctx.save();
+        ctx.globalAlpha = 0.28;
+        ctx.translate(gx, -2);
+        drawWraithBody(ctx, frame, true);
+        ctx.restore();
+      }
+    }
+    if (phased && renderPerformanceTier === 1) {
       ctx.save();
       ctx.globalAlpha = 0.28;
       ctx.translate(3, -2);
-      drawWraithBody(ctx, frame, true);
-      ctx.restore();
-      ctx.save();
-      ctx.globalAlpha = 0.28;
-      ctx.translate(-3, -2);
       drawWraithBody(ctx, frame, true);
       ctx.restore();
     }

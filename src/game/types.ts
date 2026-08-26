@@ -218,6 +218,12 @@ export interface PlayerState {
   voidSoulIdleTimer: number;
   voidEchoTimer: number;
   voidEchoPos: Vec2;
+  // Recent actual movement (covers keyboard, mouse drag and touch alike).
+  moveDirX: number;
+  moveDirY: number;
+  moveDirAge: number;
+  prevFrameX: number;
+  prevFrameY: number;
   teleportCooldown: number;
   teleportTimer: number;
   blackHole: boolean;

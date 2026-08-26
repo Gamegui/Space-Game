@@ -83,6 +83,8 @@ export function makeInitialPlayer(shipClass: ShipClassId = "interceptor"): Playe
     ghostMode: false, ghostTimer: 0,
     voidSouls: 0, voidSoulIdleTimer: 0,
     voidEchoTimer: 0, voidEchoPos: { x: W / 2, y: H - 100 },
+    moveDirX: 0, moveDirY: 0, moveDirAge: 999,
+    prevFrameX: W / 2, prevFrameY: H - 100,
     teleportCooldown: 0, teleportTimer: 0,
     blackHole: false, blackHoleTimer: 0, blackHoleCooldown: 0,
     nukeCharges: 1,
@@ -160,13 +162,21 @@ function makeBurst(pos: Vec2, color: string, count: number, big = false): Partic
   }));
 }
 
+// Quality-tier particle budget, same curve as makeBurst so the premium FX
+// never overflow low-end hardware.
+function voidParticleBudget(count: number): number {
+  const qualityMultiplier = runtimePerformanceTier === 0 ? 0.34 : runtimePerformanceTier === 1 ? 0.65 : 1;
+  return Math.max(2, Math.ceil(count * qualityMultiplier));
+}
+
 // Particles flying from a slain enemy towards the Wraith (soul devouring).
 export function makeSuckParticles(from: Vec2, to: Vec2, count = 6): Particle[] {
   const dx = to.x - from.x, dy = to.y - from.y;
   const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
   const baseAngle = Math.atan2(dy, dx);
   const speed = 6.5 + (150 / (dist + 40)) * 4;
-  return Array.from({ length: count }, () => {
+  const n = voidParticleBudget(count);
+  return Array.from({ length: n }, () => {
     const a = baseAngle + randRange(-0.55, 0.55);
     const v = speed * randRange(0.7, 1.25);
     return {
@@ -175,7 +185,7 @@ export function makeSuckParticles(from: Vec2, to: Vec2, count = 6): Particle[] {
       vel: { x: Math.cos(a) * v, y: Math.sin(a) * v },
       life: 26, maxLife: 26,
       color: Math.random() < 0.5 ? "#e879f9" : "#c026d3",
-      size: randRange(1.8, 3.6),
+      size: randRange(2.2, 4.2),
       glow: true,
       shape: "circle" as const,
     };
@@ -184,7 +194,8 @@ export function makeSuckParticles(from: Vec2, to: Vec2, count = 6): Particle[] {
 
 // Purple shards when the Wraith's victim shatters.
 export function makeShards(pos: Vec2, count = 7): Particle[] {
-  return Array.from({ length: count }, () => {
+  const n = voidParticleBudget(count);
+  return Array.from({ length: n }, () => {
     const a = randRange(0, Math.PI * 2);
     const v = randRange(2, 6);
     return {
@@ -193,7 +204,7 @@ export function makeShards(pos: Vec2, count = 7): Particle[] {
       vel: { x: Math.cos(a) * v, y: Math.sin(a) * v },
       life: randRange(18, 34), maxLife: 34,
       color: Math.random() < 0.6 ? "#e879f9" : "#a855f7",
-      size: randRange(1.6, 3.4),
+      size: randRange(1.8, 3.8),
       glow: true,
       shape: "square" as const,
     };
@@ -202,9 +213,10 @@ export function makeShards(pos: Vec2, count = 7): Particle[] {
 
 // One-shot ring used when the Wraith first materializes into the arena.
 export function makeMaterializeBurst(pos: Vec2): Particle[] {
+  const total = voidParticleBudget(26);
   const out: Particle[] = [];
-  for (let i = 0; i < 26; i++) {
-    const a = (i / 26) * Math.PI * 2;
+  for (let i = 0; i < total; i++) {
+    const a = (i / total) * Math.PI * 2;
     const v = randRange(3, 7);
     out.push({
       id: uid(),
@@ -223,58 +235,62 @@ export function makeMaterializeBurst(pos: Vec2): Particle[] {
 // ─── Void Wraith premium kit ─────────────────────────────────────────────────
 export const VOID_SOUL_MAX = 20;
 export const VOID_SOUL_DECAY_FRAMES = 600; // lose a soul after 10 s without a kill
+export const VOID_SOUL_RADIUS = 220;
 
-function devourSoul(player: PlayerState, e: { pos: Vec2; isBoss: boolean; isElite?: boolean }, particles: Particle[]) {
-  if (player.shipClass !== "void_wraith") return;
+// Exported so screen-clearing abilities (the tactical nuke) can feed the
+// Wraith as well. `gained` reports how many souls were actually added.
+export function devourSoul(
+  player: PlayerState,
+  e: { pos: Vec2; isBoss: boolean; isElite?: boolean },
+  particles: Particle[],
+  floatingTexts: FloatingText[],
+): number {
+  if (player.shipClass !== "void_wraith") return 0;
   const dx = e.pos.x - player.pos.x, dy = e.pos.y - player.pos.y;
-  const R = 150;
-  if (dx * dx + dy * dy > R * R) return;
-  if (player.voidSouls >= VOID_SOUL_MAX) return;
+  if (dx * dx + dy * dy > VOID_SOUL_RADIUS * VOID_SOUL_RADIUS) return 0;
+  if (player.voidSouls >= VOID_SOUL_MAX) return 0;
   const value = e.isBoss ? 5 : (e.isElite ? 2 : 1);
   player.voidSouls = Math.min(VOID_SOUL_MAX, player.voidSouls + value);
   player.voidSoulIdleTimer = 0;
-  particles.push(...makeSuckParticles(e.pos, player.pos, e.isBoss ? 12 : 5));
+  particles.push(...makeSuckParticles(e.pos, player.pos, e.isBoss ? 14 : 10));
+  const soulWord = value === 1 ? "ДУША" : (value === 5 ? "ДУШ" : "ДУШИ");
+  floatingTexts.push({
+    id: uid(),
+    pos: { x: e.pos.x, y: e.pos.y - 14 },
+    vel: { x: 0, y: -0.9 },
+    text: `+${value} ${soulWord}`,
+    color: "#e879f9",
+    size: e.isBoss ? 18 : 13,
+    life: 50, maxLife: 50,
+  });
+  return value;
 }
 
 function soulDamageMult(player: PlayerState): number {
   return 1 + player.voidSouls * 0.015;
 }
 
-// Phase blink: the Wraith dissolves and reappears 200 px away (movement input
-// direction, else toward the nearest enemy, else straight up). A fading echo
-// clone is left behind that keeps firing for the whole phase window.
-function startVoidPhase(player: PlayerState, enemies: Enemy[], particles: Particle[], keys: Set<string>) {
-  let dx = 0, dy = 0;
-  if (keys.has("ArrowLeft") || keys.has("KeyA")) dx -= 1;
-  if (keys.has("ArrowRight") || keys.has("KeyD")) dx += 1;
-  if (keys.has("ArrowUp") || keys.has("KeyW")) dy -= 1;
-  if (keys.has("ArrowDown") || keys.has("KeyS")) dy += 1;
-  if (dx === 0 && dy === 0) {
-    let nearest: Enemy | null = null;
-    let best = Infinity;
-    for (const e of enemies) {
-      const ex = e.pos.x - player.pos.x, ey = e.pos.y - player.pos.y;
-      const d = ex * ex + ey * ey;
-      if (d < best) { best = d; nearest = e; }
-    }
-    if (nearest && best < 400 * 400) {
-      const dist = Math.max(1, Math.sqrt(best));
-      dx = (nearest.pos.x - player.pos.x) / dist;
-      dy = (nearest.pos.y - player.pos.y) / dist;
-    } else {
-      dy = -1;
-    }
-  } else {
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    dx /= dist; dy /= dist;
-  }
+// Phase blink: fully predictable by design.
+// - Moving: the Wraith dissolves and reappears 200 px along its recent
+//   movement direction (works for keyboard, mouse drag and touch).
+// - Standing still: the phase opens in place — no surprise teleports.
+// Either way a fading echo clone keeps firing for the whole phase window.
+function startVoidPhase(player: PlayerState, particles: Particle[]) {
+  const moving = player.moveDirAge <= 10;
   const origin = { x: player.pos.x, y: player.pos.y };
-  player.pos.x = Math.max(25, Math.min(W - 25, origin.x + dx * 200));
-  player.pos.y = Math.max(60, Math.min(H - 32, origin.y + dy * 200));
-  particles.push(...makeBurst(origin, "#c026d3", 16));
-  particles.push(...makeBurst(player.pos, "#e879f9", 16));
+  if (moving) {
+    const dx = player.moveDirX, dy = player.moveDirY;
+    player.pos.x = Math.max(25, Math.min(W - 25, origin.x + dx * 200));
+    player.pos.y = Math.max(60, Math.min(H - 32, origin.y + dy * 200));
+    player.voidEchoPos = { ...origin };
+    particles.push(...makeBurst(origin, "#c026d3", 14));
+    particles.push(...makeBurst(player.pos, "#e879f9", 14));
+  } else {
+    // In-place phase: the echo materializes just behind the ship.
+    player.voidEchoPos = { x: origin.x, y: Math.min(H - 40, origin.y + 34) };
+    particles.push(...makeBurst(origin, "#e879f9", 14));
+  }
   player.voidEchoTimer = 120;
-  player.voidEchoPos = { ...origin };
   audio.playVoidBlink();
 }
 
@@ -387,6 +403,9 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   // The chrono ability slows the world, not the player's own ship.
   // Devoured souls give the Wraith a small but visible edge in mobility.
   const spd = player.speed * dashSpeedMult * (1 + player.voidSouls * 0.004);
+  // Reference is the previous simulation frame's position: mouse-drag and
+  // touch mutate pos between frames, so a within-frame delta would miss them.
+  const baseX = player.prevFrameX, baseY = player.prevFrameY;
   if ((keys.has("ArrowLeft")  || keys.has("KeyA")) && player.pos.x > 25) player.pos.x -= spd;
   if ((keys.has("ArrowRight") || keys.has("KeyD")) && player.pos.x < W - 25) player.pos.x += spd;
   if ((keys.has("ArrowUp")    || keys.has("KeyW")) && player.pos.y > 60) player.pos.y -= spd;
@@ -394,6 +413,20 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 
   player.pos.x = Math.max(25, Math.min(W - 25, player.pos.x));
   player.pos.y = Math.max(60, Math.min(H - 32, player.pos.y));
+
+  // Track actual movement for the Wraith's phase blink: the frame-over-frame
+  // delta covers keyboard, mouse-drag and touch alike.
+  const moveDX = player.pos.x - baseX, moveDY = player.pos.y - baseY;
+  if (moveDX * moveDX + moveDY * moveDY > 0.25) {
+    const md = Math.sqrt(moveDX * moveDX + moveDY * moveDY);
+    player.moveDirX = moveDX / md;
+    player.moveDirY = moveDY / md;
+    player.moveDirAge = 0;
+  } else if (player.moveDirAge < 90) {
+    player.moveDirAge++;
+  }
+  player.prevFrameX = player.pos.x;
+  player.prevFrameY = player.pos.y;
 
   // ─── Ghost mode ─────────────────────────────────────────────────────────────
   if (player.ghostMode) {
@@ -409,7 +442,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       player.ghostTimer = 120;
       // The premium Wraith's phase is an active blink with an echo clone,
       // not a silent invulnerability window.
-      if (player.shipClass === "void_wraith") startVoidPhase(player, enemies, particles, keys);
+      if (player.shipClass === "void_wraith") startVoidPhase(player, particles);
     }
   }
 
@@ -673,7 +706,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     player.kills++;
     if (enemy.isElite) player.stats.elitesKilled++;
     if (enemy.isBoss) player.stats.bossesKilled++;
-    devourSoul(player, enemy, particles);
+    devourSoul(player, enemy, particles, floatingTexts);
     if (player.shipClass === "void_wraith") particles.push(...makeShards(enemy.pos));
     enemies.splice(i, 1);
     input.onKill(xpGained, enemy.pos, enemy.isBoss);
@@ -1107,7 +1140,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           player.kills++;
           if (e.isElite) player.stats.elitesKilled++;
           if (e.isBoss) player.stats.bossesKilled++;
-          devourSoul(player, e, particles);
+          devourSoul(player, e, particles, floatingTexts);
 
           // Explosion
           if (player.explosiveBullets) {

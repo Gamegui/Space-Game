@@ -44,8 +44,8 @@ export const SHIP_CLASSES: ShipClassDef[] = [
     icon: "👻",
     description: "Экспериментальный корабль Бездны: пожирает сражённых врагов, фазовым блинком уходит из-под огня, а его призрачное эхо продолжает бить по врагам.",
     perks: [
-      "Пожирание: до 20 душ, каждая +1.5% урона",
-      "Фазовый блинк: телепорт + эхо-клон, стреляющий 2 с",
+      "Пожирание: до 20 душ в радиусе 220 px, каждая +1.5% урона",
+      "Фазовый блинк в сторону движения, на месте — фаза на месте; эхо-клон стреляет 2 с",
       "Двойной поток самонаводящихся болтов",
       "Щит Бездны 35 HP с быстрым регеном",
       "Гарантированный эпик+ на первых двух уровнях",
@@ -118,6 +118,8 @@ export function applyShipClassStats(player: PlayerState, classId: ShipClassId) {
       player.homing = true;
       player.homingStrength = 0.07;
       player.ghostMode = true;
+      // First phase window opens 3 s into the run, not on the spawn frame.
+      player.ghostTimer = -180;
       player.voidSouls = 0;
       player.voidSoulIdleTimer = 0;
       player.voidEchoTimer = 0;

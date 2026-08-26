@@ -83,8 +83,6 @@ export function makeInitialPlayer(shipClass: ShipClassId = "interceptor"): Playe
     ghostMode: false, ghostTimer: 0,
     voidSouls: 0, voidSoulIdleTimer: 0,
     voidEchoTimer: 0, voidEchoPos: { x: W / 2, y: H - 100 },
-    moveDirX: 0, moveDirY: 0, moveDirAge: 999,
-    prevFrameX: W / 2, prevFrameY: H - 100,
     teleportCooldown: 0, teleportTimer: 0,
     blackHole: false, blackHoleTimer: 0, blackHoleCooldown: 0,
     nukeCharges: 1,
@@ -270,26 +268,13 @@ function soulDamageMult(player: PlayerState): number {
   return 1 + player.voidSouls * 0.015;
 }
 
-// Phase blink: fully predictable by design.
-// - Moving: the Wraith dissolves and reappears 200 px along its recent
-//   movement direction (works for keyboard, mouse drag and touch).
-// - Standing still: the phase opens in place — no surprise teleports.
-// Either way a fading echo clone keeps firing for the whole phase window.
+// Phase window: opens in place (no teleport — owner playtest: relocations
+// only disorient). The Wraith glows and is untouchable for the whole window
+// while a fading echo clone behind it keeps firing 80%-damage bolts.
 function startVoidPhase(player: PlayerState, particles: Particle[]) {
-  const moving = player.moveDirAge <= 10;
   const origin = { x: player.pos.x, y: player.pos.y };
-  if (moving) {
-    const dx = player.moveDirX, dy = player.moveDirY;
-    player.pos.x = Math.max(25, Math.min(W - 25, origin.x + dx * 200));
-    player.pos.y = Math.max(60, Math.min(H - 32, origin.y + dy * 200));
-    player.voidEchoPos = { ...origin };
-    particles.push(...makeBurst(origin, "#c026d3", 14));
-    particles.push(...makeBurst(player.pos, "#e879f9", 14));
-  } else {
-    // In-place phase: the echo materializes just behind the ship.
-    player.voidEchoPos = { x: origin.x, y: Math.min(H - 40, origin.y + 34) };
-    particles.push(...makeBurst(origin, "#e879f9", 14));
-  }
+  player.voidEchoPos = { x: origin.x, y: Math.min(H - 40, origin.y + 34) };
+  particles.push(...makeBurst(origin, "#e879f9", 14));
   player.voidEchoTimer = 120;
   audio.playVoidBlink();
 }
@@ -403,9 +388,6 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   // The chrono ability slows the world, not the player's own ship.
   // Devoured souls give the Wraith a small but visible edge in mobility.
   const spd = player.speed * dashSpeedMult * (1 + player.voidSouls * 0.004);
-  // Reference is the previous simulation frame's position: mouse-drag and
-  // touch mutate pos between frames, so a within-frame delta would miss them.
-  const baseX = player.prevFrameX, baseY = player.prevFrameY;
   if ((keys.has("ArrowLeft")  || keys.has("KeyA")) && player.pos.x > 25) player.pos.x -= spd;
   if ((keys.has("ArrowRight") || keys.has("KeyD")) && player.pos.x < W - 25) player.pos.x += spd;
   if ((keys.has("ArrowUp")    || keys.has("KeyW")) && player.pos.y > 60) player.pos.y -= spd;
@@ -413,20 +395,6 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 
   player.pos.x = Math.max(25, Math.min(W - 25, player.pos.x));
   player.pos.y = Math.max(60, Math.min(H - 32, player.pos.y));
-
-  // Track actual movement for the Wraith's phase blink: the frame-over-frame
-  // delta covers keyboard, mouse-drag and touch alike.
-  const moveDX = player.pos.x - baseX, moveDY = player.pos.y - baseY;
-  if (moveDX * moveDX + moveDY * moveDY > 0.25) {
-    const md = Math.sqrt(moveDX * moveDX + moveDY * moveDY);
-    player.moveDirX = moveDX / md;
-    player.moveDirY = moveDY / md;
-    player.moveDirAge = 0;
-  } else if (player.moveDirAge < 90) {
-    player.moveDirAge++;
-  }
-  player.prevFrameX = player.pos.x;
-  player.prevFrameY = player.pos.y;
 
   // ─── Ghost mode ─────────────────────────────────────────────────────────────
   if (player.ghostMode) {

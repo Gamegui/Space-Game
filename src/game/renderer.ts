@@ -82,8 +82,94 @@ export function drawBackground(ctx: CanvasRenderingContext2D, frame: number) {
 }
 
 // ─── Player ───────────────────────────────────────────────────────────────────
+// The Wraith's signature silhouette: a slim void dagger with membrane wings
+// and a pulsing core. Distinct from the shared fighter hull of the other ships.
+function drawWraithBody(ctx: CanvasRenderingContext2D, frame: number, phased: boolean) {
+  const main = phased ? "#f0abfc" : "#e879f9";
+
+  // Membrane wings
+  ctx.shadowBlur = phased ? 16 : 10;
+  ctx.shadowColor = main;
+  ctx.fillStyle = "rgba(232,121,249,0.22)";
+  ctx.strokeStyle = main;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(9, 2);
+  ctx.lineTo(30, 13);
+  ctx.lineTo(12, 11);
+  ctx.closePath();
+  ctx.fill(); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(-9, 2);
+  ctx.lineTo(-30, 13);
+  ctx.lineTo(-12, 11);
+  ctx.closePath();
+  ctx.fill(); ctx.stroke();
+
+  // Blade hull
+  ctx.shadowBlur = phased ? 18 : 12;
+  ctx.shadowColor = main;
+  ctx.fillStyle = "#150a1e";
+  ctx.strokeStyle = main;
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.moveTo(0, -34);
+  ctx.lineTo(6.5, -20);
+  ctx.lineTo(9, 2);
+  ctx.lineTo(21, 20);
+  ctx.lineTo(9, 15);
+  ctx.lineTo(4.5, 26);
+  ctx.lineTo(0, 17);
+  ctx.lineTo(-4.5, 26);
+  ctx.lineTo(-9, 15);
+  ctx.lineTo(-21, 20);
+  ctx.lineTo(-9, 2);
+  ctx.lineTo(-6.5, -20);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // Cockpit
+  ctx.shadowBlur = 8;
+  ctx.fillStyle = main;
+  ctx.beginPath();
+  ctx.ellipse(0, -11, 4, 9.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Pulsing void core
+  const coreR = 3 + Math.sin(frame * 0.3) * 1.3;
+  ctx.shadowBlur = 12;
+  ctx.fillStyle = phased ? "#ffffff" : "#f0abfc";
+  ctx.beginPath();
+  ctx.arc(0, 6, Math.max(1.5, coreR), 0, Math.PI * 2);
+  ctx.fill();
+}
+
+// Arena-wide void tint while the Wraith's phase window is open.
+export function drawVoidPhaseVignette(ctx: CanvasRenderingContext2D, frame: number, intensity: number) {
+  const a = (0.07 + 0.05 * Math.sin(frame * 0.35)) * Math.min(1, intensity + 0.45);
+  const g = ctx.createRadialGradient(W / 2, H / 2, H * 0.3, W / 2, H / 2, H * 0.72);
+  g.addColorStop(0, "rgba(168,85,247,0)");
+  g.addColorStop(1, `rgba(192,38,211,${a.toFixed(3)})`);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+}
+
 export function drawPlayer(ctx: CanvasRenderingContext2D, state: PlayerState, frame: number) {
   const { pos, invincTimer, shield, satellites, drones, aura, shipClass, rapidBoostTimer } = state;
+
+  // Phase echo: the Wraith's fading clone left behind by the blink. Drawn
+  // before the damage-blink early return so it survives the ship's flash.
+  if (shipClass === "void_wraith" && state.voidEchoTimer > 0) {
+    const echoAlpha = 0.1 + 0.42 * (state.voidEchoTimer / 120);
+    ctx.save();
+    ctx.globalAlpha = echoAlpha;
+    ctx.translate(state.voidEchoPos.x, state.voidEchoPos.y);
+    ctx.shadowBlur = 14;
+    ctx.shadowColor = "#e879f9";
+    drawWraithBody(ctx, frame, false);
+    ctx.restore();
+  }
 
   if (invincTimer > 0 && frame % 8 < 4) return;
 
@@ -148,53 +234,107 @@ export function drawPlayer(ctx: CanvasRenderingContext2D, state: PlayerState, fr
   ctx.closePath();
   ctx.fill();
 
+  // The Wraith drags two side plasma wisps behind its blade hull.
+  if (shipClass === "void_wraith") {
+    const wg = ctx.createLinearGradient(0, 14, 0, 14 + trailH * 0.9);
+    wg.addColorStop(0, "rgba(168,85,247,0.65)");
+    wg.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = wg;
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(side * 7, 12);
+      ctx.lineTo(side * 3, 14 + trailH * 0.8);
+      ctx.lineTo(side * 10, 17);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
   // Ship body based on class
   const mainColor = shipClass === "tempest" ? "#a855f7" :
                     shipClass === "dreadnought" ? "#f59e0b" :
                     shipClass === "commander" ? "#10b981" :
                     shipClass === "void_wraith" ? "#e879f9" : "#38bdf8";
 
-  ctx.shadowBlur = 15;
-  ctx.shadowColor = mainColor;
-  ctx.fillStyle = "#0f172a";
-  ctx.strokeStyle = mainColor;
-  ctx.lineWidth = 1.6;
+  if (shipClass === "void_wraith") {
+    const phased = state.ghostTimer > 0;
+    // Phase window: full glow plus an expanding shock ring; idle: subtle
+    // shimmer that sells the "phased" identity even without a blink.
+    const phaseAlpha = phased ? state.ghostTimer / 120 : 0;
+    if (phased) {
+      const ringRadius = 30 + (120 - state.ghostTimer) * 0.7;
+      ctx.strokeStyle = `rgba(232,121,249,${(0.5 * phaseAlpha).toFixed(3)})`;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(0, 0, ringRadius, 0, Math.PI * 2);
+      ctx.stroke();
+      const pg = ctx.createRadialGradient(0, 0, 8, 0, 0, 58);
+      pg.addColorStop(0, `rgba(232,121,249,${(0.3 * phaseAlpha).toFixed(3)})`);
+      pg.addColorStop(1, "rgba(232,121,249,0)");
+      ctx.fillStyle = pg;
+      ctx.beginPath();
+      ctx.arc(0, 0, 58, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = phased ? 1 : 0.82 + 0.18 * Math.sin(frame * 0.22);
+    if (phased) {
+      // Double-exposure ghosting while phased.
+      ctx.save();
+      ctx.globalAlpha = 0.28;
+      ctx.translate(3, -2);
+      drawWraithBody(ctx, frame, true);
+      ctx.restore();
+      ctx.save();
+      ctx.globalAlpha = 0.28;
+      ctx.translate(-3, -2);
+      drawWraithBody(ctx, frame, true);
+      ctx.restore();
+    }
+    drawWraithBody(ctx, frame, phased);
+    ctx.globalAlpha = 1;
+  } else {
+    ctx.shadowBlur = 15;
+    ctx.shadowColor = mainColor;
+    ctx.fillStyle = "#0f172a";
+    ctx.strokeStyle = mainColor;
+    ctx.lineWidth = 1.6;
 
-  ctx.beginPath();
-  ctx.moveTo(0, -30);
-  ctx.lineTo(24, 18);
-  ctx.lineTo(11, 11);
-  ctx.lineTo(0, 16);
-  ctx.lineTo(-11, 11);
-  ctx.lineTo(-24, 18);
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(0, -30);
+    ctx.lineTo(24, 18);
+    ctx.lineTo(11, 11);
+    ctx.lineTo(0, 16);
+    ctx.lineTo(-11, 11);
+    ctx.lineTo(-24, 18);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
 
-  // Wings
-  ctx.fillStyle = "#1e293b";
-  ctx.strokeStyle = mainColor;
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(-11, 6);
-  ctx.lineTo(-28, 18);
-  ctx.lineTo(-15, 14);
-  ctx.closePath();
-  ctx.fill(); ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(11, 6);
-  ctx.lineTo(28, 18);
-  ctx.lineTo(15, 14);
-  ctx.closePath();
-  ctx.fill(); ctx.stroke();
+    // Wings
+    ctx.fillStyle = "#1e293b";
+    ctx.strokeStyle = mainColor;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(-11, 6);
+    ctx.lineTo(-28, 18);
+    ctx.lineTo(-15, 14);
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(11, 6);
+    ctx.lineTo(28, 18);
+    ctx.lineTo(15, 14);
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
 
-  // Cockpit
-  ctx.shadowBlur = 8;
-  ctx.shadowColor = mainColor;
-  ctx.fillStyle = mainColor;
-  ctx.beginPath();
-  ctx.ellipse(0, -9, 5.5, 10, 0, 0, Math.PI * 2);
-  ctx.fill();
+    // Cockpit
+    ctx.shadowBlur = 8;
+    ctx.shadowColor = mainColor;
+    ctx.fillStyle = mainColor;
+    ctx.beginPath();
+    ctx.ellipse(0, -9, 5.5, 10, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
 
   ctx.restore();
 

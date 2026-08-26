@@ -60,6 +60,21 @@ export default function HUD({
               </div>
             </div>
           )}
+          {/* Void souls (premium Wraith kit) */}
+          {player.shipClass === "void_wraith" && (
+            <div>
+              <div className="flex justify-between text-xs font-mono mb-0.5">
+                <span className="text-fuchsia-400 font-bold">🌑 ДУШИ БЕЗДНЫ</span>
+                <span className="text-fuchsia-300 font-bold">{player.voidSouls}/20 (+{Math.round(player.voidSouls * 1.5)}% урона)</span>
+              </div>
+              <div className="h-2 bg-slate-800 rounded-full overflow-hidden border border-slate-700">
+                <div
+                  className="h-full rounded-full transition-all duration-150 bg-gradient-to-r from-fuchsia-500 via-purple-500 to-violet-600"
+                  style={{ width: `${Math.min(100, (player.voidSouls / 20) * 100)}%` }}
+                />
+              </div>
+            </div>
+          )}
           {/* XP */}
           <div>
             <div className="flex justify-between text-xs font-mono mb-0.5">
@@ -87,6 +102,9 @@ export default function HUD({
           )}
           {timeSlow && (
             <div className="text-xs text-cyan-400 font-mono font-bold animate-pulse mt-1">⏱ ЗАМЕДЛЕНИЕ ВРЕМЕНИ</div>
+          )}
+          {player.shipClass === "void_wraith" && player.ghostTimer > 0 && (
+            <div className="text-xs text-fuchsia-400 font-mono font-black animate-pulse mt-1">👻 ФАЗА — НЕУЯЗВИМЫ</div>
           )}
           {player.rapidBoostTimer > 0 && (
             <div className="text-xs text-sky-400 font-mono font-bold animate-pulse mt-0.5">⚡ ОВЕРДРАЙВ ({Math.ceil(player.rapidBoostTimer / 60)}с)</div>

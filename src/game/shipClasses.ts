@@ -42,8 +42,14 @@ export const SHIP_CLASSES: ShipClassDef[] = [
     name: "Призрак «Немезида»",
     subtitle: "Премиальный фазовый охотник",
     icon: "👻",
-    description: "Экспериментальный корабль Бездны с фазовой защитой и самонаводящимися орудиями.",
-    perks: ["Периодическая неуязвимость", "Мягкое самонаведение", "+1 пробитие", "Высокая скорость полёта"],
+    description: "Экспериментальный корабль Бездны: пожирает сражённых врагов, фазовым блинком уходит из-под огня, а его призрачное эхо продолжает бить по врагам.",
+    perks: [
+      "Пожирание: до 20 душ, каждая +1.5% урона",
+      "Фазовый блинк: телепорт + эхо-клон, стреляющий 2 с",
+      "Двойной поток самонаводящихся болтов",
+      "Щит Бездны 35 HP с быстрым регеном",
+      "Гарантированный эпик+ на первых двух уровнях",
+    ],
     color: "#e879f9",
     premium: true,
   },
@@ -99,17 +105,24 @@ export function applyShipClassStats(player: PlayerState, classId: ShipClassId) {
       break;
 
     case "void_wraith":
-      player.maxHp = 85;
-      player.hp = 85;
+      // Premium kit: no longer the weakest hull. HP 100 + Void Shield 35
+      // (fast regen in gameLoop), twin homing bolts, phase blink with an
+      // echo clone and soul devouring (see stepGame in gameLoop.ts).
+      player.maxHp = 100;
+      player.hp = 100;
       player.speed = 5.9;
-      player.fireRate = 11;
-      player.bulletDamage = 1.35;
-      player.bulletSpeed = 14.5;
+      player.fireRate = 10;
+      player.bulletDamage = 1.25;
+      player.bulletSpeed = 15;
       player.piercing = 1;
       player.homing = true;
-      player.homingStrength = 0.065;
+      player.homingStrength = 0.07;
       player.ghostMode = true;
-      player.shield = { hp: 18, maxHp: 18, regenTimer: 0, active: true };
+      player.voidSouls = 0;
+      player.voidSoulIdleTimer = 0;
+      player.voidEchoTimer = 0;
+      player.voidEchoPos = { ...player.pos };
+      player.shield = { hp: 35, maxHp: 35, regenTimer: 0, active: true };
       break;
   }
 }

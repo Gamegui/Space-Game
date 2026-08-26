@@ -141,6 +141,37 @@ class SoundEngine {
     osc.stop(t + 0.22);
   }
 
+  // ─── SFX: Void Phase Blink (Wraith dissolves and reappears) ─────────────────
+  public playVoidBlink() {
+    if (this.isMuted) return;
+    this.resume();
+    if (!this.ctx || !this.sfxGain) return;
+
+    const t = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const osc2 = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(980, t);
+    osc.frequency.exponentialRampToValueAtTime(130, t + 0.28);
+    osc2.type = "triangle";
+    osc2.frequency.setValueAtTime(1470, t);
+    osc2.frequency.exponentialRampToValueAtTime(190, t + 0.28);
+
+    gain.gain.setValueAtTime(0.16, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.3);
+
+    osc.connect(gain);
+    osc2.connect(gain);
+    gain.connect(this.sfxGain);
+
+    osc.start(t);
+    osc.stop(t + 0.3);
+    osc2.start(t);
+    osc2.stop(t + 0.3);
+  }
+
   // ─── SFX: Enemy Hit ─────────────────────────────────────────────────────────
   public playHit() {
     if (this.isMuted) return;

@@ -119,12 +119,26 @@ Before clicking Publish in Yandex Games, manually verify in the platform draft:
 1. Rewarded ad completed, closed early, and error cases
 2. Fullscreen ad after a run
 3. Purchase, cancellation, and restoration of `void_wraith`
-4. Price/currency shown on the purchase button flip to the debug currency mock (TST/¥) — §1.13.2
-5. Cloud high score and `highscore` leaderboard
-6. Android browser and iPhone Safari touch controls
-7. One clean run through wave 50 and Omega
+4. On the purchased Wraith: phase blink with echo clone, soul devouring/shatter FX, and the guaranteed epic+ on the first two level-ups
+5. Price/currency shown on the purchase button flip to the debug currency mock (TST/¥) — §1.13.2
+6. Cloud high score and `highscore` leaderboard
+7. Android browser and iPhone Safari touch controls
+8. One clean run through wave 50 and Omega
 
 Do not add more large systems before release. Future changes should be limited to reproducible bug fixes and measured balance adjustments.
+
+## Premium ship rebalance — 2026-08-26
+
+Owner request: the premium «Призрак «Немезида»» (`void_wraith`) had to feel premium, not like a slightly buffed version of a free build. It previously had the lowest hull of all five ships (85 HP) and an identity made entirely of perks that free upgrades already granted. Implemented kit:
+
+- **No longer the weakest hull**: HP 85 → 100, shield 18 → 35 (Void Shield, 1.8× regen), fire rate 11 → 10, damage 1.35 → 1.25 per bolt with **twin homing bolts** (±7 px offset, 0.12 lateral velocity), homing strength 0.065 → 0.07, pierce +1, speed 5.9 kept.
+- **Пожирание Бездны (soul devouring)**: enemies finished within 150 px are devoured — 1 soul (elites 2, bosses 5), cap 20. Each soul: +1.5% damage on every bolt and +0.4% speed; a soul decays after 10 s without a kill. Suck-in particles + purple shatter shards on kills.
+- **Фазовый блинк (phase blink)**: when the phase window opens the Wraith teleports 200 px (input direction, else nearest enemy, else up) and leaves a fading **echo clone at the origin that keeps firing 80%-damage bolts for the whole 2 s window**. Dedicated WebAudio SFX (`playVoidBlink`). Phase window: full glow, double-exposure ghosting, expanding ring, arena-wide void vignette, HUD «ФАЗА» status.
+- **Premium build path**: the Wraith's first two level-ups (player levels 2–3) always include at least one epic/legendary pick — the rarity level gate is bypassed for this guarantee only (`rollPremiumUpgradeChoices`, used for initial rolls and rerolls). Void-themed upgrades (incl. all «Сердце Бездны» synergy pieces) are weighted ×2 for the Wraith. The run starts with «Фазовый сдвиг» pre-researched and a materialize burst on spawn.
+- **Adaptive difficulty** counts the kit (power +8 for the class, +0.4 per soul) so late waves still scale against it.
+- **Presentation**: unique wraith silhouette (blade hull, membrane wings, pulsing void core, two side plasma wisps) replacing the shared fighter triangle; idle phase shimmer.
+
+Verified with a 27-check simulation smoke test (all five ship stats, twin-bolt + echo fire, devouring on both kill paths, phase cycle/echo expiry, soul decay, 300-roll premium guarantee, 3000-frame no-NaN sim).
 
 ## Store-compliance fixes — 2026-08-25
 

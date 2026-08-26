@@ -213,6 +213,11 @@ export interface PlayerState {
   regenTimer: number;
   ghostMode: boolean;
   ghostTimer: number;
+  // Premium «Призрак «Немезида»» kit: soul devouring + phase blink with echo.
+  voidSouls: number;
+  voidSoulIdleTimer: number;
+  voidEchoTimer: number;
+  voidEchoPos: Vec2;
   teleportCooldown: number;
   teleportTimer: number;
   blackHole: boolean;

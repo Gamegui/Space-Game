@@ -1,5 +1,27 @@
 # Космический Штурм: Ультра — handoff
 
+## Обязанность КАЖДОЙ следующей сессии (ОБЯЗАТЕЛЬНО / mandatory rule)
+
+> Владелец (2026-08-26): **каждое изменение в проекте ОБЯЗАН быть записанным
+> в этот документ.** Никаких «немолчуемых» правок.
+
+Every agent/session that changes anything in this repository MUST, before
+finishing the work, append a **dated entry to this handoff** describing:
+
+1. **Что изменено** — systems, files, new identifiers (upgrade ids, product
+   ids, constants).
+2. **Почему** — the owner request or the bug it fixes.
+3. **Как проверено** — typecheck / build / smoke-simulation checks / manual
+   playtest results.
+4. **Новые внешние проверки** — if anything needs manual acceptance in the
+   Yandex Games draft, extend the checklist below.
+
+Also: keep the exact title (`Космический Штурм: Ультра`), the Yandex console
+identifiers (`highscore` leaderboard, `void_wraith` product) and the
+`space-shooter-yandex.zip` release archive in sync — any gameplay change
+requires `npm run package:yandex`, committing the refreshed ZIP, and a note
+here. If the owner reports a gameplay problem, fix, verify, document.
+
 ## Release state
 
 The project is a release-ready Yandex Games HTML5 roguelite. Version shown in-game: `v1.0.0 · RELEASE`.

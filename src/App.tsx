@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { PlayerState, UpgradeDef, GamePhase, ShipClassId, Enemy } from "./game/types";
 import type { GameObjects } from "./game/gameLoop";
-import { stepGame, makeStars, makeInitialPlayer, getNextLevelXp, spawnAdaptiveGuard, W, H, uid } from "./game/gameLoop";
-import { ALL_UPGRADES, rollUpgrades, rollHighRarityUpgrade, applyUpgrade, getUpgradeLevel, getAdaptiveDifficulty } from "./game/upgrades";
+import { stepGame, makeStars, makeInitialPlayer, makeMaterializeBurst, devourSoul, getNextLevelXp, spawnAdaptiveGuard, W, H, uid } from "./game/gameLoop";
+import { ALL_UPGRADES, rollUpgrades, rollPremiumUpgradeChoices, rollHighRarityUpgrade, applyUpgrade, getUpgradeLevel, getAdaptiveDifficulty } from "./game/upgrades";
 import { getWaveComposition, isBossWave, spawnBoss, getBossName } from "./game/enemies";
 import { SHIP_CLASSES } from "./game/shipClasses";
 import { audio } from "./game/audio";
@@ -11,7 +11,7 @@ import { yandex, type StoreOffer } from "./platform/yandex";
 import {
   drawBackground, drawStars, drawPlayer, drawEnemy, drawBullet,
   drawParticle, drawXpOrb, drawMine, drawLightning, drawBlackHole, drawExplosion,
-  drawFloatingText, drawPowerup, drawVoidEye, setRenderPerformanceTier
+  drawFloatingText, drawPowerup, drawVoidEye, drawVoidPhaseVignette, setRenderPerformanceTier
 } from "./game/renderer";
 import UpgradePanel from "./components/UpgradePanel";
 import HUD from "./components/HUD";
@@ -246,6 +246,18 @@ export default function App() {
 
     const player = makeInitialPlayer(shipClass);
     const objects = makeInitialObjects(player);
+    // Premium «Немезида» opening: the ship materializes into the arena and
+    // starts with a Phase Shift already researched (synergy head-start).
+    if (shipClass === "void_wraith") {
+      if (!player.upgrades.some(u => u.id === "ghost")) {
+        const ghostDef = ALL_UPGRADES.find(u => u.id === "ghost");
+        if (ghostDef) {
+          ghostDef.apply(player, 1);
+          player.upgrades.push({ id: "ghost", level: 1 });
+        }
+      }
+      objects.particles.push(...makeMaterializeBurst(player.pos));
+    }
     const qualityTiers: Record<Exclude<QualityMode, "auto">, 0 | 1 | 2> = { low: 0, medium: 1, high: 2 };
     objects.performanceAuto = qualityMode === "auto";
     objects.performanceTier = qualityMode === "auto" ? detectPerformanceTier() : qualityTiers[qualityMode];
@@ -368,7 +380,7 @@ export default function App() {
   const handleLevelUp = useCallback((player: PlayerState) => {
     pendingLevelUpsRef.current++;
     if (phaseRef.current === "playing" && pendingLevelUpsRef.current === 1) {
-      const choices = rollUpgrades(player, 3, [...banishedUpgradeIdsRef.current]);
+      const choices = rollPremiumUpgradeChoices(player, 3, [...banishedUpgradeIdsRef.current]);
       upgradeChoicesRef.current = choices;
       setUpgradeChoices(choices);
       setBonusChoiceUsed(false);
@@ -390,7 +402,7 @@ export default function App() {
     }
     pendingLevelUpsRef.current--;
     if (pendingLevelUpsRef.current > 0) {
-      const choices = rollUpgrades(g.player, 3, [...banishedUpgradeIdsRef.current]);
+      const choices = rollPremiumUpgradeChoices(g.player, 3, [...banishedUpgradeIdsRef.current]);
       upgradeChoicesRef.current = choices;
       setUpgradeChoices(choices);
       setBonusChoiceUsed(false);
@@ -404,7 +416,7 @@ export default function App() {
     const g = gameRef.current;
     if (!g) return;
     const previousIds = upgradeChoicesRef.current.map(choice => choice.id);
-    const choices = rollUpgrades(g.player, 3, [...banishedUpgradeIdsRef.current, ...previousIds]);
+    const choices = rollPremiumUpgradeChoices(g.player, 3, [...banishedUpgradeIdsRef.current, ...previousIds]);
     if (choices.length === 0) return;
     upgradeChoicesRef.current = choices;
     setUpgradeChoices(choices);
@@ -487,6 +499,7 @@ export default function App() {
         g.xpOrbs.push({ id: uid(), pos: { ...e.pos }, vel: { x: 0, y: -1 }, value: e.xp, attracted: true });
         g.player.score += Math.floor(e.xp * 10 * g.player.goldMultiplier);
         g.player.kills++;
+        devourSoul(g.player, e, g.particles, g.floatingTexts);
       }
     }
     g.enemies = survivors;
@@ -615,6 +628,10 @@ export default function App() {
       for (const bullet of g.bullets) drawBullet(ctx, bullet);
       for (const enemy of g.enemies) drawEnemy(ctx, enemy, frame);
       drawPlayer(ctx, g.player, frame);
+      // The Wraith's phase window tints the whole arena with void light.
+      if (g.player.shipClass === "void_wraith" && g.player.ghostTimer > 0) {
+        drawVoidPhaseVignette(ctx, frame, g.player.ghostTimer / 120);
+      }
       for (let i = frame % stride; i < g.floatingTexts.length; i += stride) drawFloatingText(ctx, g.floatingTexts[i]);
     }
 

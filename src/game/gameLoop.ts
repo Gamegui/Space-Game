@@ -81,6 +81,8 @@ export function makeInitialPlayer(shipClass: ShipClassId = "interceptor"): Playe
     regenRate: 0,
     regenTimer: 0,
     ghostMode: false, ghostTimer: 0,
+    voidSouls: 0, voidSoulIdleTimer: 0,
+    voidEchoTimer: 0, voidEchoPos: { x: W / 2, y: H - 100 },
     teleportCooldown: 0, teleportTimer: 0,
     blackHole: false, blackHoleTimer: 0, blackHoleCooldown: 0,
     nukeCharges: 1,
@@ -156,6 +158,125 @@ function makeBurst(pos: Vec2, color: string, count: number, big = false): Partic
     glow: true,
     shape: "circle" as const,
   }));
+}
+
+// Quality-tier particle budget, same curve as makeBurst so the premium FX
+// never overflow low-end hardware.
+function voidParticleBudget(count: number): number {
+  const qualityMultiplier = runtimePerformanceTier === 0 ? 0.34 : runtimePerformanceTier === 1 ? 0.65 : 1;
+  return Math.max(2, Math.ceil(count * qualityMultiplier));
+}
+
+// Particles flying from a slain enemy towards the Wraith (soul devouring).
+export function makeSuckParticles(from: Vec2, to: Vec2, count = 6): Particle[] {
+  const dx = to.x - from.x, dy = to.y - from.y;
+  const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+  const baseAngle = Math.atan2(dy, dx);
+  const speed = 6.5 + (150 / (dist + 40)) * 4;
+  const n = voidParticleBudget(count);
+  return Array.from({ length: n }, () => {
+    const a = baseAngle + randRange(-0.55, 0.55);
+    const v = speed * randRange(0.7, 1.25);
+    return {
+      id: uid(),
+      pos: { x: from.x + randRange(-6, 6), y: from.y + randRange(-6, 6) },
+      vel: { x: Math.cos(a) * v, y: Math.sin(a) * v },
+      life: 26, maxLife: 26,
+      color: Math.random() < 0.5 ? "#e879f9" : "#c026d3",
+      size: randRange(2.2, 4.2),
+      glow: true,
+      shape: "circle" as const,
+    };
+  });
+}
+
+// Purple shards when the Wraith's victim shatters.
+export function makeShards(pos: Vec2, count = 7): Particle[] {
+  const n = voidParticleBudget(count);
+  return Array.from({ length: n }, () => {
+    const a = randRange(0, Math.PI * 2);
+    const v = randRange(2, 6);
+    return {
+      id: uid(),
+      pos: { x: pos.x, y: pos.y },
+      vel: { x: Math.cos(a) * v, y: Math.sin(a) * v },
+      life: randRange(18, 34), maxLife: 34,
+      color: Math.random() < 0.6 ? "#e879f9" : "#a855f7",
+      size: randRange(1.8, 3.8),
+      glow: true,
+      shape: "square" as const,
+    };
+  });
+}
+
+// One-shot ring used when the Wraith first materializes into the arena.
+export function makeMaterializeBurst(pos: Vec2): Particle[] {
+  const total = voidParticleBudget(26);
+  const out: Particle[] = [];
+  for (let i = 0; i < total; i++) {
+    const a = (i / total) * Math.PI * 2;
+    const v = randRange(3, 7);
+    out.push({
+      id: uid(),
+      pos: { x: pos.x, y: pos.y },
+      vel: { x: Math.cos(a) * v, y: Math.sin(a) * v },
+      life: randRange(30, 55), maxLife: 55,
+      color: i % 2 === 0 ? "#e879f9" : "#7c3aed",
+      size: randRange(2, 5),
+      glow: true,
+      shape: i % 3 === 0 ? "ring" : "circle",
+    });
+  }
+  return out;
+}
+
+// ─── Void Wraith premium kit ─────────────────────────────────────────────────
+export const VOID_SOUL_MAX = 20;
+export const VOID_SOUL_DECAY_FRAMES = 600; // lose a soul after 10 s without a kill
+export const VOID_SOUL_RADIUS = 220;
+
+// Exported so screen-clearing abilities (the tactical nuke) can feed the
+// Wraith as well. `gained` reports how many souls were actually added.
+export function devourSoul(
+  player: PlayerState,
+  e: { pos: Vec2; isBoss: boolean; isElite?: boolean },
+  particles: Particle[],
+  floatingTexts: FloatingText[],
+): number {
+  if (player.shipClass !== "void_wraith") return 0;
+  const dx = e.pos.x - player.pos.x, dy = e.pos.y - player.pos.y;
+  if (dx * dx + dy * dy > VOID_SOUL_RADIUS * VOID_SOUL_RADIUS) return 0;
+  if (player.voidSouls >= VOID_SOUL_MAX) return 0;
+  const value = e.isBoss ? 5 : (e.isElite ? 2 : 1);
+  player.voidSouls = Math.min(VOID_SOUL_MAX, player.voidSouls + value);
+  player.voidSoulIdleTimer = 0;
+  particles.push(...makeSuckParticles(e.pos, player.pos, e.isBoss ? 14 : 10));
+  const soulWord = value === 1 ? "ДУША" : (value === 5 ? "ДУШ" : "ДУШИ");
+  floatingTexts.push({
+    id: uid(),
+    pos: { x: e.pos.x, y: e.pos.y - 14 },
+    vel: { x: 0, y: -0.9 },
+    text: `+${value} ${soulWord}`,
+    color: "#e879f9",
+    size: e.isBoss ? 18 : 13,
+    life: 50, maxLife: 50,
+  });
+  return value;
+}
+
+function soulDamageMult(player: PlayerState): number {
+  return 1 + player.voidSouls * 0.015;
+}
+
+// Phase window: opens in place (no teleport — owner playtest: relocations
+// only disorient). The Wraith glows and is untouchable for the whole window
+// while a fading echo clone behind it keeps firing 80%-damage bolts.
+function startVoidPhase(player: PlayerState, particles: Particle[]) {
+  const origin = { x: player.pos.x, y: player.pos.y };
+  player.voidEchoPos = { x: origin.x, y: Math.min(H - 40, origin.y + 34) };
+  particles.push(...makeBurst(origin, "#e879f9", 14));
+  player.voidEchoTimer = 120;
+  audio.playVoidBlink();
 }
 
 // ─── Main step function ───────────────────────────────────────────────────────
@@ -265,7 +386,8 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   // ─── Player movement ───────────────────────────────────────────────────────
   // Physical KeyW/A/S/D codes make movement independent from keyboard layout.
   // The chrono ability slows the world, not the player's own ship.
-  const spd = player.speed * dashSpeedMult;
+  // Devoured souls give the Wraith a small but visible edge in mobility.
+  const spd = player.speed * dashSpeedMult * (1 + player.voidSouls * 0.004);
   if ((keys.has("ArrowLeft")  || keys.has("KeyA")) && player.pos.x > 25) player.pos.x -= spd;
   if ((keys.has("ArrowRight") || keys.has("KeyD")) && player.pos.x < W - 25) player.pos.x += spd;
   if ((keys.has("ArrowUp")    || keys.has("KeyW")) && player.pos.y > 60) player.pos.y -= spd;
@@ -286,6 +408,18 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       player.ghostTimer++;
     } else {
       player.ghostTimer = 120;
+      // The premium Wraith's phase is an active blink with an echo clone,
+      // not a silent invulnerability window.
+      if (player.shipClass === "void_wraith") startVoidPhase(player, particles);
+    }
+  }
+
+  // Void souls decay only while the Wraith stops feeding.
+  if (player.shipClass === "void_wraith" && player.voidSouls > 0) {
+    player.voidSoulIdleTimer++;
+    if (player.voidSoulIdleTimer >= VOID_SOUL_DECAY_FRAMES) {
+      player.voidSouls--;
+      player.voidSoulIdleTimer = 0;
     }
   }
 
@@ -301,7 +435,9 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   // ─── Shield regen ──────────────────────────────────────────────────────────
   if (player.shield) {
     const shieldRegenBonus = getUpgradeLevel(player, "shield_regen") * 0.35;
-    const regenRate = 1 + shieldRegenBonus;
+    let regenRate = 1 + shieldRegenBonus;
+    // The Wraith's Void Shield recharges noticeably faster than standard ones.
+    if (player.shipClass === "void_wraith") regenRate *= 1.8;
     if (player.shield.hp < player.shield.maxHp) {
       player.shield.regenTimer += regenRate;
       if (player.shield.regenTimer >= 90) {
@@ -333,6 +469,24 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   if (frame % effectiveFireRate === 0) {
     firePlayerBullets(bullets, player, enemies, frame);
     audio.playShoot(player.snipeMode);
+  }
+
+  // Phase echo: the fading clone left behind by the Wraith's blink keeps
+  // firing from its original spot for the whole phase window.
+  if (player.voidEchoTimer > 0) {
+    player.voidEchoTimer--;
+    player.voidEchoPos.x += (player.pos.x - player.voidEchoPos.x) * 0.02;
+    player.voidEchoPos.y += (player.pos.y - player.voidEchoPos.y) * 0.02;
+    if (frame % effectiveFireRate === 0) {
+      const echoBullet = makePlayerBullet(player,
+        { x: player.voidEchoPos.x, y: player.voidEchoPos.y - 20 },
+        { x: 0, y: -player.bulletSpeed }
+      );
+      echoBullet.damage *= 0.8;
+      echoBullet.color = "#d946ef";
+      bullets.push(echoBullet);
+    }
+    if (player.voidEchoTimer === 0) particles.push(...makeBurst(player.voidEchoPos, "#a855f7", 10));
   }
 
   // Side lasers are a real weapon system, not a dead stat upgrade.
@@ -520,6 +674,8 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     player.kills++;
     if (enemy.isElite) player.stats.elitesKilled++;
     if (enemy.isBoss) player.stats.bossesKilled++;
+    devourSoul(player, enemy, particles, floatingTexts);
+    if (player.shipClass === "void_wraith") particles.push(...makeShards(enemy.pos));
     enemies.splice(i, 1);
     input.onKill(xpGained, enemy.pos, enemy.isBoss);
   }
@@ -952,6 +1108,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           player.kills++;
           if (e.isElite) player.stats.elitesKilled++;
           if (e.isBoss) player.stats.bossesKilled++;
+          devourSoul(player, e, particles, floatingTexts);
 
           // Explosion
           if (player.explosiveBullets) {
@@ -1004,6 +1161,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 
           const col = e.isBoss ? "#f43f5e" : (e.isElite ? "#fbbf24" : "#fb923c");
           particles.push(...makeBurst(e.pos, col, e.isBoss ? 45 : (e.isElite ? 25 : 14), e.isBoss));
+          if (player.shipClass === "void_wraith") particles.push(...makeShards(e.pos, e.isBoss ? 16 : 7));
           xpOrbs.push(makeXpOrb(e.pos, xpGained));
         }
 
@@ -1338,7 +1496,8 @@ function makePlayerBullet(player: PlayerState, pos: Vec2, vel: Vec2): Bullet {
   return {
     id: uid(), pos: { ...pos }, vel,
     fromPlayer: true,
-    damage: player.bulletDamage,
+    // Devoured souls permanently boost every bolt the Wraith fires this run.
+    damage: player.bulletDamage * soulDamageMult(player),
     size: player.bulletSize,
     color: player.snipeMode ? "#ffffff" : (player.shipClass === "tempest" ? "#c084fc" : (player.shipClass === "dreadnought" ? "#f59e0b" : (player.shipClass === "void_wraith" ? "#e879f9" : "#38bdf8"))),
     pierce: player.piercing,
@@ -1353,6 +1512,16 @@ function firePlayerBullets(bullets: Bullet[], player: PlayerState, _enemies: Ene
   for (let i = 0; i < shots; i++) {
     let angle: number;
     if (shots === 1) {
+      // The Wraith's signature weapon: a twin stream of homing void bolts.
+      if (player.shipClass === "void_wraith" && !player.mirrorShots) {
+        for (const side of [-1, 1]) {
+          bullets.push(makePlayerBullet(player,
+            { x: player.pos.x + side * 7, y: player.pos.y - 16 },
+            { x: side * 0.12 * player.bulletSpeed, y: -player.bulletSpeed }
+          ));
+        }
+        continue;
+      }
       angle = -Math.PI / 2;
     } else if (totalSpread >= 350) {
       angle = (i / shots) * Math.PI * 2;

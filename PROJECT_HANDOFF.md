@@ -1,5 +1,27 @@
 # Космический Штурм: Ультра — handoff
 
+## Обязанность КАЖДОЙ следующей сессии (ОБЯЗАТЕЛЬНО / mandatory rule)
+
+> Владелец (2026-08-26): **каждое изменение в проекте ОБЯЗАН быть записанным
+> в этот документ.** Никаких «немолчуемых» правок.
+
+Every agent/session that changes anything in this repository MUST, before
+finishing the work, append a **dated entry to this handoff** describing:
+
+1. **Что изменено** — systems, files, new identifiers (upgrade ids, product
+   ids, constants).
+2. **Почему** — the owner request or the bug it fixes.
+3. **Как проверено** — typecheck / build / smoke-simulation checks / manual
+   playtest results.
+4. **Новые внешние проверки** — if anything needs manual acceptance in the
+   Yandex Games draft, extend the checklist below.
+
+Also: keep the exact title (`Космический Штурм: Ультра`), the Yandex console
+identifiers (`highscore` leaderboard, `void_wraith` product) and the
+`space-shooter-yandex.zip` release archive in sync — any gameplay change
+requires `npm run package:yandex`, committing the refreshed ZIP, and a note
+here. If the owner reports a gameplay problem, fix, verify, document.
+
 ## Release state
 
 The project is a release-ready Yandex Games HTML5 roguelite. Version shown in-game: `v1.0.0 · RELEASE`.
@@ -119,12 +141,27 @@ Before clicking Publish in Yandex Games, manually verify in the platform draft:
 1. Rewarded ad completed, closed early, and error cases
 2. Fullscreen ad after a run
 3. Purchase, cancellation, and restoration of `void_wraith`
-4. Price/currency shown on the purchase button flip to the debug currency mock (TST/¥) — §1.13.2
-5. Cloud high score and `highscore` leaderboard
-6. Android browser and iPhone Safari touch controls
-7. One clean run through wave 50 and Omega
+4. On the purchased Wraith: phase blink with echo clone, soul devouring/shatter FX, and the guaranteed epic+ on the first two level-ups
+5. Price/currency shown on the purchase button flip to the debug currency mock (TST/¥) — §1.13.2
+6. Cloud high score and `highscore` leaderboard
+7. Android browser and iPhone Safari touch controls
+8. One clean run through wave 50 and Omega
 
 Do not add more large systems before release. Future changes should be limited to reproducible bug fixes and measured balance adjustments.
+
+## Premium ship rebalance — 2026-08-26
+
+Owner request: the premium «Призрак «Немезида»» (`void_wraith`) had to feel premium, not like a slightly buffed version of a free build. It previously had the lowest hull of all five ships (85 HP) and an identity made entirely of perks that free upgrades already granted. Implemented kit:
+
+- **No longer the weakest hull**: HP 85 → 100, shield 18 → 35 (Void Shield, 1.8× regen), fire rate 11 → 10, damage 1.35 → 1.25 per bolt with **twin homing bolts** (±7 px offset, 0.12 lateral velocity), homing strength 0.065 → 0.07, pierce +1, speed 5.9 kept.
+- **Пожирание Бездны (soul devouring)**: enemies finished within **220 px** are devoured — 1 soul (elites 2, bosses 5), cap 20. Each soul: +1.5% damage on every bolt and +0.4% speed; a soul decays after 10 s without a kill. Suck-in particles + purple shatter shards + floating «+N ДУША» feedback; the tactical nuke feeds souls too (`devourSoul` is exported for it).
+- **Фаза Бездны (void phase)** — after two playtest rounds the teleport was removed entirely (owner: relocations only disorient and hinder). The phase now opens **in place**: 2 s of invulnerability + glow, while a fading **echo clone behind the ship keeps firing 80%-damage bolts for the whole window**. The first window opens 3 s into the run, not on the spawn frame. Dedicated WebAudio SFX (`playVoidBlink`).
+- **Quality-tier-aware FX**: suck/shards/materialize particles use the same tier budget as `makeBurst` (×0.34/×0.65/×1); the echo body degrades to a plain glow on Low, double-exposure ghosting and the phase vignette/gradient drop off on Low/Medium per render tier, side trail wisps are skipped on Low.
+- **Premium build path**: the Wraith's first two level-ups (player levels 2–3) always include at least one epic/legendary pick — the rarity level gate is bypassed for this guarantee only (`rollPremiumUpgradeChoices`, used for initial rolls and rerolls). Void-themed upgrades (incl. all «Сердце Бездны» synergy pieces) are weighted ×2 for the Wraith. The run starts with «Фазовый сдвиг» pre-researched and a materialize burst on spawn.
+- **Adaptive difficulty** counts the kit (power +8 for the class, +0.4 per soul) so late waves still scale against it.
+- **Presentation**: unique wraith silhouette (blade hull, membrane wings, pulsing void core, two side plasma wisps) replacing the shared fighter triangle; idle phase shimmer.
+
+Verified with a 27-check simulation smoke test (all five ship stats, twin-bolt + echo fire, devouring on both kill paths, phase cycle/echo expiry, soul decay, 300-roll premium guarantee, 3000-frame no-NaN sim).
 
 ## Store-compliance fixes — 2026-08-25
 

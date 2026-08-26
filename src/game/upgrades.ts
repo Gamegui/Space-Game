@@ -307,7 +307,10 @@ export function calculatePlayerPower(state: PlayerState): number {
     + state.piercing * 1.4
     + state.critChance * state.critMultiplier * 10
     + state.satellites.length * 3
-    + state.drones.length * 3.5;
+    + state.drones.length * 3.5
+    // The Wraith's twin bolts, phase blink and devoured souls are real power.
+    + (state.shipClass === "void_wraith" ? 8 : 0)
+    + (state.voidSouls ?? 0) * 0.4;
   const defense = state.maxHp / 25
     + (state.shield?.maxHp ?? 0) / 20
     + state.regenRate * 5
@@ -350,6 +353,13 @@ export function canUpgrade(state: PlayerState, def: UpgradeDef): boolean {
   return lvl < def.maxLevel && state.level >= rarityLevelGate[def.rarity];
 }
 
+// Upgrade family that completes the Wraith's «Сердце Бездны» synergy and
+// extends its phase kit.
+const VOID_UPGRADES = new Set([
+  "ghost", "quantum_tunnel", "singularity_rounds",
+  "wormhole", "hyperdrive", "teleport", "void_arsenal",
+]);
+
 export function rollUpgrades(state: PlayerState, count = 3, excludeIds: string[] = []): UpgradeDef[] {
   const excluded = new Set(excludeIds);
   const available = ALL_UPGRADES.filter(u => canUpgrade(state, u) && !excluded.has(u.id));
@@ -373,7 +383,10 @@ export function rollUpgrades(state: PlayerState, count = 3, excludeIds: string[]
       : u.rarity === "rare" ? (state.level >= 8 ? 24 : 15)
       : u.rarity === "epic" ? (state.level >= 15 ? 8 : 3)
       : (state.level >= 20 ? 3 : 1);
-    const weight = baseWeight * (synergyFinishers.has(u.id) ? 3 : 1);
+    // The premium Wraith's kit is void-themed: its natural upgrade family
+    // (and the «Сердце Бездны» synergy pieces) appears twice as often.
+    const voidThemed = state.shipClass === "void_wraith" && VOID_UPGRADES.has(u.id) ? 2 : 1;
+    const weight = baseWeight * (synergyFinishers.has(u.id) ? 3 : 1) * voidThemed;
     for (let i = 0; i < weight; i++) weighted.push(u);
   }
 
@@ -400,6 +413,43 @@ export function rollHighRarityUpgrade(state: PlayerState, excludeIds: string[] =
   );
   if (available.length === 0) return null;
   const weighted = available.flatMap(upgrade => Array(upgrade.rarity === "epic" ? 4 : 1).fill(upgrade) as UpgradeDef[]);
+  return weighted[Math.floor(Math.random() * weighted.length)];
+}
+
+// Premium promise: the Wraith's first two level-ups always offer at least one
+// epic/legendary card. Unlike the rewarded fourth choice, this guarantee works
+// from level 2 and ignores the rarity level gates (which would otherwise make
+// epics unavailable until level 7).
+export function rollPremiumUpgradeChoices(state: PlayerState, count = 3, excludeIds: string[] = []): UpgradeDef[] {
+  const picked = rollUpgrades(state, count, excludeIds);
+  const isPremiumRun = state.shipClass === "void_wraith" && state.level <= 3;
+  if (!isPremiumRun) return picked;
+  const hasHigh = picked.some(u => u.rarity === "epic" || u.rarity === "legendary");
+  if (hasHigh) return picked;
+  const excluded = [...excludeIds, ...picked.map(u => u.id)];
+  let bonus = rollHighRarityUpgrade(state, excluded);
+  if (!bonus) {
+    bonus = pickPremiumHighRarity(state, excluded);
+  }
+  if (!bonus) return picked;
+  const order = { common: 0, rare: 1, epic: 2, legendary: 3 } as const;
+  let worst = 0;
+  for (let i = 1; i < picked.length; i++) {
+    if (order[picked[i].rarity] < order[picked[worst].rarity]) worst = i;
+  }
+  picked[worst] = bonus;
+  return picked;
+}
+
+function pickPremiumHighRarity(state: PlayerState, excludeIds: string[]): UpgradeDef | null {
+  const excluded = new Set(excludeIds);
+  const pool = ALL_UPGRADES.filter(u =>
+    (u.rarity === "epic" || u.rarity === "legendary")
+    && !excluded.has(u.id)
+    && getUpgradeLevel(state, u.id) < u.maxLevel
+  );
+  if (pool.length === 0) return null;
+  const weighted = pool.flatMap(u => Array(u.rarity === "epic" ? 5 : 1).fill(u) as UpgradeDef[]);
   return weighted[Math.floor(Math.random() * weighted.length)];
 }
 

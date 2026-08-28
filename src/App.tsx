@@ -24,6 +24,7 @@ import {
 } from "./game/meta";
 import { PRODUCTS } from "./game/products";
 import { checkEvolutions } from "./game/evolutions";
+import { reportPerfEvent, recoverPerfMirror, startFreezeWatchdog } from "./game/perfReporter";
 
 // ─── Perf-логгер (только DEV): покадровая диагностика фризов ──────────────────
 // Пишет строку в буфер на каждый медленный кадр: сколько ушло на симуляцию,
@@ -52,6 +53,9 @@ function perfLogSlowFrame(line: string): void {
   if (PERF_LINES.length > PERF_MAX_LINES) PERF_LINES.shift();
   // eslint-disable-next-line no-console
   console.log(`[perf] ${line}`);
+  // Каждое медленное событие немедленно улетает на dev-сервер: при жёстком
+  // зависании кнопка PERF уже мертва, а лог уже сохранён.
+  reportPerfEvent("SLOW_FRAME", { line });
 }
 
 function perfTime(key: string, fn: () => void): void {
@@ -238,6 +242,16 @@ export default function App() {
   const [perfOpen, setPerfOpen] = useState(false);
   const [perfText, setPerfText] = useState("");
 
+  // Автологирование фризов: досылаем логи прошлого сеанса (если страница
+  // умерла и её перезагрузили) и запускаем watchdog-воркер, который шлёт
+  // отчёт о зависании из отдельного потока, когда главный уже заблокирован.
+  const freezeBeatRef = useRef<((payload: Record<string, unknown>, hidden: boolean) => void) | null>(null);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    recoverPerfMirror();
+    freezeBeatRef.current = startFreezeWatchdog();
+  }, []);
+
   // longtask-наблюдатель: фиксирует блокировки главного потока ВНЕ игрового
   // колбэка (коммит React, сборка мусора, композитинг браузера).
   useEffect(() => {
@@ -247,6 +261,7 @@ export default function App() {
         for (const entry of list.getEntries()) {
           if (entry.duration > 150) {
             perfLogSlowFrame(`LONGTASK ${entry.duration.toFixed(0)}мс — блокировка вне игрового колбэка (React/GC/браузер)`);
+            reportPerfEvent("LONGTASK", { duration: Math.round(entry.duration) });
           }
         }
       });
@@ -1160,6 +1175,26 @@ export default function App() {
           );
         }
       }
+      // Сердцебиение для watchdog-воркера: payload каждые 15 кадров,
+      // обычный beat — каждый кадр. Воркер заметит остановку > 3 c и сам
+      // пришлёт отчёт о зависании из отдельного потока.
+      if (freezeBeatRef.current) {
+        const beatPayload = frame % 15 === 0 && g ? {
+          frame,
+          elapsedMs: Math.round(elapsed),
+          phase: currentPhase,
+          tier: g.performanceTier,
+          enemies: g.enemies.length,
+          bullets: g.bullets.length,
+          particles: g.particles.length,
+          orbs: g.xpOrbs.length,
+          texts: g.floatingTexts.length,
+          explosions: g.explosions.length,
+          kills: g.player.kills,
+        } : undefined;
+        freezeBeatRef.current(beatPayload ?? {}, document.hidden);
+      }
+
       if (currentPhase === "boss_intro") {
         const alpha = Math.min(1, bossIntroTimerRef.current / 60);
         ctx.fillStyle = `rgba(0,0,0,${alpha * 0.65})`;
@@ -1451,7 +1486,7 @@ export default function App() {
                     onFocus={e => e.currentTarget.select()}
                     className="h-[55vh] w-full resize-none rounded bg-slate-900 p-2 font-mono text-[10px] text-slate-300"
                   />
-                  <div className="text-[10px] text-slate-500">Кнопка «КОПИРОВАТЬ» может не работать внутри iframe превью — тогда выдели текст (клик — выделит всё) и Ctrl+C, либо скачай .txt</div>
+                  <div className="text-[10px] text-slate-500">Логи и так автоматически уходят на dev-сервер при каждом медленном кадре и при зависании (watchdog) — этот экран просто для просмотра. Копирование может не работать в iframe: кликни по тексту (выделится всё) и Ctrl+C, либо скачай .txt.</div>
                 </div>
               </div>
             )}

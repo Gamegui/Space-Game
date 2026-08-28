@@ -9,7 +9,41 @@ export const H = 720;
 
 let renderPerformanceTier: 0 | 1 | 2 = 2;
 export function setRenderPerformanceTier(tier: 0 | 1 | 2) {
+  if (tier !== renderPerformanceTier) bulletSprites.clear(); // glow strength differs per tier
   renderPerformanceTier = tier;
+}
+
+// ─── Sprite cache (render hot-path optimization) ─────────────────────────────
+// shadowBlur is by far the most expensive Canvas2D operation. The premium
+// Wraith used to pay for it up to ~40× per frame (echo clone + double-exposure
+// ghosts + main body, each with several glowing fills/strokes) and then again
+// for every homing bolt (per-bullet gradient + shadowBlur, and the Wraith
+// fields roughly twice the bullets for twice as long). These helpers bake the
+// glow into an offscreen canvas once and blit it — same visuals, a fraction of
+// the per-frame cost. Sprites are supersampled 2× so rotated blits stay crisp.
+
+const SPRITE_SCALE = 2;
+const SPRITE_CACHE_LIMIT = 128;
+
+function makeSprite(w: number, h: number): [HTMLCanvasElement, CanvasRenderingContext2D] {
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.ceil(w * SPRITE_SCALE));
+  canvas.height = Math.max(1, Math.ceil(h * SPRITE_SCALE));
+  const sctx = canvas.getContext("2d")!;
+  sctx.scale(SPRITE_SCALE, SPRITE_SCALE);
+  return [canvas, sctx];
+}
+
+function blitSprite(ctx: CanvasRenderingContext2D, sprite: HTMLCanvasElement, w: number, h: number) {
+  ctx.drawImage(sprite, -w / 2, -h / 2, w, h);
+}
+
+function cacheSprite(cache: Map<string, HTMLCanvasElement>, key: string, w: number, h: number, paint: (sctx: CanvasRenderingContext2D) => void): HTMLCanvasElement {
+  if (cache.size >= SPRITE_CACHE_LIMIT) cache.clear();
+  const [canvas, sctx] = makeSprite(w, h);
+  paint(sctx);
+  cache.set(key, canvas);
+  return canvas;
 }
 
 // ─── Void Guard omen ──────────────────────────────────────────────────────────
@@ -84,7 +118,43 @@ export function drawBackground(ctx: CanvasRenderingContext2D, frame: number) {
 // ─── Player ───────────────────────────────────────────────────────────────────
 // The Wraith's signature silhouette: a slim void dagger with membrane wings
 // and a pulsing core. Distinct from the shared fighter hull of the other ships.
-function drawWraithBody(ctx: CanvasRenderingContext2D, frame: number, phased: boolean) {
+// The static glowing geometry (wings/hull/cockpit) is baked into offscreen
+// sprites per variant — the ship renders up to 4 body copies per frame (echo
+// clone + phased double-exposure ghosts + main hull), which with live
+// shadowBlur was the Wraith's single biggest frame cost.
+const WRAITH_SPRITE_SIZE = 120; // body spans +/-34 px plus shadowBlur bleed
+const wraithBodySprites = new Map<string, HTMLCanvasElement>();
+const wraithCoreSprites = new Map<string, HTMLCanvasElement>();
+
+function getWraithBodySprite(phased: boolean): HTMLCanvasElement {
+  const key = phased ? "phased" : "idle";
+  const cached = wraithBodySprites.get(key);
+  if (cached) return cached;
+  return cacheSprite(wraithBodySprites, key, WRAITH_SPRITE_SIZE, WRAITH_SPRITE_SIZE, sctx => {
+    sctx.translate(WRAITH_SPRITE_SIZE / 2, WRAITH_SPRITE_SIZE / 2);
+    drawWraithBodyShapes(sctx, phased);
+  });
+}
+
+function getWraithCoreSprite(phased: boolean): HTMLCanvasElement {
+  const key = phased ? "phased" : "idle";
+  const cached = wraithCoreSprites.get(key);
+  if (cached) return cached;
+  const size = 24;
+  return cacheSprite(wraithCoreSprites, key, size, size, sctx => {
+    sctx.translate(size / 2, size / 2);
+    const g = sctx.createRadialGradient(0, 0, 0, 0, 0, size / 2);
+    g.addColorStop(0, "#ffffff");
+    g.addColorStop(0.3, phased ? "#ffffff" : "#f0abfc");
+    g.addColorStop(1, "rgba(240,171,252,0)");
+    sctx.fillStyle = g;
+    sctx.beginPath();
+    sctx.arc(0, 0, size / 2, 0, Math.PI * 2);
+    sctx.fill();
+  });
+}
+
+function drawWraithBodyShapes(ctx: CanvasRenderingContext2D, phased: boolean) {
   const main = phased ? "#f0abfc" : "#e879f9";
 
   // Membrane wings
@@ -126,8 +196,7 @@ function drawWraithBody(ctx: CanvasRenderingContext2D, frame: number, phased: bo
   ctx.lineTo(-9, 2);
   ctx.lineTo(-6.5, -20);
   ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
+  ctx.fill(); ctx.stroke();
 
   // Cockpit
   ctx.shadowBlur = 8;
@@ -135,25 +204,42 @@ function drawWraithBody(ctx: CanvasRenderingContext2D, frame: number, phased: bo
   ctx.beginPath();
   ctx.ellipse(0, -11, 4, 9.5, 0, 0, Math.PI * 2);
   ctx.fill();
-
-  // Pulsing void core
-  const coreR = 3 + Math.sin(frame * 0.3) * 1.3;
-  ctx.shadowBlur = 12;
-  ctx.fillStyle = phased ? "#ffffff" : "#f0abfc";
-  ctx.beginPath();
-  ctx.arc(0, 6, Math.max(1.5, coreR), 0, Math.PI * 2);
-  ctx.fill();
+  ctx.shadowBlur = 0;
 }
 
-// Arena-wide void tint while the Wraith's phase window is open.
+function drawWraithBody(ctx: CanvasRenderingContext2D, frame: number, phased: boolean) {
+  blitSprite(ctx, getWraithBodySprite(phased), WRAITH_SPRITE_SIZE, WRAITH_SPRITE_SIZE);
+  // Pulsing void core — a cached glow sprite scaled by the pulse instead of a
+  // live shadowBlur'd circle.
+  const coreR = 3 + Math.sin(frame * 0.3) * 1.3;
+  const glow = 8 + Math.max(1.5, coreR) * 3;
+  ctx.drawImage(getWraithCoreSprite(phased), -glow / 2, 6 - glow / 2, glow, glow);
+}
+
+// Arena-wide void tint while the Wraith's phase window is open. The gradient
+// is baked once at the maximum possible alpha and blitted with a scaled
+// globalAlpha — compositing is linear in source alpha, so the result is
+// identical to the old per-frame full-screen gradient at a fraction of the cost.
+const VOID_VIGNETTE_MAX_ALPHA = 0.12; // max of (0.07 + 0.05·sin) × min(1, intensity+0.45)
+let vignetteSprite: HTMLCanvasElement | null = null;
+
 export function drawVoidPhaseVignette(ctx: CanvasRenderingContext2D, frame: number, intensity: number) {
-  if (renderPerformanceTier === 0) return; // per-frame gradient: too dear for low-end
+  if (renderPerformanceTier === 0) return; // full-screen tint: too dear for low-end
+  if (!vignetteSprite) {
+    vignetteSprite = document.createElement("canvas");
+    vignetteSprite.width = W;
+    vignetteSprite.height = H;
+    const sctx = vignetteSprite.getContext("2d")!;
+    const g = sctx.createRadialGradient(W / 2, H / 2, H * 0.3, W / 2, H / 2, H * 0.72);
+    g.addColorStop(0, "rgba(168,85,247,0)");
+    g.addColorStop(1, `rgba(192,38,211,${VOID_VIGNETTE_MAX_ALPHA})`);
+    sctx.fillStyle = g;
+    sctx.fillRect(0, 0, W, H);
+  }
   const a = (0.07 + 0.05 * Math.sin(frame * 0.35)) * Math.min(1, intensity + 0.45);
-  const g = ctx.createRadialGradient(W / 2, H / 2, H * 0.3, W / 2, H / 2, H * 0.72);
-  g.addColorStop(0, "rgba(168,85,247,0)");
-  g.addColorStop(1, `rgba(192,38,211,${a.toFixed(3)})`);
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, W, H);
+  ctx.globalAlpha = a / VOID_VIGNETTE_MAX_ALPHA;
+  ctx.drawImage(vignetteSprite, 0, 0);
+  ctx.globalAlpha = 1;
 }
 
 export function drawPlayer(ctx: CanvasRenderingContext2D, state: PlayerState, frame: number) {
@@ -807,39 +893,74 @@ function drawBossOmega(ctx: CanvasRenderingContext2D, fill: string, stroke: stri
 }
 
 // ─── Bullets ──────────────────────────────────────────────────────────────────
+// Player bullets used to pay a live createLinearGradient + shadowBlur(12) each,
+// every frame. The Wraith's twin homing stream fields roughly twice the bullets
+// for twice as long, so each bullet is now a cached glow sprite (keyed by
+// color/size/tier, supersampled 2× and rotated on blit).
+const bulletSprites = new Map<string, HTMLCanvasElement>();
+
+function getPlayerBulletSprite(color: string, size: number): HTMLCanvasElement {
+  const key = `p|${renderPerformanceTier}|${color}|${size.toFixed(1)}`;
+  const cached = bulletSprites.get(key);
+  if (cached) return cached;
+  const len = size * (renderPerformanceTier === 0 ? 2.2 : 3.5);
+  const pad = renderPerformanceTier === 2 ? 16 : renderPerformanceTier === 1 ? 8 : 2;
+  const w = size * 2 + pad * 2;
+  const h = len * 2 + pad * 2;
+  return cacheSprite(bulletSprites, key, w, h, sctx => {
+    sctx.translate(w / 2, h / 2);
+    if (renderPerformanceTier === 0) {
+      sctx.fillStyle = color;
+    } else {
+      sctx.shadowBlur = renderPerformanceTier === 1 ? 4 : 12;
+      sctx.shadowColor = color;
+      const g = sctx.createLinearGradient(0, -len, 0, len * 0.5);
+      g.addColorStop(0, "#fff");
+      g.addColorStop(0.3, color);
+      g.addColorStop(1, "rgba(0,0,0,0)");
+      sctx.fillStyle = g;
+    }
+    sctx.beginPath();
+    sctx.ellipse(0, 0, size, len, 0, 0, Math.PI * 2);
+    sctx.fill();
+  });
+}
+
+function getEnemyBulletSprite(color: string, size: number): HTMLCanvasElement {
+  const key = `e|${renderPerformanceTier}|${color}|${size.toFixed(1)}`;
+  const cached = bulletSprites.get(key);
+  if (cached) return cached;
+  const pad = renderPerformanceTier === 2 ? 12 : renderPerformanceTier === 1 ? 6 : 2;
+  const w = size * 2 + pad * 2;
+  return cacheSprite(bulletSprites, key, w, w, sctx => {
+    sctx.translate(w / 2, w / 2);
+    if (renderPerformanceTier > 0) {
+      sctx.shadowBlur = renderPerformanceTier === 1 ? 4 : 8;
+      sctx.shadowColor = color;
+    }
+    sctx.fillStyle = color;
+    sctx.beginPath();
+    sctx.arc(0, 0, size, 0, Math.PI * 2);
+    sctx.fill();
+    sctx.fillStyle = "#fff";
+    sctx.globalAlpha = 0.6;
+    sctx.beginPath();
+    sctx.arc(0, 0, size * 0.4, 0, Math.PI * 2);
+    sctx.fill();
+  });
+}
+
 export function drawBullet(ctx: CanvasRenderingContext2D, b: Bullet) {
   ctx.save();
   ctx.translate(b.pos.x, b.pos.y);
-  ctx.shadowBlur = renderPerformanceTier === 0 ? 0 : renderPerformanceTier === 1 ? 4 : (b.fromPlayer ? 12 : 8);
-  ctx.shadowColor = b.color;
-
   if (b.fromPlayer) {
-    const len = b.size * (renderPerformanceTier === 0 ? 2.2 : 3.5);
     const angle = Math.atan2(b.vel.y, b.vel.x);
     ctx.rotate(angle + Math.PI / 2);
-    if (renderPerformanceTier === 0) {
-      ctx.fillStyle = b.color;
-    } else {
-      const g = ctx.createLinearGradient(0, -len, 0, len * 0.5);
-      g.addColorStop(0, "#fff");
-      g.addColorStop(0.3, b.color);
-      g.addColorStop(1, "rgba(0,0,0,0)");
-      ctx.fillStyle = g;
-    }
-    ctx.beginPath();
-    ctx.ellipse(0, 0, b.size, len, 0, 0, Math.PI * 2);
-    ctx.fill();
+    const sprite = getPlayerBulletSprite(b.color, b.size);
+    blitSprite(ctx, sprite, sprite.width / SPRITE_SCALE, sprite.height / SPRITE_SCALE);
   } else {
-    ctx.fillStyle = b.color;
-    ctx.beginPath();
-    ctx.arc(0, 0, b.size, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = "#fff";
-    ctx.globalAlpha = 0.6;
-    ctx.beginPath();
-    ctx.arc(0, 0, b.size * 0.4, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.globalAlpha = 1;
+    const sprite = getEnemyBulletSprite(b.color, b.size);
+    blitSprite(ctx, sprite, sprite.width / SPRITE_SCALE, sprite.height / SPRITE_SCALE);
   }
   ctx.restore();
 }

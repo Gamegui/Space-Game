@@ -1024,6 +1024,77 @@ export function drawBullet(ctx: CanvasRenderingContext2D, b: Bullet) {
   ctx.restore();
 }
 
+// ─── Мифические сущности (векторная отрисовка, без частиц) ───────────────────
+/** 🌌 Сингулярность «Пожиратель Звёзд»: тёмное ядро с вращающимися дугами. */
+export function drawSingularity(ctx: CanvasRenderingContext2D, pos: { x: number; y: number }, frame: number, progress: number) {
+  ctx.save();
+  ctx.translate(pos.x, pos.y);
+  const r = 26 + progress * 14;
+  // Гравитационная воронка.
+  const g = ctx.createRadialGradient(0, 0, 2, 0, 0, 90);
+  g.addColorStop(0, "rgba(0,0,0,0.9)");
+  g.addColorStop(0.5, "rgba(88,28,135,0.35)");
+  g.addColorStop(1, "rgba(88,28,135,0)");
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(0, 0, 90, 0, Math.PI * 2); ctx.fill();
+  // Вращающиеся дуги захвата.
+  ctx.strokeStyle = `rgba(196,132,252,${0.5 + progress * 0.4})`;
+  ctx.lineWidth = 2;
+  for (let i = 0; i < 3; i++) {
+    ctx.beginPath();
+    ctx.arc(0, 0, r + i * 10, frame * 0.04 + i * 2.1, frame * 0.04 + i * 2.1 + 1.9);
+    ctx.stroke();
+  }
+  // Ядро.
+  ctx.fillStyle = "#000";
+  ctx.beginPath(); ctx.arc(0, 0, r * 0.55, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = "#c084fc";
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** 👁 Разрывы Пустоты: пульсирующие кольца-порталы. */
+export function drawVoidFractures(ctx: CanvasRenderingContext2D, fractures: { pos: { x: number; y: number }; life: number }[], frame: number) {
+  for (const f of fractures) {
+    const alpha = Math.min(1, f.life / 60);
+    const pulse = 1 + Math.sin(frame * 0.2 + f.pos.x) * 0.15;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = "#e879f9";
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(f.pos.x, f.pos.y, 16 * pulse, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = "rgba(232,121,249,0.4)";
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(f.pos.x, f.pos.y, 24 * pulse, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+/** ☀️/🔥 Свечение мификов на корпусе: ядро сверхновой и режим перегрузки. */
+export function drawMythicAuras(ctx: CanvasRenderingContext2D, state: PlayerState, frame: number) {
+  // Ядро сверхновой: эскалация свечения по заряду (25/50/75/100%).
+  if (state.novaCore > 0) {
+    const frac = state.novaCore / 100;
+    const flicker = state.novaCore >= 100 ? 1 + Math.sin(frame * 0.5) * 0.25 : 1;
+    const r = (20 + frac * 46) * flicker;
+    const g = ctx.createRadialGradient(0, 0, 4, 0, 0, r);
+    g.addColorStop(0, `rgba(253,224,71,${0.16 + frac * 0.34})`);
+    g.addColorStop(1, "rgba(253,224,71,0)");
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
+  }
+  // ABSOLUTE OVERDRIVE: оранжевое пламя реактора.
+  if (state.overdriveTimer > 0) {
+    const r = 60 + Math.sin(frame * 0.6) * 8;
+    const g = ctx.createRadialGradient(0, 0, 6, 0, 0, r);
+    g.addColorStop(0, "rgba(251,146,60,0.4)");
+    g.addColorStop(1, "rgba(251,146,60,0)");
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
 // ─── Particles ────────────────────────────────────────────────────────────────
 // Живой shadowBlur на каждую частицу (до 1000 за кадр) и был вторым источником
 // фриза после массовых взрывов: свечение теперь запечено в спрайт по цвету и

@@ -51,6 +51,8 @@ export interface Bullet {
   hitList?: Enemy[];
   /** Оставшиеся кадры полёта (undefined = без ограничения). */
   life?: number;
+  /** Разрывы Пустоты: сколько раз снаряд телепортировался (макс. 2). */
+  voidJumps?: number;
 }
 
 export interface Enemy {
@@ -152,7 +154,7 @@ export interface UpgradeDef {
   name: string;
   description: string;
   icon: string;
-  rarity: "common" | "rare" | "epic" | "legendary";
+  rarity: "common" | "rare" | "epic" | "legendary" | "mythic";
   category: string;
   maxLevel: number;
   apply: (state: PlayerState, level: number) => void;
@@ -237,6 +239,33 @@ export interface PlayerState {
   voidHunger: boolean;
   /** «ПРИЗРАЧНЫЙ АРСЕНАЛ» (синергия Немезиды): усиление снарядов в фазе. */
   ghostArsenal: boolean;
+  // ─── МИФИЧЕСКИЕ УЛУЧШЕНИЯ (mythic tier) ────────────────────────────────────
+  /** ☀️ Сердце Сверхновой: заряд звёздного ядра 0..100 (счётчик, без частиц). */
+  novaCore: number;
+  /** Задержка перед взрывом сверхновой (кадры). */
+  novaFuseTimer: number;
+  /** 🌌 Пожиратель Звёзд: заряд гравитационного коллапса 0..50. */
+  collapseCharge: number;
+  /** ⚡ Судный Разряд: гнев бури 0..10 (крит-заряды). */
+  wrath: number;
+  /** 🔥 Абсолютный Реактор: перегрузка 0..100 (%). */
+  overdriveCharge: number;
+  /** Кадры активного режима ABSOLUTE OVERDRIVE. */
+  overdriveTimer: number;
+  /** Кадры восстановления реактора (заряд не копится). */
+  overdriveCooldown: number;
+  /** Кадр последнего выстрела — для непрерывности стрельбы. */
+  lastShotFrame: number;
+  /** 🛰️ Последний Флот: заряд армадного канала 0..100. */
+  fleetCharge: number;
+  /** Кадры синхронного залпа FINAL FLEET SALVO. */
+  fleetSalvoTimer: number;
+  /** Накопления эффективности залпа (0..10). */
+  fleetStacks: number;
+  /** 👁️ Конец Материи: энтропия пустоты 0..100. */
+  entropy: number;
+  /** Кадры действия КОНЦА МАТЕРИИ. */
+  voidTimer: number;
   blackHole: boolean;
   blackHoleTimer: number;
   blackHoleCooldown: number;

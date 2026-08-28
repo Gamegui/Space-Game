@@ -311,10 +311,43 @@ export const ALL_UPGRADES: UpgradeDef[] = [
     description: "Абсолютная мощь: +100% ко всему наносимому урону",
     apply: (s, _l) => { s.bulletDamage *= 2; s.auraDamage *= 2; },
   },
+  // ═══ МИФИЧЕСКИЙ ТИР (rarity: mythic) ═══
+  // Выпадают только через rollMythicDrop (шанс ~0.5% после 8-го уровня,
+  // максимум 2 за забег) и никогда не входят в обычный пул выбора.
+  {
+    id: "mythic_nova", name: "Звёздный Пожиратель «Сердце Сверхновой»", icon: "☀️", rarity: "mythic", category: "миф", maxLevel: 1,
+    description: "Убийства заряжают Звёздное Ядро (0/100). На полном заряде — СВЕРХНОВАЯ: волна стирает слабых, элиты и мини-боссы получают огромный урон, боссы — до 6% макс. HP.",
+    apply: (s, _l) => { s.novaCore = 0; s.novaFuseTimer = 0; },
+  },
+  {
+    id: "mythic_singularity", name: "Сингулярность «Пожиратель Звёзд»", icon: "🌌", rarity: "mythic", category: "миф", maxLevel: 1,
+    description: "Убийства копят Коллапс (0/50). На полном заряде рождается сингулярность: стягивает врагов, поглощает ваши снаряды — и схлопывается чудовищным взрывом.",
+    apply: (s, _l) => { s.collapseCharge = 0; },
+  },
+  {
+    id: "mythic_judgement", name: "Бог Грома «Судный Разряд»", icon: "⚡", rarity: "mythic", category: "миф", maxLevel: 1,
+    description: "Криты заряжают Гнев Бури (0/10). Десятый крит высвобождает СУДНЫЙ РАЗРЯД: усиляющуюся молнию, ищущую до 16 целей и растущую на 5% за каждое уничтожение.",
+    apply: (s, _l) => { s.wrath = 0; },
+  },
+  {
+    id: "mythic_overdrive", name: "Абсолютный Реактор «Перегрузка»", icon: "🔥", rarity: "mythic", category: "миф", maxLevel: 1,
+    description: "Непрерывная стрельба копит Перегрузку (0–100%). На 100% — 5 секунд ABSOLUTE OVERDRIVE: шквал огня; убийства продлевают режим (до 10 с), затем реактор остывает.",
+    apply: (s, _l) => { s.overdriveCharge = 0; s.overdriveTimer = 0; s.overdriveCooldown = 0; s.lastShotFrame = -9999; },
+  },
+  {
+    id: "mythic_fleet", name: "Армада «Последний Флот»", icon: "🛰️", rarity: "mythic", category: "миф", maxLevel: 1,
+    description: "FLEET LINK: спутники и дроны бьют по общей приоритетной цели, их атаки копят командный канал (0/100). Залп FINAL FLEET SALVO — синхронный удар всей армады.",
+    apply: (s, _l) => { s.fleetCharge = 0; s.fleetSalvoTimer = 0; s.fleetStacks = 0; },
+  },
+  {
+    id: "mythic_void", name: "Абсолютная Пустота «Конец Материи»", icon: "👁️", rarity: "mythic", category: "миф", maxLevel: 1,
+    description: "Бой копит Энтропию (0/100). На полном заряде — 4 c КОНЦА МАТЕРИИ: враги замедлены и уязвимы, снаряды пробивают и наводятся, а убитые оставляют разрывы-порталы для ваших снарядов.",
+    apply: (s, _l) => { s.entropy = 0; s.voidTimer = 0; },
+  },
 ];
 
 export function calculatePlayerPower(state: PlayerState): number {
-  const rarityPoints = { common: 1, rare: 2.5, epic: 5, legendary: 9 } as const;
+  const rarityPoints = { common: 1, rare: 2.5, epic: 5, legendary: 9, mythic: 18 } as const;
   let upgradePoints = 0;
   for (const owned of state.upgrades) {
     const definition = ALL_UPGRADES.find(upgrade => upgrade.id === owned.id);
@@ -370,7 +403,7 @@ export function getUpgradeLevel(state: PlayerState, id: string): number {
 
 export function canUpgrade(state: PlayerState, def: UpgradeDef): boolean {
   const lvl = getUpgradeLevel(state, def.id);
-  const rarityLevelGate = { common: 1, rare: 3, epic: 7, legendary: 12 } as const;
+  const rarityLevelGate = { common: 1, rare: 3, epic: 7, legendary: 12, mythic: 9999 } as const;
   return lvl < def.maxLevel && state.level >= rarityLevelGate[def.rarity];
 }
 
@@ -384,7 +417,8 @@ const VOID_UPGRADES = new Set([
 export function rollUpgrades(state: PlayerState, count = 3, excludeIds: string[] = []): UpgradeDef[] {
   const excluded = new Set(excludeIds);
   const available = ALL_UPGRADES.filter(u =>
-    canUpgrade(state, u)
+    u.rarity !== "mythic" // мифики выпадают только через rollMythicDrop
+    && canUpgrade(state, u)
     && !excluded.has(u.id)
     // «Конденсатор щита» не имеет смысла без щита (сам «Энергетический щит»
     // и создающие щит предметы остаются в пуле).
@@ -459,7 +493,7 @@ export function rollPremiumUpgradeChoices(state: PlayerState, count = 3, exclude
     bonus = pickPremiumHighRarity(state, excluded);
   }
   if (!bonus) return picked;
-  const order = { common: 0, rare: 1, epic: 2, legendary: 3 } as const;
+  const order = { common: 0, rare: 1, epic: 2, legendary: 3, mythic: 4 } as const;
   let worst = 0;
   for (let i = 1; i < picked.length; i++) {
     if (order[picked[i].rarity] < order[picked[worst].rarity]) worst = i;

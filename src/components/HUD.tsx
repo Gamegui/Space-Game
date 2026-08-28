@@ -1,5 +1,6 @@
 import type { PlayerState } from "../game/types";
 import { SYNERGIES } from "../game/synergies";
+import { hasMythic } from "../game/mythics";
 
 interface Props {
   player: PlayerState;
@@ -74,6 +75,33 @@ export default function HUD({
                 />
               </div>
             </div>
+          )}
+          {/* ✦ Шкалы мифических сил */}
+          {hasMythic(player, "mythic_nova") && (
+            <MythicMeter icon="☀️" label="ЗВЁЗДНОЕ ЯДРО" value={Math.floor(player.novaCore)} max={100}
+              color="from-amber-300 to-yellow-500" critical={player.novaCore >= 100} />
+          )}
+          {hasMythic(player, "mythic_singularity") && (
+            <MythicMeter icon="🌌" label="КОЛЛАПС" value={Math.floor(player.collapseCharge)} max={50}
+              color="from-violet-400 to-purple-600" />
+          )}
+          {hasMythic(player, "mythic_judgement") && (
+            <MythicMeter icon="⚡" label="ГНЕВ БУРИ" value={player.wrath} max={10}
+              color="from-yellow-200 to-amber-400" critical={player.wrath >= 10} />
+          )}
+          {hasMythic(player, "mythic_overdrive") && (
+            <MythicMeter icon="🔥" label={player.overdriveTimer > 0 ? "OVERDRIVE!" : player.overdriveCooldown > 0 ? "ОСТЫВАНИЕ" : "ПЕРЕГРУЗКА"}
+              value={player.overdriveTimer > 0 ? Math.round(player.overdriveTimer / 60 * 10) / 10 : Math.floor(player.overdriveCharge)}
+              max={player.overdriveTimer > 0 ? 10 : 100} unit={player.overdriveTimer > 0 ? "с" : "%"}
+              color="from-orange-300 to-red-500" critical={player.overdriveTimer > 0} />
+          )}
+          {hasMythic(player, "mythic_fleet") && (
+            <MythicMeter icon="🛰️" label="АРМАДНЫЙ КАНАЛ" value={Math.floor(player.fleetCharge)} max={100}
+              color="from-sky-300 to-blue-500" critical={player.fleetSalvoTimer > 0} />
+          )}
+          {hasMythic(player, "mythic_void") && (
+            <MythicMeter icon="👁" label="ЭНТРОПИЯ ПУСТОТЫ" value={Math.floor(player.entropy)} max={100}
+              color="from-fuchsia-300 to-purple-600" critical={player.voidTimer > 0} />
           )}
           {/* XP */}
           <div>
@@ -226,5 +254,25 @@ export default function HUD({
         </div>
       )}
     </>
+  );
+}
+
+/** ✦ Шкала мифической силы: компактная полоса с пороговым свечением. */
+function MythicMeter({ icon, label, value, max, color, unit = "", critical = false }: {
+  icon: string; label: string; value: number; max: number; color: string; unit?: string; critical?: boolean;
+}) {
+  return (
+    <div className={critical ? "animate-pulse" : ""}>
+      <div className="flex justify-between text-[10px] font-mono mb-0.5">
+        <span className={critical ? "text-amber-200 font-bold" : "text-amber-400/90 font-bold"}>{icon} {label}</span>
+        <span className="text-amber-200/80 font-bold">{Math.floor(value)}/{max}{unit}</span>
+      </div>
+      <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden border border-amber-900/50">
+        <div
+          className={`h-full rounded-full bg-gradient-to-r ${color} transition-all duration-200`}
+          style={{ width: `${Math.min(100, (value / max) * 100)}%` }}
+        />
+      </div>
+    </div>
   );
 }

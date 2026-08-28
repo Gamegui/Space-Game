@@ -30,6 +30,8 @@ function makeObjects(player: ReturnType<typeof makeInitialPlayer>): GameObjects 
     routeXpMultiplier: 1, routeScoreMultiplier: 1, activeRoute: "warzone", routeEffect: "none",
     performanceTier: 2, performanceAuto: false, waveStartedFrame: 0,
     guardSpawnedThisWave: false, fastClearStreak: 0, guardEventActive: false,
+  singularity: null,
+  voidFractures: [],
   };
 }
 
@@ -199,3 +201,61 @@ test("билд §14-2/3: максимальный multishot + пробитие �
 function elapsedOf(started: number): number {
   return performance.now() - started;
 }
+
+test("ТЗ mythic §18: все 6 мификов + максимальный билд — бюджеты и стабильность", () => {
+  const player = makeInitialPlayer("void_wraith");
+  player.level = 45;
+  for (const id of [
+    "damage_up", "big_bullets", "rapid_fire", "piercing", "explosive", "homing",
+    "double_shot", "bullet_hail", "spread_shot", "lightning", "chain_lightning",
+    "crit", "satellite_1", "drone_1", "drone_link", "drone_swarm", "aura",
+    "shield", "life_steal", "magnet", "bullet_speed", "phase_discharge",
+    "singularity_rounds", "multi_explosion", "megaton",
+    // ВСЕ ШЕСТЬ МИФИКОВ
+    "mythic_nova", "mythic_singularity", "mythic_judgement",
+    "mythic_overdrive", "mythic_fleet", "mythic_void",
+  ]) maxOut(player, id);
+  unlockAvailableSynergies(player);
+  checkEvolutions(player);
+  player.voidSouls = VOID_SOUL_MAX;
+  player.hp = player.maxHp;
+  player.critChance = 1; // Судный Разряд работает постоянно
+  player.entropy = 90;   // Пустота активируется почти сразу
+  player.novaCore = 90;  // сверхновая на подходе
+  player.collapseCharge = 48;
+
+  const obj = makeObjects(player);
+  const types = ["scout", "fighter", "bomber", "tank", "spinner", "charger", "healer", "artillery"] as const;
+  const pack = () => {
+    while (obj.enemies.length < 60) {
+      const e = spawnEnemy(types[obj.enemies.length % types.length], 10);
+      e.pos = { x: 100 + Math.random() * 760, y: 80 + Math.random() * 420 };
+      obj.enemies.push(e);
+    }
+  };
+  pack();
+  const started = performance.now();
+  let novaFired = false, singularitySpawned = false, voidActive = false, salvo = false;
+  for (let frame = 0; frame < 900; frame++) {
+    stepGame(obj, { ...makeInput(), frame });
+    if (frame % 30 === 0) pack();
+    if (player.novaCore === 0 && frame > 30) novaFired = true;
+    if (obj.singularity) singularitySpawned = true;
+    if (player.voidTimer > 0) voidActive = true;
+    if (player.fleetSalvoTimer > 0) salvo = true;
+    const stats = particleDebugStats();
+    assert.ok(stats.active <= PARTICLE_LIMITS.high, `кадр ${frame}: частиц ${stats.active}`);
+    assert.ok(stats.spawnedThisFrame <= 80, `кадр ${frame}: за кадр ${stats.spawnedThisFrame}`);
+    assert.ok(obj.voidFractures.length <= 8, `разрывов ${obj.voidFractures.length}`);
+    assert.ok(obj.bullets.length <= 1500, `снарядов ${obj.bullets.length}`);
+    assert.ok(Number.isFinite(player.hp) && Number.isFinite(player.pos.x));
+  }
+  const perStep = (performance.now() - started) / 900;
+  // Все мифические события действительно срабатывают в стрессе.
+  assert.ok(novaFired, "сверхновая должна сработать");
+  assert.ok(singularitySpawned, "сингулярность должна появиться");
+  assert.ok(voidActive, "пустота должна активироваться");
+  assert.ok(salvo, "залп флота должен произойти");
+  assert.ok(perStep < 10, `мс/шаг ${perStep.toFixed(2)}`);
+  console.log(`    mythic stress: ${perStep.toFixed(2)} мс/шаг, убийств ${player.kills}, пул частиц ${particleDebugStats().pooled}`);
+});

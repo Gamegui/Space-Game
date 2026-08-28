@@ -8,6 +8,7 @@ import type { EnemyType } from "./types";
 import { getUpgradeLevel } from "./upgrades";
 import { audio } from "./audio";
 import { applyShipClassStats } from "./shipClasses";
+import { hasMythic } from "./mythics";
 
 export const W = 960;
 export const H = 720;
@@ -90,6 +91,13 @@ export function makeInitialPlayer(shipClass: ShipClassId = "interceptor"): Playe
     voidSouls: 0, voidSoulIdleTimer: 0,
     voidEchoTimer: 0, voidEchoPos: { x: W / 2, y: H - 100 },
     voidHunger: false, ghostArsenal: false,
+    // МИФИКИ
+    novaCore: 0, novaFuseTimer: 0,
+    collapseCharge: 0,
+    wrath: 0,
+    overdriveCharge: 0, overdriveTimer: 0, overdriveCooldown: 0, lastShotFrame: -9999,
+    fleetCharge: 0, fleetSalvoTimer: 0, fleetStacks: 0,
+    entropy: 0, voidTimer: 0,
     blackHole: false, blackHoleTimer: 0, blackHoleCooldown: 0,
     nukeCharges: 1,
     nukeCooldown: 0,
@@ -467,6 +475,135 @@ function startVoidPhase(player: PlayerState, particles: Particle[]) {
   audio.playVoidBlink();
 }
 
+// ─── Механики мификов ─────────────────────────────────────────────────────────
+const NOVA_MAX = 100;
+const NOVA_FUSE = 45;          // задержка на полном заряде (0.75 c)
+const NOVA_RADIUS = 340;
+const COLLAPSE_MAX = 50;
+const SINGULARITY_DURATION = 240; // 4 c
+const SINGULARITY_RADIUS = 190;
+const WRATH_MAX = 10;
+const JUDGEMENT_TARGETS = 16;
+const JUDGEMENT_RADIUS = 320;
+const OVERDRIVE_ACTIVE = 300;  // 5 c
+const OVERDRIVE_MAX = 600;     // 10 c абсолютный потолок
+const OVERDRIVE_COOLDOWN = 300;
+const OVERDRIVE_CHARGE_RATE = 0.4;   // за кадр активной стрельбы
+const OVERDRIVE_DECAY_RATE = 0.55;   // за кадр простоя
+const FLEET_CHARGE_MAX = 100;
+const FLEET_SALVO_DURATION = 90;    // 1.5 c
+const ENTROPY_MAX = 100;
+const VOID_DURATION = 240;    // 4 c
+const VOID_FRACTURE_MAX = 8;
+const VOID_FRACTURE_LIFE = 180;  // 3 c
+const VOID_TELEPORT_MAX = 2;
+
+/** Заряды мификов от убийства (счётчики, без физических частиц — ТЗ §11/§17). */
+function onMythicKill(obj: GameObjects, e: Enemy): void {
+  const { player, floatingTexts } = obj;
+  // ☀️ Звёздное ядро: обычный +1, элита +5, гвардия/мини-босс +10, босс +25.
+  chargeNova(player, e.isBoss ? 25 : (e.guardRole ? 10 : (e.isElite ? 5 : 1)));
+  // 🌌 Гравитационный коллапс: каждый враг +1; на 50 — сингулярность в центре
+  // скопления врагов (максимум одна активная).
+  if (hasMythic(player, "mythic_singularity") && !obj.singularity) {
+    player.collapseCharge = Math.min(COLLAPSE_MAX, player.collapseCharge + 1);
+    if (player.collapseCharge >= COLLAPSE_MAX) {
+      player.collapseCharge = 0;
+      let cx = 0, cy = 0, count = 0;
+      for (const enemy of obj.enemies) {
+        if (enemy.hp <= 0 || enemy.isBoss) continue;
+        cx += enemy.pos.x; cy += enemy.pos.y; count++;
+      }
+      if (count > 0) {
+        obj.singularity = { pos: { x: cx / count, y: cy / count }, timer: SINGULARITY_DURATION, maxTimer: SINGULARITY_DURATION, absorbed: player.bulletDamage * 12 };
+        floatingTexts.push(makeFloatingText(obj.singularity.pos, "✦ ПОЖИРАТЕЛЬ ЗВЁЗД ✦", "#a78bfa", true));
+        audio.playTimeSlow();
+      }
+    }
+  }
+  // 👁️ Энтропия: убийство +2; во время Пустоты погибшие оставляют разрыв.
+  if (hasMythic(player, "mythic_void")) {
+    player.entropy = Math.min(ENTROPY_MAX, player.entropy + 2);
+    if (player.voidTimer > 0 && obj.voidFractures.length < VOID_FRACTURE_MAX) {
+      obj.voidFractures.push({ pos: { x: e.pos.x, y: e.pos.y }, life: VOID_FRACTURE_LIFE });
+    }
+  }
+  // 🔥 Перегрузка: убийства продлевают режим (+0.15 c, потолок 10 c).
+  if (player.overdriveTimer > 0) {
+    player.overdriveTimer = Math.min(OVERDRIVE_MAX, player.overdriveTimer + 9);
+  }
+  // 🛰️ Накопления эффективности залпа (макс. 10), сбрасываются после залпа.
+  if (player.fleetSalvoTimer > 0) {
+    player.fleetStacks = Math.min(10, player.fleetStacks + 1);
+  }
+}
+
+/** ☀️ МИФИК «Сердце Сверхновой»: заряд от убийств (счётчик, без частиц). */
+function chargeNova(player: PlayerState, value: number): void {
+  if (!hasMythic(player, "mythic_nova") || player.novaCore >= NOVA_MAX) return;
+  player.novaCore = Math.min(NOVA_MAX, player.novaCore + value);
+  if (player.novaCore >= NOVA_MAX) player.novaFuseTimer = NOVA_FUSE;
+}
+
+/** Взрыв сверхновой: ОДИН большой эффект, урон по типам целей, без цепочек. */
+function triggerSupernova(obj: GameObjects): void {
+  const { player, enemies, particles, floatingTexts, explosions } = obj;
+  // Урон: слабые обычные умирают, элиты/мини-боссы — огромный, боссы — % макс. HP.
+  for (const e of enemies) {
+    if (e.hp <= 0) continue;
+    const dx = e.pos.x - player.pos.x, dy = e.pos.y - player.pos.y;
+    if (dx * dx + dy * dy > NOVA_RADIUS * NOVA_RADIUS) continue;
+    let dmg: number;
+    if (e.isBoss) dmg = e.maxHp * 0.06;
+    else if (e.guardRole) dmg = player.bulletDamage * 40;
+    else if (e.isElite) dmg = player.bulletDamage * 25;
+    else dmg = player.bulletDamage * 25; // обычные слабые умирают от масштаба
+    damageEnemy(e, dmg, 0, enemies);
+    player.stats.damageDealt += dmg;
+  }
+  // Визуал: одно большое кольцо + бюджетный залп частиц (лимиты соблюдаются).
+  explosions.push({ id: uid(), pos: { ...player.pos }, radius: NOVA_RADIUS, progress: 0 });
+  particles.push(...makeBurst(player.pos, "#fde047", 26, true, 3));
+  particles.push(...makeBurst(player.pos, "#ffffff", 14, true, 2));
+  floatingTexts.push(makeFloatingText(player.pos, "✦ СВЕРХНОВАЯ ✦", "#fde047", true));
+  obj.screenShake = Math.max(obj.screenShake, 14);
+  audio.playNuke();
+  player.novaCore = 0;
+  player.novaFuseTimer = 0;
+}
+
+/** ⚡ МИФИК «Судный Разряд»: усиляющаяся цепь молний без повторов целей. */
+function triggerJudgement(obj: GameObjects, source: Enemy, baseDamage: number): void {
+  const { player, enemies, lightnings } = obj;
+  const struck = new Set<number>([source.id]);
+  let current: Enemy | null = source;
+  let damage = baseDamage * 1.5;
+  let jumps = 0;
+  while (current && jumps < JUDGEMENT_TARGETS) {
+    let nearest: Enemy | null = null;
+    let nearDist = Infinity;
+    const cx = current.pos.x, cy = current.pos.y;
+    for (const e of enemies) {
+      if (struck.has(e.id) || e.hp <= 0) continue;
+      const dx = e.pos.x - cx, dy = e.pos.y - cy;
+      const d = dx * dx + dy * dy;
+      if (d < nearDist && d < JUDGEMENT_RADIUS * JUDGEMENT_RADIUS) { nearDist = d; nearest = e; }
+    }
+    if (!nearest) break;
+    lightnings.push(makeLightning(current.pos, nearest.pos, 14));
+    const applied = damageEnemy(nearest, damage, 0, enemies);
+    player.stats.damageDealt += applied;
+    struck.add(nearest.id);
+    // Эскалация: +5% за каждое уничтожение в цепи (до +50%).
+    if (nearest.hp <= 0) damage = Math.min(damage * 1.05, baseDamage * 1.5 * 1.5);
+    current = nearest;
+    jumps++;
+  }
+  obj.floatingTexts.push(makeFloatingText(source.pos, "✦ СУДНЫЙ РАЗРЯД ✦", "#fde047", true));
+  obj.screenShake = Math.max(obj.screenShake, 8);
+  audio.playNuke();
+}
+
 // ─── Main step function ───────────────────────────────────────────────────────
 export interface GameObjects {
   player: PlayerState;
@@ -500,6 +637,10 @@ export interface GameObjects {
   guardSpawnedThisWave: boolean;
   fastClearStreak: number;
   guardEventActive: boolean;
+  /** 🌌 МИФИК «Пожиратель Звёзд»: активная сингулярность (макс. одна). */
+  singularity: { pos: Vec2; timer: number; maxTimer: number; absorbed: number } | null;
+  /** 👁️ МИФИК «Конец Материи»: разрывы пространства (макс. 8, живут 3 c). */
+  voidFractures: { pos: Vec2; life: number }[];
 }
 
 export interface StepInput {
@@ -655,10 +796,105 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   player.laserTimer = Math.max(0, player.laserTimer - 1);
   player.waveShotTimer = Math.max(0, player.waveShotTimer - 1);
 
+  // 🔥 МИФИК «Абсолютный Реактор»: заряд от непрерывной стрельбы.
+  const overdriveActive = player.overdriveTimer > 0;
+  if (overdriveActive) {
+    player.overdriveTimer--;
+    if (player.overdriveTimer === 0) player.overdriveCooldown = OVERDRIVE_COOLDOWN;
+  } else if (player.overdriveCooldown > 0) {
+    player.overdriveCooldown--;
+  } else if (hasMythic(player, "mythic_overdrive")) {
+    const firingRecently = frame - player.lastShotFrame < 45;
+    if (firingRecently) {
+      player.overdriveCharge = Math.min(100, player.overdriveCharge + OVERDRIVE_CHARGE_RATE * timeScale);
+      if (player.overdriveCharge >= 100) {
+        player.overdriveTimer = OVERDRIVE_ACTIVE;
+        player.overdriveCharge = 0;
+        floatingTexts.push(makeFloatingText(player.pos, "✦ ABSOLUTE OVERDRIVE ✦", "#fb923c", true));
+        audio.playPowerup();
+      }
+    } else if (player.overdriveCharge > 0) {
+      player.overdriveCharge = Math.max(0, player.overdriveCharge - OVERDRIVE_DECAY_RATE * timeScale);
+    }
+  }
+
+  // ─── Мифики: покадровые механики ──────────────────────────────────────────
+  // ☀️ Сверхновая: фитиль на полном заряде → взрыв.
+  if (player.novaFuseTimer > 0) {
+    player.novaFuseTimer--;
+    if (player.novaFuseTimer === 0) triggerSupernova(obj);
+  }
+
+  // 🌌 Сингулярность: притяжение (нарастающее), поглощение снарядов, коллапс.
+  if (obj.singularity) {
+    const sg = obj.singularity;
+    sg.timer--;
+    const progress = 1 - sg.timer / sg.maxTimer;      // 0 → 1
+    const pullStrength = (0.55 + progress * 0.85) * timeScale;
+    for (const e of enemies) {
+      if (e.hp <= 0) continue;
+      const dx = sg.pos.x - e.pos.x, dy = sg.pos.y - e.pos.y;
+      const distSq = dx * dx + dy * dy;
+      if (distSq > (SINGULARITY_RADIUS + 120) * (SINGULARITY_RADIUS + 120) || distSq < 100) continue;
+      const dist = Math.sqrt(distSq);
+      // Боссы почти не сдвигаются, элиты — вполовину (ТЗ §13).
+      const resist = e.isBoss ? 0.25 : (e.guardRole ? 0.3 : (e.isElite ? 0.5 : 1));
+      e.pos.x += (dx / dist) * pullStrength * resist;
+      e.pos.y += (dy / dist) * pullStrength * resist;
+    }
+    // Поглощение снарядов игрока → накопленный урон коллапса (с потолком).
+    for (let i = bullets.length - 1; i >= 0; i--) {
+      const b = bullets[i];
+      if (!b.fromPlayer) continue;
+      const dx = b.pos.x - sg.pos.x, dy = b.pos.y - sg.pos.y;
+      if (dx * dx + dy * dy < SINGULARITY_RADIUS * SINGULARITY_RADIUS) {
+        sg.absorbed = Math.min(sg.absorbed + b.damage * 0.6, player.bulletDamage * 120);
+        releaseBullet(b);
+        bullets.splice(i, 1);
+      }
+    }
+    if (sg.timer <= 0) {
+      // COLLAPSE: огромный урон всем внутри; боссам — потолок 8% макс. HP.
+      for (const e of enemies) {
+        if (e.hp <= 0) continue;
+        const dx = e.pos.x - sg.pos.x, dy = e.pos.y - sg.pos.y;
+        if (dx * dx + dy * dy > SINGULARITY_RADIUS * SINGULARITY_RADIUS) continue;
+        const dmg = e.isBoss ? Math.min(sg.absorbed, e.maxHp * 0.08) : sg.absorbed;
+        const applied = damageEnemy(e, dmg, frame, enemies);
+        player.stats.damageDealt += applied;
+      }
+      obj.explosions.push({ id: uid(), pos: { ...sg.pos }, radius: SINGULARITY_RADIUS, progress: 0 });
+      particles.push(...makeBurst(sg.pos, "#a78bfa", 24, true, 3));
+      floatingTexts.push(makeFloatingText(sg.pos, "✦ COLLAPSE ✦", "#c084fc", true));
+      obj.screenShake = Math.max(obj.screenShake, 12);
+      audio.playNuke();
+      obj.singularity = null;
+    }
+  }
+
+  // 🛰️ Флот: таймер залпа.
+  if (player.fleetSalvoTimer > 0) player.fleetSalvoTimer--;
+
+  // 👁️ Пустота: таймер + разрывы (не больше 8, живут 3 c).
+  if (player.voidTimer > 0) player.voidTimer--;
+  else if (hasMythic(player, "mythic_void") && player.entropy >= ENTROPY_MAX) {
+    player.entropy = 0;
+    player.voidTimer = VOID_DURATION;
+    floatingTexts.push(makeFloatingText(player.pos, "✦ КОНЕЦ МАТЕРИИ ✦", "#c084fc", true));
+    audio.playTimeSlow();
+  }
+  for (let i = obj.voidFractures.length - 1; i >= 0; i--) {
+    obj.voidFractures[i].life--;
+    if (obj.voidFractures[i].life <= 0) obj.voidFractures.splice(i, 1);
+  }
+
   // Berserker & rapid boost
   const berserker = getUpgradeLevel(player, "berserker") > 0;
   const hpPct = player.hp / player.maxHp;
   let baseRate = berserker ? player.fireRate * (0.5 + hpPct * 0.5) : player.fireRate;
+  // 🔥 ABSOLUTE OVERDRIVE: значительно повышенная скорострельность
+  // (защитный минимум интервала 2 кадра сохраняется).
+  if (player.overdriveTimer > 0) baseRate = Math.max(2, baseRate * 0.55);
   if (player.rapidBoostTimer > 0) baseRate *= 0.45;
   if (obj.routeEffect === "interference") baseRate *= 1.22;
 
@@ -667,6 +903,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   // Auto-fire continuous shooting with soft sound
   if (frame % effectiveFireRate === 0) {
     firePlayerBullets(bullets, player, enemies, frame);
+    player.lastShotFrame = frame;
     audio.playShoot(player.snipeMode);
   }
 
@@ -725,26 +962,62 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   }
 
   // ─── Satellites ────────────────────────────────────────────────────────────
+  // 🛰️ МИФИК «Последний Флот» (FLEET LINK): все помощники бьют по общей
+  // приоритетной цели — самой опасной (босс/элита ближе всего к кораблю),
+  // а их атаки копят командный канал. Залп ускоряет огонь всей армады.
+  const fleetLinked = hasMythic(player, "mythic_fleet");
+  let fleetTarget: Enemy | null = null;
+  if (fleetLinked && frame % 15 === 0) {
+    let bestScore = -Infinity;
+    for (const e of enemies) {
+      if (e.hp <= 0) continue;
+      const dx = e.pos.x - player.pos.x, dy = e.pos.y - player.pos.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const score = (e.isBoss ? 400 : e.guardRole ? 350 : e.isElite ? 200 : 0) - dist;
+      if (score > bestScore) { bestScore = score; fleetTarget = e; }
+    }
+    (player as PlayerState & { __fleetTarget?: Enemy | null }).__fleetTarget = fleetTarget;
+  } else if (fleetLinked) {
+    fleetTarget = (player as PlayerState & { __fleetTarget?: Enemy | null }).__fleetTarget ?? null;
+    if (fleetTarget && fleetTarget.hp <= 0) fleetTarget = null;
+  }
+  const fleetSalvo = player.fleetSalvoTimer > 0;
+  const fleetDamageMult = 1 + player.fleetStacks * 0.05 + (fleetSalvo ? 0.5 : 0);
+  const chargeFleet = (amount: number) => {
+    if (!fleetLinked || fleetSalvo) return;
+    player.fleetCharge = Math.min(FLEET_CHARGE_MAX, player.fleetCharge + amount);
+    if (player.fleetCharge >= FLEET_CHARGE_MAX) {
+      player.fleetCharge = 0;
+      player.fleetSalvoTimer = FLEET_SALVO_DURATION;
+      floatingTexts.push(makeFloatingText(player.pos, "✦ FINAL FLEET SALVO ✦", "#fbbf24", true));
+      audio.playPowerup();
+    }
+  };
+
   for (const sat of player.satellites) {
     sat.angle += sat.speed * timeScale;
     sat.shootTimer--;
-    const satFireRate = Math.max(20, 55 - sat.level * 5);
+    let satFireRate = Math.max(20, 55 - sat.level * 5);
+    if (fleetSalvo) satFireRate = Math.max(4, Math.floor(satFireRate * 0.15));
     if (sat.shootTimer <= 0) {
       sat.shootTimer = satFireRate;
       const sx = player.pos.x + Math.cos(sat.angle) * sat.radius;
       const sy = player.pos.y + Math.sin(sat.angle) * sat.radius;
-      let nearest: Enemy | null = null;
-      let nearDist = 9999;
-      for (const e of enemies) {
-        const dx = e.pos.x - sx, dy = e.pos.y - sy;
-        const d = Math.sqrt(dx * dx + dy * dy);
-        if (d < nearDist) { nearDist = d; nearest = e; }
+      let nearest: Enemy | null = fleetTarget;
+      if (!nearest) {
+        let nearDist = 9999;
+        for (const e of enemies) {
+          const dx = e.pos.x - sx, dy = e.pos.y - sy;
+          const d = Math.sqrt(dx * dx + dy * dy);
+          if (d < nearDist) { nearDist = d; nearest = e; }
+        }
       }
       if (nearest) {
         const dx = nearest.pos.x - sx, dy = nearest.pos.y - sy;
         const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
-        const dmg = player.bulletDamage * (0.55 + sat.level * 0.35);
-        bullets.push(spawnPlayerSideBullet(player, { x: sx, y: sy }, { x: (dx / dist) * 11, y: (dy / dist) * 11 }, dmg, 3.5, "#fbbf24"));
+        const dmg = player.bulletDamage * (0.55 + sat.level * 0.35) * fleetDamageMult;
+        bullets.push(spawnPlayerSideBullet(player, { x: sx, y: sy }, { x: (dx / dist) * 11, y: (dy / dist) * 11 }, dmg, 3.5, fleetSalvo ? "#fde047" : "#fbbf24"));
+        chargeFleet(2);
       }
     }
   }
@@ -758,22 +1031,31 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     drone.pos.y += (targetY - drone.pos.y) * 0.08;
     drone.angle = drone.orbitAngle;
     drone.shootTimer--;
+    let droneFireRate = Math.max(16, 45 - drone.level * 4);
+    if (fleetSalvo) droneFireRate = Math.max(3, Math.floor(droneFireRate * 0.15));
     if (drone.shootTimer <= 0) {
-      drone.shootTimer = Math.max(16, 45 - drone.level * 4);
-      let nearest: Enemy | null = null;
-      let nearDist = 9999;
-      for (const e of enemies) {
-        const dx = e.pos.x - drone.pos.x, dy = e.pos.y - drone.pos.y;
-        const d = Math.sqrt(dx * dx + dy * dy);
-        if (d < nearDist) { nearDist = d; nearest = e; }
+      drone.shootTimer = droneFireRate;
+      let nearest: Enemy | null = fleetTarget;
+      if (!nearest) {
+        let nearDist = 9999;
+        for (const e of enemies) {
+          const dx = e.pos.x - drone.pos.x, dy = e.pos.y - drone.pos.y;
+          const d = Math.sqrt(dx * dx + dy * dy);
+          if (d < nearDist) { nearDist = d; nearest = e; }
+        }
       }
       if (nearest) {
         const dx = nearest.pos.x - drone.pos.x, dy = nearest.pos.y - drone.pos.y;
         const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
-        const dmg = player.bulletDamage * (0.45 + drone.level * 0.3);
-        bullets.push(spawnPlayerSideBullet(player, { ...drone.pos }, { x: (dx / dist) * 10.5, y: (dy / dist) * 10.5 }, dmg, 3.5, "#a78bfa"));
+        const dmg = player.bulletDamage * (0.45 + drone.level * 0.3) * fleetDamageMult;
+        bullets.push(spawnPlayerSideBullet(player, { ...drone.pos }, { x: (dx / dist) * 10.5, y: (dy / dist) * 10.5 }, dmg, 3.5, fleetSalvo ? "#fde047" : "#a78bfa"));
+        chargeFleet(2);
       }
     }
+  }
+  // Сброс накоплений эффективности после залпа.
+  if (fleetLinked && !fleetSalvo && player.fleetStacks > 0 && player.fleetSalvoTimer === 0) {
+    player.fleetStacks = 0;
   }
 
   // ─── Aura damage ───────────────────────────────────────────────────────────
@@ -886,6 +1168,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     xpOrbs.push(makeXpOrb(enemy.pos, xpGained));
     player.score += Math.floor(enemy.xp * 10 * player.goldMultiplier * obj.routeScoreMultiplier);
     player.kills++;
+    onMythicKill(obj, enemy);
     if (enemy.isElite) player.stats.elitesKilled++;
     if (enemy.isBoss) player.stats.bossesKilled++;
     // Chain Detonation for non-bullet kills (no cascade)
@@ -958,7 +1241,12 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     const e = enemies[i];
     // Bosses are slowed, never fully disabled. Ordinary enemies keep the strong freeze.
     const controlResistant = e.isBoss || Boolean(e.guardRole);
-    const ets = e.frozen > 0 ? (controlResistant ? Math.max(0.58, timeScale * 0.58) : 0.15) : timeScale;
+    // 👁️ КОНЕЦ МАТЕРИИ: обычные — сильное замедление, элиты — среднее,
+    // боссы/гвардия — слабое (полностью не останавливаются, ТЗ §13).
+    const voidSlow = player.voidTimer > 0
+      ? (e.isBoss || e.guardRole ? 0.9 : e.isElite ? 0.7 : 0.45)
+      : 1;
+    const ets = (e.frozen > 0 ? (controlResistant ? Math.max(0.58, timeScale * 0.58) : 0.15) : timeScale) * voidSlow;
     const size = getEnemySize(e.type);
     const minX = size + 25;
     const maxX = W - size - 25;
@@ -1276,6 +1564,23 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     b.pos.x += b.vel.x * bts;
     b.pos.y += b.vel.y * bts;
 
+    // 👁️ VOID FRACTURE: снаряд исчезает в разрыве и появляется у другого
+    // (макс. 2 телепорта на снаряд — без бесконечных циклов).
+    if (b.fromPlayer && obj.voidFractures.length >= 2 && (b.voidJumps ?? 0) < VOID_TELEPORT_MAX) {
+      for (let fi = 0; fi < obj.voidFractures.length; fi++) {
+        const f = obj.voidFractures[fi];
+        const fdx = b.pos.x - f.pos.x, fdy = b.pos.y - f.pos.y;
+        if (fdx * fdx + fdy * fdy < 26 * 26) {
+          const others = obj.voidFractures.filter((_, idx) => idx !== fi);
+          const target = others[Math.floor(Math.random() * others.length)];
+          b.pos.x = target.pos.x;
+          b.pos.y = target.pos.y;
+          b.voidJumps = (b.voidJumps ?? 0) + 1;
+          break;
+        }
+      }
+    }
+
     // Ricochet off walls
     if (b.fromPlayer && player.ricochet) {
       if (b.pos.x < 0 || b.pos.x > W) { b.vel.x *= -1; }
@@ -1371,10 +1676,25 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           dmg *= player.critMultiplier;
           particles.push(...makeBurst(b.pos, "#fff", 6));
           floatingTexts.push(makeFloatingText(b.pos, `${Math.ceil(dmg)}!`, "#fbbf24", true));
+          // ⚡ МИФИК «Бог Грома»: криты копят Гнев Бури; десятый высвобождает
+          // Судный Разряд — усиляющуюся цепь без повторов целей.
+          if (hasMythic(player, "mythic_judgement")) {
+            player.wrath++;
+            if (player.wrath >= WRATH_MAX) {
+              player.wrath = 0;
+              triggerJudgement(obj, e, dmg);
+            }
+          }
+          // 👁️ Энтропия растёт и от попаданий.
+          if (hasMythic(player, "mythic_void") && player.voidTimer <= 0) {
+            player.entropy = Math.min(ENTROPY_MAX, player.entropy + 0.15);
+          }
         } else {
           floatingTexts.push(makeFloatingText(b.pos, `${Math.ceil(dmg)}`, "#fff"));
         }
 
+        // 👁️ КОНЕЦ МАТЕРИИ: враги уязвимее (+25% урона).
+        if (player.voidTimer > 0) dmg *= 1.25;
         const appliedDamage = damageEnemy(e, dmg, frame, enemies);
         player.stats.damageDealt += appliedDamage;
 
@@ -1435,6 +1755,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           if (e.isElite) player.stats.elitesKilled++;
           if (e.isBoss) player.stats.bossesKilled++;
           devourSoul(player, e, particles, floatingTexts);
+          onMythicKill(obj, e);
 
           // «ГОЛОД БЕЗДНЫ» (синергия Немезиды): убийства подлечивают корпус
           // и иногда кормят дополнительной душой (в пределах лимита).
@@ -1885,7 +2206,7 @@ function makePlayerBullet(player: PlayerState, pos: Vec2, vel: Vec2): Bullet {
   b.color = arsenalActive ? "#f5d0fe"
     : player.snipeMode ? "#ffffff"
     : (player.shipClass === "tempest" ? "#c084fc" : (player.shipClass === "dreadnought" ? "#f59e0b" : (player.shipClass === "void_wraith" ? "#e879f9" : "#38bdf8")));
-  b.pierce = player.piercing;
+  b.pierce = player.piercing + (player.voidTimer > 0 ? 2 : 0);
   b.homing = player.homing;
   // «Ускоритель плазмы» продлевает полёт: базовой дальности хватает на
   // несколько экранов, так что прямой стрельбе лимит не мешает — выгоду
@@ -1896,6 +2217,8 @@ function makePlayerBullet(player: PlayerState, pos: Vec2, vel: Vec2): Bullet {
 
 function firePlayerBullets(bullets: Bullet[], player: PlayerState, _enemies: Enemy[], _frame: number) {
   const shots = 1 + player.multishot;
+  // 🔥 Перегрузка: снаряды летят быстрее (множитель только на время режима).
+  const odSpeed = player.overdriveTimer > 0 ? 1.25 : 1;
   // «Широкий сектор» (чётные уровни) подтягивает крайние снаряды к центру,
   // сохраняя полную окружность для круговых билдов.
   const totalSpread = player.spreadAngle >= 350
@@ -1910,7 +2233,7 @@ function firePlayerBullets(bullets: Bullet[], player: PlayerState, _enemies: Ene
         for (const side of [-1, 1]) {
           bullets.push(makePlayerBullet(player,
             { x: player.pos.x + side * 7, y: player.pos.y - 16 },
-            { x: side * 0.12 * player.bulletSpeed, y: -player.bulletSpeed }
+            { x: side * 0.12 * player.bulletSpeed * odSpeed, y: -player.bulletSpeed * odSpeed }
           ));
         }
         continue;
@@ -1921,8 +2244,8 @@ function firePlayerBullets(bullets: Bullet[], player: PlayerState, _enemies: Ene
     } else {
       angle = -Math.PI / 2 + ((i / (shots - 1)) - 0.5) * (totalSpread * Math.PI / 180);
     }
-    const vx = Math.cos(angle) * player.bulletSpeed;
-    const vy = Math.sin(angle) * player.bulletSpeed;
+    const vx = Math.cos(angle) * player.bulletSpeed * odSpeed;
+    const vy = Math.sin(angle) * player.bulletSpeed * odSpeed;
     bullets.push(makePlayerBullet(player, { x: player.pos.x, y: player.pos.y - 20 }, { x: vx, y: vy }));
   }
 
@@ -1933,8 +2256,8 @@ function firePlayerBullets(bullets: Bullet[], player: PlayerState, _enemies: Ene
       if (shots === 1) angle = Math.PI / 2;
       else if (totalSpread >= 350) angle = (i / shots) * Math.PI * 2 + Math.PI;
       else angle = Math.PI / 2 + ((i / (shots - 1)) - 0.5) * (totalSpread * Math.PI / 180);
-      const vx = Math.cos(angle) * player.bulletSpeed;
-      const vy = Math.sin(angle) * player.bulletSpeed;
+      const vx = Math.cos(angle) * player.bulletSpeed * odSpeed;
+      const vy = Math.sin(angle) * player.bulletSpeed * odSpeed;
       bullets.push(makePlayerBullet(player, { x: player.pos.x, y: player.pos.y + 20 }, { x: vx, y: vy }));
     }
   }

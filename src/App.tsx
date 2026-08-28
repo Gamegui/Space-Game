@@ -9,7 +9,7 @@ import { audio } from "./game/audio";
 import { SYNERGIES, unlockAvailableSynergies } from "./game/synergies";
 import { yandex, type StoreOffer } from "./platform/yandex";
 import {
-  drawBackground, drawStars, drawPlayer, drawEnemy, drawBullet,
+  drawBackground, drawStars, drawPlayer, drawEnemy, drawBullet, drawSingularity, drawVoidFractures, drawMythicAuras,
   drawParticle, drawXpOrb, drawMine, drawLightning, drawBlackHole, drawExplosion,
   drawFloatingText, drawPowerup, drawVoidEye, drawVoidPhaseVignette, setRenderPerformanceTier
 } from "./game/renderer";
@@ -24,6 +24,8 @@ import {
 } from "./game/meta";
 import { PRODUCTS } from "./game/products";
 import { checkEvolutions } from "./game/evolutions";
+import { rollMythicDrop, ownedMythicCount, MAX_MYTHIC_PER_RUN } from "./game/mythics";
+import MythicReveal from "./components/MythicReveal";
 import { reportPerfEvent, recoverPerfMirror, reportSessionStart, startFreezeWatchdog } from "./game/perfReporter";
 
 // ─── Perf-логгер (только DEV): покадровая диагностика фризов ──────────────────
@@ -100,6 +102,8 @@ function makeInitialObjects(player: PlayerState): GameObjects {
     guardSpawnedThisWave: false,
     fastClearStreak: 0,
     guardEventActive: false,
+  singularity: null,
+  voidFractures: [],
   };
 }
 
@@ -236,11 +240,15 @@ export default function App() {
   const comboNoticeTimerRef = useRef<number | null>(null);
   const evolutionNoticeTimerRef = useRef<number | null>(null);
   const merchantRollRef = useRef<{ available: boolean; bought: Set<string> }>({ available: false, bought: new Set() });
+  const pendingMythicDefRef = useRef<UpgradeDef | null>(null);
   const [adminOpen, setAdminOpen] = useState(false);
   const [adminGod, setAdminGod] = useState(false);
   // Перф-лог: оверлей с текстом лога (кнопка «📊 PERF» видна только в DEV).
   const [perfOpen, setPerfOpen] = useState(false);
   const [perfText, setPerfText] = useState("");
+  // ✦ МИФИЧЕСКОЕ СОБЫТИЕ: выпавший мифик (заменяет панель улучшений).
+  const [pendingMythic, setPendingMythic] = useState<UpgradeDef | null>(null);
+  const [mythicBanner, setMythicBanner] = useState<{ icon: string; name: string; description: string } | null>(null);
 
   // Автологирование фризов: досылаем логи прошлого сеанса (если страница
   // умерла и её перезагрузили) и запускаем watchdog-воркер, который шлёт
@@ -636,6 +644,21 @@ export default function App() {
   const handleLevelUp = useCallback((player: PlayerState) => {
     pendingLevelUpsRef.current++;
     if (phaseRef.current === "playing" && pendingLevelUpsRef.current === 1) {
+      // ✦ МИФИК: крайне редкий ролл (~0.5% после 8-го уровня, макс. 2 за забег,
+      // часть мификов требует собранного билда). Событие заменяет обычные карточки.
+      const mythicId = rollMythicDrop(player);
+      if (mythicId) {
+        const def = ALL_UPGRADES.find(u => u.id === mythicId);
+        if (def) {
+          pendingMythicDefRef.current = def;
+          setPendingMythic(def);
+          audio.stopAmbientBGM();
+          audio.playMythicSting();
+          phaseRef.current = "upgrade";
+          setPhase("upgrade");
+          return;
+        }
+      }
       const choices = rollPremiumUpgradeChoices(player, 3, [...banishedUpgradeIdsRef.current]);
       upgradeChoicesRef.current = choices;
       setUpgradeChoices(choices);
@@ -1007,7 +1030,17 @@ export default function App() {
       perfTime("powerups", () => { for (const powerup of g.powerups) drawPowerup(ctx, powerup, frame); });
       perfTime("bullets", () => { for (const bullet of g.bullets) drawBullet(ctx, bullet); });
       perfTime("enemies", () => { for (const enemy of g.enemies) drawEnemy(ctx, enemy, frame); });
-      perfTime("player", () => { drawPlayer(ctx, g.player, frame); });
+      perfTime("player", () => {
+        drawPlayer(ctx, g.player, frame);
+        ctx.save();
+        ctx.translate(g.player.pos.x, g.player.pos.y);
+        drawMythicAuras(ctx, g.player, frame);
+        ctx.restore();
+      });
+      perfTime("mythic-entities", () => {
+        if (g.singularity) drawSingularity(ctx, g.singularity.pos, frame, 1 - g.singularity.timer / g.singularity.maxTimer);
+        if (g.voidFractures.length > 0) drawVoidFractures(ctx, g.voidFractures, frame);
+      });
       // The Wraith's phase window tints the whole arena with void light.
       if (g.player.shipClass === "void_wraith" && g.player.ghostTimer > 0) {
         perfTime("vignette", () => drawVoidPhaseVignette(ctx, frame, g.player.ghostTimer / 120));
@@ -1376,6 +1409,21 @@ export default function App() {
     syncUI();
   }, [syncUI]);
 
+  const adminGiveMythic = useCallback(() => {
+    const g = gameRef.current;
+    if (!g || ownedMythicCount(g.player) >= MAX_MYTHIC_PER_RUN) return;
+    const owned = new Set(g.player.upgrades.map(u => u.id));
+    const available = ALL_UPGRADES.filter(u => u.rarity === "mythic" && !owned.has(u.id));
+    if (available.length === 0) return;
+    const def = available[Math.floor(Math.random() * available.length)];
+    applyUpgrade(g.player, def);
+    checkEvolutions(g.player);
+    setMythicBanner({ icon: def.icon, name: def.name, description: def.description });
+    setTimeout(() => setMythicBanner(null), 4200);
+    setAdminRefresh(v => v + 1);
+    syncUI();
+  }, [syncUI]);
+
   const adminCompleteSynergies = useCallback(() => {
     const g = gameRef.current;
     if (!g) return;
@@ -1525,6 +1573,7 @@ export default function App() {
                     <button onClick={adminLevelUp} className="admin-button bg-indigo-700">+1 УРОВЕНЬ / ВЫБОР</button>
                     <button onClick={() => { for (let i = 0; i < 5; i++) adminLevelUp(); }} className="admin-button bg-indigo-800">+5 УРОВНЕЙ</button>
                     <button onClick={adminGiveLegendary} className="admin-button bg-amber-700">+ СЛУЧАЙНОЕ ЛЕГЕНД.</button>
+                    <button onClick={adminGiveMythic} className="admin-button bg-gradient-to-r from-amber-500 to-yellow-400 text-black">✦ ДАТЬ МИФИК ({ownedMythicCount(gameRef.current?.player ?? { upgrades: [] } as never)}/{MAX_MYTHIC_PER_RUN})</button>
                     <button onClick={adminCompleteSynergies} className="admin-button bg-fuchsia-800">ВСЕ 4 СИНЕРГИИ</button>
                     <button onClick={adminMaxBuild} className="admin-button bg-red-800">МАКС. БИЛД · LVL 300</button>
                     <button onClick={() => { const g = gameRef.current; if (g) { g.player.hp = 1; if (g.player.shield) g.player.shield.hp = 0; setAdminRefresh(v => v + 1); } }} className="admin-button bg-rose-950">HP = 1</button>
@@ -1589,7 +1638,56 @@ export default function App() {
         )}
 
         {/* Upgrade panel */}
-        {phase === "upgrade" && gameRef.current && (
+        {/* ✦ МИФИЧЕСКОЕ СОБЫТИЕ: специальная последовательность вместо карточек */}
+        {phase === "upgrade" && pendingMythic && gameRef.current && (
+          <MythicReveal
+            mythic={pendingMythic}
+            player={gameRef.current.player}
+            onAccept={() => {
+              const g = gameRef.current;
+              const def = pendingMythicDefRef.current;
+              if (!g || !def) return;
+              audio.playMythicSelect();
+              audio.playMythicCard();
+              applyUpgrade(g.player, def);
+              checkEvolutions(g.player);
+              setMythicBanner({ icon: def.icon, name: def.name, description: def.description });
+              setTimeout(() => setMythicBanner(null), 4200);
+              pendingMythicDefRef.current = null;
+              setPendingMythic(null);
+              pendingLevelUpsRef.current = Math.max(0, pendingLevelUpsRef.current - 1);
+              phaseRef.current = "playing";
+              setPhase("playing");
+              audio.startAmbientBGM();
+              syncUI();
+            }}
+            onDecline={() => {
+              const g = gameRef.current;
+              if (!g) return;
+              // Отказ: показать обычную панель этого уровня.
+              const choices = rollPremiumUpgradeChoices(g.player, 3, [...banishedUpgradeIdsRef.current]);
+              upgradeChoicesRef.current = choices;
+              setUpgradeChoices(choices);
+              setBonusChoiceUsed(false);
+              pendingMythicDefRef.current = null;
+              setPendingMythic(null);
+              audio.startAmbientBGM();
+            }}
+          />
+        )}
+
+        {/* ✦ MYTHIC ACQUIRED: краткий баннер с названием и описанием силы */}
+        {mythicBanner && (
+          <div className="pointer-events-none absolute left-1/2 top-1/4 z-50 w-[560px] max-w-[90vw] -translate-x-1/2 text-center" style={{ animation: "mythicBanner 4.2s ease-out forwards" }}>
+            <div className="rounded-2xl border-2 border-amber-300/80 bg-black/90 px-8 py-5 shadow-[0_0_40px_rgba(253,224,71,0.45)]">
+              <div className="font-mono text-[11px] font-black tracking-[0.35em] text-amber-300">✦ MYTHIC ACQUIRED ✦</div>
+              <div className="mt-2 text-2xl font-black text-amber-100">{mythicBanner.icon} {mythicBanner.name}</div>
+              <div className="mt-2 text-xs leading-relaxed text-amber-200/80">{mythicBanner.description}</div>
+            </div>
+          </div>
+        )}
+
+        {phase === "upgrade" && !pendingMythic && gameRef.current && (
           <UpgradePanel
             choices={upgradeChoices}
             player={gameRef.current.player}

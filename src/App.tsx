@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { PlayerState, UpgradeDef, GamePhase, ShipClassId, Enemy } from "./game/types";
-import type { GameObjects } from "./game/gameLoop";
+import type { GameObjects, StepInput } from "./game/gameLoop";
 import { stepGame, makeStars, makeInitialPlayer, makeMaterializeBurst, devourSoul, getNextLevelXp, spawnAdaptiveGuard, bindParticleFrame, particleDebugStats, objectPoolStats, W, H, uid } from "./game/gameLoop";
 import { ALL_UPGRADES, rollUpgrades, rollPremiumUpgradeChoices, rollHighRarityUpgrade, applyUpgrade, getUpgradeLevel, getAdaptiveDifficulty } from "./game/upgrades";
 import { getWaveComposition, isBossWave, spawnBoss, getBossName } from "./game/enemies";
@@ -16,6 +16,7 @@ import {
 import UpgradePanel from "./components/UpgradePanel";
 import HUD from "./components/HUD";
 import Hangar, { type ProductStatus } from "./components/Hangar";
+import type { ShardEvent } from "./components/Hangar";
 import {
   META_KEY, META_UPGRADES, MISSIONS, defaultMetaState, normalizeMetaState,
   buyMetaUpgrade, applyMetaToPlayer, metaBonusRerolls, applyRunResult,
@@ -60,7 +61,13 @@ function perfLogSlowFrame(line: string): void {
   reportPerfEvent("SLOW_FRAME", { line });
 }
 
+// Замер слоёв отрисовки нужен только в dev/диагностической сборке. В релизе
+// обёртка — прозрачный вызов: минус 11 замыканий и 22 вызова performance.now()
+// на каждый кадр (v1.8.0).
+const PERF_DRAW_PROFILING = import.meta.env.DEV || import.meta.env.VITE_PERF === "true";
+
 function perfTime(key: string, fn: () => void): void {
+  if (!PERF_DRAW_PROFILING) { fn(); return; }
   const start = performance.now();
   fn();
   perfDrawTimers[key] = (perfDrawTimers[key] ?? 0) + (performance.now() - start);
@@ -285,6 +292,8 @@ export default function App() {
   const [banishesLeft, setBanishesLeft] = useState(1);
   const [upgradeAdPending, setUpgradeAdPending] = useState(false);
   const [bonusChoiceUsed, setBonusChoiceUsed] = useState(false);
+  // v1.8.0: журнал операций с осколками для «Ангара» (сессионный, только UI).
+  const [shardLog, setShardLog] = useState<ShardEvent[]>([]);
   // Админка: в dev-режиме с VITE_ADMIN, либо в диагностической сборке
   // (VITE_ADMIN=true при сборке) — для локального стресс-теста владельцем.
   const adminEnabled = (import.meta.env.DEV || import.meta.env.VITE_ADMIN === "true") && import.meta.env.VITE_ADMIN === "true";
@@ -396,7 +405,9 @@ export default function App() {
     const g = gameRef.current;
     if (!g) return;
     setPlayerLevel(g.player.level);
-    setEnemiesLeft(g.enemies.length + g.waveEnemyQueue.reduce((a, c) => a + c.count, 0));
+    let queued = 0;
+    for (const c of g.waveEnemyQueue) queued += c.count;
+    setEnemiesLeft(g.enemies.length + queued);
     if (g.bossActive && g.boss) {
       setBossHpPct(Math.max(0, g.boss.hp / g.boss.maxHp));
     }
@@ -421,6 +432,10 @@ export default function App() {
     metaRef.current = next;
     try { localStorage.setItem("meta_v1", JSON.stringify(next)); } catch { /* storage blocked */ }
     void yandex.saveData(META_KEY, next);
+  }, []);
+
+  const pushShardEvent = useCallback((label: string, amount: number) => {
+    setShardLog(prev => [{ key: Date.now() + Math.random(), label, amount }, ...prev].slice(0, 8));
   }, []);
 
   /** Apply permanent meta upgrades + owned product bonuses to a fresh run. */
@@ -473,7 +488,8 @@ export default function App() {
     setLastShardsEarned(earned);
     persistMeta(next);
     setMeta(next);
-  }, [persistMeta]);
+    pushShardEvent(victory ? "Победа · волна 50" : "Забег завершён", earned);
+  }, [persistMeta, pushShardEvent]);
 
   // ─── Sound Toggle ───────────────────────────────────────────────────────────
   const handleToggleSound = useCallback(() => {
@@ -833,6 +849,7 @@ export default function App() {
     setMeta(next);
     persistMeta(next);
     merchantRollRef.current.bought.add(buffId);
+    pushShardEvent(`Торговец · ${buff.name}`, -buff.cost);
     // Apply the temporary in-run buff to the live player.
     const p = g.player;
     switch (buff.id) {
@@ -844,7 +861,7 @@ export default function App() {
       case "chrono": p.timeSlowCooldown = 0; timeSlowRef.current = false; setTimeSlow(false); break;
     }
     audio.playPowerup();
-  }, [persistMeta]);
+  }, [persistMeta, pushShardEvent]);
 
   // ── Hangar handlers (v1.5.0) ────────────────────────────────────────────────
   const handleBuyMetaUpgrade = useCallback((id: string) => {
@@ -865,7 +882,8 @@ export default function App() {
     if (!claimMission(next, def)) return;
     persistMeta(next);
     setMeta(next);
-  }, [persistMeta]);
+    pushShardEvent(`Задание «${def.name}»`, def.reward);
+  }, [persistMeta, pushShardEvent]);
 
   const handleBuyProduct = useCallback(async (id: string) => {
     if (purchasePendingId) return;
@@ -1012,7 +1030,7 @@ export default function App() {
 
     function drawWorld(g: GameObjects, frame: number) {
       setRenderPerformanceTier(g.performanceTier);
-      for (const key of Object.keys(perfDrawTimers)) perfDrawTimers[key] = 0;
+      if (PERF_DRAW_PROFILING) for (const key of Object.keys(perfDrawTimers)) perfDrawTimers[key] = 0;
       const stride = g.performanceTier === 0 ? 3 : g.performanceTier === 1 ? 2 : 1;
       perfTime("explosions", () => {
         for (let i = frame % stride; i < g.explosions.length; i += stride) {
@@ -1048,18 +1066,17 @@ export default function App() {
       for (let i = frame % stride; i < g.floatingTexts.length; i += stride) drawFloatingText(ctx, g.floatingTexts[i]);
     }
 
-    function updateGame(g: GameObjects) {
-      const slowNow = g.player.timeSlowTimer > 0;
-      if (slowNow !== timeSlowRef.current) {
-        timeSlowRef.current = slowNow;
-        setTimeSlow(slowNow);
-      }
-
-      const simulationFrame = ++frameRef.current;
-      stepGame(g, {
+    // v1.8.0 анти-GC: объект StepInput и его 4 колбэка-замыкания создаются
+    // один раз на экземпляр игры, а не на каждый шаг симуляции (60/с × 5
+    // объектов = до 300 аллокаций/с раньше). frame/wave/timeSlow мутируются
+    // на переиспользуемом объекте.
+    let stepInput: StepInput | null = null;
+    let stepInputFor: GameObjects | null = null;
+    function buildStepInput(g: GameObjects): StepInput {
+      return {
         keys: keysRef.current,
         wave: waveRef.current,
-        frame: simulationFrame,
+        frame: 0,
         timeSlow: timeSlowRef.current,
         onLevelUp: handleLevelUp,
         onDeath: () => {
@@ -1113,8 +1130,21 @@ export default function App() {
             }
           }
         },
-      });
+      };
+    }
 
+    function updateGame(g: GameObjects) {
+      const slowNow = g.player.timeSlowTimer > 0;
+      if (slowNow !== timeSlowRef.current) {
+        timeSlowRef.current = slowNow;
+        setTimeSlow(slowNow);
+      }
+
+      if (stepInputFor !== g || !stepInput) { stepInput = buildStepInput(g); stepInputFor = g; }
+      stepInput.wave = waveRef.current;
+      stepInput.timeSlow = timeSlowRef.current;
+      stepInput.frame = ++frameRef.current;
+      stepGame(g, stepInput);
       if (g.bossActive && g.enemies.length > 0) {
         g.boss = g.enemies.find(enemy => enemy.isBoss) || null;
         if (!g.boss) { g.bossActive = false; setBossActive(false); }
@@ -1999,6 +2029,7 @@ export default function App() {
             productStatuses={productStatuses}
             offers={productOffers}
             purchasePendingId={purchasePendingId}
+            shardLog={shardLog}
             onBuyUpgrade={handleBuyMetaUpgrade}
             onClaimMission={handleClaimMission}
             onBuyProduct={handleBuyProduct}

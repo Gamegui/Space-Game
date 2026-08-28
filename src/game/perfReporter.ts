@@ -28,15 +28,52 @@ function mirror(line: string): void {
   } catch { /* хранилище недоступно — не критично, сервер всё равно получил */ }
 }
 
+function postViaGet(record: Record<string, unknown>): void {
+  // GET-фолбэк: некоторые прокси не пропускают POST из iframe. Ограничение
+  // длины URL ~8 КБ — большие пачки (RECOVERED) режем на части.
+  const parts: string[] = [];
+  let current: Record<string, unknown>[] = [];
+  let size = 0;
+  const items = Array.isArray((record as { lines?: unknown[] }).lines)
+    ? ((record as { lines: unknown[] }).lines as unknown[])
+    : [record];
+  const kind = record.kind as string;
+  for (const item of items) {
+    const encoded = encodeURIComponent(JSON.stringify(item));
+    if (size + encoded.length > 3500 && current.length > 0) {
+      parts.push(JSON.stringify(current));
+      current = [];
+      size = 0;
+    }
+    current.push(item as Record<string, unknown>);
+    size += encoded.length;
+  }
+  if (current.length > 0) parts.push(JSON.stringify(current));
+  parts.forEach((part, index) => {
+    const payload = { kind, part: index + 1, parts: parts.length, lines: JSON.parse(part) };
+    try {
+      void fetch(`${ENDPOINT}?d=${encodeURIComponent(JSON.stringify(payload))}`).catch(() => {});
+    } catch { /* ignore */ }
+  });
+}
+
 function post(record: Record<string, unknown>): void {
+  const body = JSON.stringify(record);
+  // 1) sendBeacon — самый живучий (ставится в очередь браузером)
+  try {
+    if (typeof navigator !== "undefined" && navigator.sendBeacon?.(ENDPOINT, new Blob([body], { type: "application/json" }))) return;
+  } catch { /* ignore */ }
+  // 2) fetch POST keepalive
   try {
     void fetch(ENDPOINT, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(record),
+      body,
       keepalive: true,
-    }).catch(() => { /* fire-and-forget */ });
-  } catch { /* нет сети — остаётся localStorage */ }
+    }).catch(() => postViaGet(record)); // 3) GET-фолбэк
+    return;
+  } catch { /* ignore */ }
+  postViaGet(record);
 }
 
 /** Отправить запись о медленном кадре/инциденте (DEV-only). */
@@ -46,6 +83,20 @@ export function reportPerfEvent(kind: string, data: Record<string, unknown>): vo
   const line = JSON.stringify(record);
   mirror(line);
   post(record);
+}
+
+/** Beacon старта сессии: подтверждает, что страница с репортером загружена
+ *  и канал до dev-сервера работает (иначе диагностика слепа). */
+export function reportSessionStart(): void {
+  if (!isDev()) return;
+  reportPerfEvent("SESSION_START", {
+    ua: navigator.userAgent,
+    cores: navigator.hardwareConcurrency ?? -1,
+    dpr: devicePixelRatio,
+    screen: `${screen.width}x${screen.height}`,
+    storage: (() => { try { localStorage.setItem("__t", "1"); localStorage.removeItem("__t"); return "ok"; } catch { return "blocked"; } })(),
+    time: new Date().toISOString(),
+  });
 }
 
 /** Дослать логи прошлого сеанса после перезагрузки (вызывать один раз при старте). */
@@ -84,11 +135,11 @@ export function startFreezeWatchdog(): (payload: Record<string, unknown>, hidden
     setInterval(() => {
       const blockedMs = performance.now() - lastBeat;
       if (!pageHidden && blockedMs > 3000 && lastPayload) {
-        fetch("/__perf_log", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ kind: "FREEZE", t: Date.now(), blockedMs: Math.round(blockedMs), last: lastPayload }),
-        }).catch(() => {});
+        const record = { kind: "FREEZE", t: Date.now(), blockedMs: Math.round(blockedMs), last: lastPayload };
+        const ok = navigator.sendBeacon("/__perf_log", new Blob([JSON.stringify(record)], { type: "application/json" }));
+        if (!ok) {
+          fetch("/__perf_log?d=" + encodeURIComponent(JSON.stringify(record))).catch(() => {});
+        }
         lastBeat = performance.now(); // одно сообщение за цикл блокировки
       }
     }, 1500);

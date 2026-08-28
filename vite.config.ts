@@ -17,6 +17,29 @@ const perfLogReceiver = {
   name: "perf-log-receiver",
   configureServer(server: ViteDevServer) {
     server.middlewares.use("/__perf_log", (req, res) => {
+      const writeRecord = (raw: string) => {
+        const record = JSON.parse(raw);
+        const line = JSON.stringify({ at: new Date().toISOString(), ...record });
+        appendFileSync(PERF_LOG_FILE, line + "\n");
+        console.log(`[perf] ${line.slice(0, 300)}`);
+      };
+      if (req.method === "GET") {
+        // Фолбэк-канал: /__perf_log?d=<urlencode(json)> — на случай, если
+        // прокси превью не пропускает POST-запросы из iframe.
+        try {
+          const url = new URL(req.url ?? "/", "http://localhost");
+          const data = url.searchParams.get("d");
+          if (data) writeRecord(decodeURIComponent(data));
+          else throw new Error("no data");
+          res.statusCode = 204;
+          res.end();
+          return;
+        } catch {
+          res.statusCode = 400;
+          res.end();
+          return;
+        }
+      }
       if (req.method !== "POST") {
         res.statusCode = 404;
         res.end();
@@ -29,10 +52,7 @@ const perfLogReceiver = {
       });
       req.on("end", () => {
         try {
-          const record = JSON.parse(body);
-          const line = JSON.stringify({ at: new Date().toISOString(), ...record });
-          appendFileSync(PERF_LOG_FILE, line + "\n");
-          console.log(`[perf] ${line.slice(0, 300)}`);
+          writeRecord(body);
           res.statusCode = 204;
           res.end();
         } catch {

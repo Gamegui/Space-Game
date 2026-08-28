@@ -24,7 +24,7 @@ import {
 } from "./game/meta";
 import { PRODUCTS } from "./game/products";
 import { checkEvolutions } from "./game/evolutions";
-import { reportPerfEvent, recoverPerfMirror, startFreezeWatchdog } from "./game/perfReporter";
+import { reportPerfEvent, recoverPerfMirror, reportSessionStart, startFreezeWatchdog } from "./game/perfReporter";
 
 // ─── Perf-логгер (только DEV): покадровая диагностика фризов ──────────────────
 // Пишет строку в буфер на каждый медленный кадр: сколько ушло на симуляцию,
@@ -248,6 +248,7 @@ export default function App() {
   const freezeBeatRef = useRef<((payload: Record<string, unknown>, hidden: boolean) => void) | null>(null);
   useEffect(() => {
     if (!import.meta.env.DEV) return;
+    reportSessionStart();
     recoverPerfMirror();
     freezeBeatRef.current = startFreezeWatchdog();
   }, []);

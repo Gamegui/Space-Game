@@ -86,6 +86,28 @@ test("full enemy bullet matrix across tier flips stays bounded and fast", () => 
   assert.equal(renderer.spriteCacheSize(), before);
 });
 
+test("explosion-path render functions never throw (particles, orbs, explosions)", () => {
+  // Массовый взрыв: до 1000 частиц, сферы опыта, кольца взрывов, молнии —
+  // все новые спрайт-пути должны выдерживать полный набор без исключений.
+  renderer.setRenderPerformanceTier(2);
+  const particles = Array.from({ length: 1000 }, (_, i) => ({
+    id: i, pos: { x: (i * 37) % 960, y: (i * 53) % 720 },
+    vel: { x: 1, y: -1 }, life: 20, maxLife: 40,
+    color: ["#e879f9", "#f97316", "#fbbf24", "#fff", "#a855f7", "#fb923c"][i % 6],
+    size: 1.5 + (i % 5), glow: true,
+    shape: (["circle", "square", "ring"] as const)[i % 3],
+  }));
+  for (const tier of [2, 1, 0] as const) {
+    renderer.setRenderPerformanceTier(tier);
+    renderer.drawBackground(ctx, 120);
+    for (const p of particles) renderer.drawParticle(ctx, p);
+    for (let i = 0; i < 220; i++) renderer.drawXpOrb(ctx, { id: i, pos: { x: (i * 13) % 960, y: (i * 29) % 720 }, vel: { x: 0, y: 0 }, value: 1, attracted: true }, i);
+    for (let i = 0; i < 60; i++) renderer.drawExplosion(ctx, { x: (i * 31) % 900, y: (i * 47) % 700 }, 80, (i % 10) / 10);
+    for (let i = 0; i < 90; i++) renderer.drawLightning(ctx, { id: i, from: { x: 100, y: 100 }, to: { x: 600, y: 500 }, life: 5 });
+  }
+  assert.ok(renderer.spriteCacheSize() <= 512, `cache size ${renderer.spriteCacheSize()}`);
+});
+
 test("pathological bullet sizes do not produce zero-sized sprites", () => {
   for (const size of [0, -3, Number.NaN, Number.POSITIVE_INFINITY]) {
     renderer.drawBullet(ctx, {

@@ -116,24 +116,33 @@ export function drawStars(ctx: CanvasRenderingContext2D, stars: Star[]) {
 }
 
 // ─── Background ───────────────────────────────────────────────────────────────
+// Туманность запекается один раз в offscreen-канвас: раньше каждый кадр
+// создавал 3 полноэкранных градиента и делал 3 полноэкранные заливки —
+// постоянные ~1-3 мс даже на пустом экране. Лёгкое покачивание имитируем
+// смещением блита (визуально неотличимо от прежнего sin-дрейфа).
+let nebulaSprite: HTMLCanvasElement | null = null;
+
 export function drawBackground(ctx: CanvasRenderingContext2D, frame: number) {
+  if (!nebulaSprite) {
+    const [canvas, sctx] = makeSprite(W + 80, H);
+    const colors = [
+      ["rgba(60,20,100,0.14)", W * 0.3, H * 0.4, 360],
+      ["rgba(10,40,120,0.12)",  W * 0.7, H * 0.6, 300],
+      ["rgba(100,10,60,0.10)", W * 0.5, H * 0.2, 260],
+    ] as const;
+    for (const [color, cx, cy, r] of colors) {
+      const grd = sctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+      grd.addColorStop(0, color);
+      grd.addColorStop(1, "rgba(0,0,0,0)");
+      sctx.fillStyle = grd;
+      sctx.fillRect(0, 0, W + 80, H);
+    }
+    nebulaSprite = canvas;
+  }
   ctx.fillStyle = "#03050d";
   ctx.fillRect(0, 0, W, H);
-
-  // Deep Space Nebula Glow
-  const t = frame * 0.002;
-  const colors = [
-    ["rgba(60,20,100,0.14)", W * 0.3, H * 0.4, 360],
-    ["rgba(10,40,120,0.12)",  W * 0.7, H * 0.6, 300],
-    ["rgba(100,10,60,0.10)", W * 0.5, H * 0.2, 260],
-  ] as const;
-  for (const [color, cx, cy, r] of colors) {
-    const grd = ctx.createRadialGradient(cx + Math.sin(t) * 20, cy, 0, cx, cy, r);
-    grd.addColorStop(0, color);
-    grd.addColorStop(1, "rgba(0,0,0,0)");
-    ctx.fillStyle = grd;
-    ctx.fillRect(0, 0, W, H);
-  }
+  const drift = Math.sin(frame * 0.002) * 20 - 20;
+  ctx.drawImage(nebulaSprite, drift, 0, W + 80, H);
 }
 
 // ─── Player ───────────────────────────────────────────────────────────────────
@@ -614,7 +623,11 @@ export function drawEnemy(ctx: CanvasRenderingContext2D, e: Enemy, frame: number
     ctx.fill();
   }
 
-  ctx.shadowBlur = e.isBoss ? 25 : (e.isElite ? 18 : 12);
+  // Стоимость shadowBlur растёт квадратично от радиуса: 25/18/12 на каждом
+  // из 60-80 врагов валили кадр. Понижено и огейчено по тирам качества.
+  ctx.shadowBlur = renderPerformanceTier === 0 ? 0
+    : renderPerformanceTier === 1 ? (e.isBoss ? 5 : e.isElite ? 4 : 2)
+    : (e.isBoss ? 14 : e.isElite ? 10 : 6);
   ctx.shadowColor = e.isElite ? "#fbbf24" : stroke;
 
   const speedFactor = e.frozen > 0 ? 0 : 1;
@@ -1012,43 +1025,72 @@ export function drawBullet(ctx: CanvasRenderingContext2D, b: Bullet) {
 }
 
 // ─── Particles ────────────────────────────────────────────────────────────────
+// Живой shadowBlur на каждую частицу (до 1000 за кадр) и был вторым источником
+// фриза после массовых взрывов: свечение теперь запечено в спрайт по цвету и
+// блитится одним drawImage с масштабом и альфой. Визуально — то же свечение.
+const particleSprites = new Map<string, HTMLCanvasElement>();
+const PARTICLE_SPRITE_SIZE = 32;
+
+function getParticleSprite(color: string): HTMLCanvasElement {
+  const cached = particleSprites.get(color);
+  if (cached) return cached;
+  return cacheSprite(particleSprites, color, PARTICLE_SPRITE_SIZE, PARTICLE_SPRITE_SIZE, sctx => {
+    sctx.translate(PARTICLE_SPRITE_SIZE / 2, PARTICLE_SPRITE_SIZE / 2);
+    const g = sctx.createRadialGradient(0, 0, 0, 0, 0, PARTICLE_SPRITE_SIZE / 2);
+    g.addColorStop(0, "#ffffff");
+    g.addColorStop(0.35, color);
+    g.addColorStop(1, "rgba(0,0,0,0)");
+    sctx.fillStyle = g;
+    sctx.beginPath();
+    sctx.arc(0, 0, PARTICLE_SPRITE_SIZE / 2, 0, Math.PI * 2);
+    sctx.fill();
+  });
+}
+
 export function drawParticle(ctx: CanvasRenderingContext2D, p: Particle) {
   const alpha = (p.life / p.maxLife);
-  ctx.save();
+  const r = p.size * alpha;
   ctx.globalAlpha = alpha;
-  if (p.glow && renderPerformanceTier > 0) { ctx.shadowBlur = renderPerformanceTier === 1 ? 3 : 8; ctx.shadowColor = p.color; }
+  if (renderPerformanceTier > 0 && p.glow) {
+    // Спрайт свечения: диаметр ≈ 4× радиуса частицы (эффект blur 8).
+    const glow = r * 4;
+    ctx.drawImage(getParticleSprite(p.color), p.pos.x - glow / 2, p.pos.y - glow / 2, glow, glow);
+  }
   ctx.fillStyle = p.color;
-  ctx.beginPath();
   if (p.shape === "square") {
-    const s = p.size * alpha;
-    ctx.fillRect(p.pos.x - s / 2, p.pos.y - s / 2, s, s);
+    ctx.fillRect(p.pos.x - r, p.pos.y - r, r * 2, r * 2);
   } else {
-    ctx.arc(p.pos.x, p.pos.y, p.size * alpha, 0, Math.PI * 2);
+    ctx.beginPath();
+    ctx.arc(p.pos.x, p.pos.y, r, 0, Math.PI * 2);
     ctx.fill();
   }
-  ctx.restore();
+  ctx.globalAlpha = 1;
 }
 
 // ─── XP Orbs ──────────────────────────────────────────────────────────────────
+// До 220 сфер рисовали живой градиент + shadowBlur КАЖДЫЙ кадр — на массовых
+// убийствах это второй по тяжести рендер-путь. Одна запечённая сфера +
+// масштабирование пульса: визуально то же самое, стоимость — один drawImage.
+const xpOrbSprite: HTMLCanvasElement = (() => {
+  const size = 28;
+  const [canvas, sctx] = makeSprite(size, size);
+  sctx.translate(size / 2, size / 2);
+  const g = sctx.createRadialGradient(0, 0, 0, 0, 0, size / 2);
+  g.addColorStop(0, "#ffffff");
+  g.addColorStop(0.25, "#a78bfa");
+  g.addColorStop(0.6, "#7c3aed");
+  g.addColorStop(1, "rgba(124,58,237,0)");
+  sctx.fillStyle = g;
+  sctx.beginPath();
+  sctx.arc(0, 0, size / 2, 0, Math.PI * 2);
+  sctx.fill();
+  return canvas;
+})();
+
 export function drawXpOrb(ctx: CanvasRenderingContext2D, orb: XpOrb, frame: number) {
   const pulse = Math.sin(frame * 0.1 + orb.id * 0.5) * 2;
-  ctx.save();
-  ctx.translate(orb.pos.x, orb.pos.y);
-  ctx.shadowBlur = renderPerformanceTier === 0 ? 0 : renderPerformanceTier === 1 ? 3 : 8;
-  ctx.shadowColor = "#a78bfa";
-  if (renderPerformanceTier === 0) {
-    ctx.fillStyle = "#a78bfa";
-  } else {
-    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 6 + pulse);
-    g.addColorStop(0, "#fff");
-    g.addColorStop(0.4, "#a78bfa");
-    g.addColorStop(1, "#7c3aed");
-    ctx.fillStyle = g;
-  }
-  ctx.beginPath();
-  ctx.arc(0, 0, 5 + pulse, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
+  const d = (10 + pulse * 2) * 1.6; // видимая сфера + запечённое свечение
+  ctx.drawImage(xpOrbSprite, orb.pos.x - d / 2, orb.pos.y - d / 2, d, d);
 }
 
 // ─── Floating Text ────────────────────────────────────────────────────────────
@@ -1058,7 +1100,8 @@ export function drawFloatingText(ctx: CanvasRenderingContext2D, ft: FloatingText
   ctx.globalAlpha = alpha;
   ctx.font = ft.isCrit ? `bold ${ft.size}px monospace` : `bold ${ft.size}px monospace`;
   ctx.fillStyle = ft.color;
-  ctx.shadowBlur = renderPerformanceTier === 0 ? 0 : ft.isCrit ? 10 : 4;
+  // Обычные числа урона — без тени (их сотни за кадр), криты — с лёгкой.
+  ctx.shadowBlur = renderPerformanceTier === 2 && ft.isCrit ? 6 : 0;
   ctx.shadowColor = ft.color;
   ctx.textAlign = "center";
   ctx.fillText(ft.text, ft.pos.x, ft.pos.y);
@@ -1072,7 +1115,7 @@ export function drawPowerup(ctx: CanvasRenderingContext2D, p: PowerupItem, frame
   ctx.translate(p.pos.x, p.pos.y);
 
   // Outer glowing ring
-  ctx.shadowBlur = 12;
+  ctx.shadowBlur = renderPerformanceTier === 2 ? 6 : 0;
   ctx.shadowColor = "#38bdf8";
   ctx.strokeStyle = "#38bdf8";
   ctx.lineWidth = 2;
@@ -1111,7 +1154,7 @@ export function drawMine(ctx: CanvasRenderingContext2D, mine: Mine, frame: numbe
   ctx.arc(0, 0, mine.radius, 0, Math.PI * 2);
   ctx.stroke();
   ctx.setLineDash([]);
-  ctx.shadowBlur = 10;
+  ctx.shadowBlur = renderPerformanceTier === 2 ? 5 : 0;
   ctx.shadowColor = "#f59e0b";
   ctx.fillStyle = "#fbbf24";
   ctx.beginPath();
@@ -1130,7 +1173,7 @@ export function drawLightning(ctx: CanvasRenderingContext2D, l: Lightning) {
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.strokeStyle = "#fde047";
-  ctx.shadowBlur = 12;
+  ctx.shadowBlur = renderPerformanceTier === 2 ? 6 : 0;
   ctx.shadowColor = "#fde047";
   ctx.lineWidth = 2;
   ctx.beginPath();
@@ -1175,8 +1218,6 @@ export function drawExplosion(ctx: CanvasRenderingContext2D, pos: { x: number; y
   const alpha = 1 - progress;
   ctx.save();
   ctx.globalAlpha = alpha;
-  ctx.shadowBlur = 30;
-  ctx.shadowColor = "#f97316";
   const g = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, radius * progress);
   g.addColorStop(0, "#fff");
   g.addColorStop(0.3, "#fbbf24");

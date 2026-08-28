@@ -258,6 +258,38 @@ class YandexPlatform {
       } catch { finish(); }
     });
   }
+
+  // ── Player Data (meta-progression cloud save) ──────────────────────────────
+  /** Load arbitrary JSON saved under a key. Returns null on guests/errors. */
+  async loadData<T>(key: string): Promise<T | null> {
+    await this.init();
+    try {
+      if (!this.player?.getData) return null;
+      const data = await this.player.getData([key]);
+      return (data?.[key] as T | undefined) ?? null;
+    } catch (err) {
+      console.warn("[yandex] loadData failed", err);
+      return null;
+    }
+  }
+
+  /** Save arbitrary JSON under a key (best-effort, non-blocking UI). */
+  async saveData(key: string, value: unknown): Promise<boolean> {
+    await this.init();
+    try {
+      if (!this.player?.setData) return false;
+      await this.player.setData({ [key]: value }, false);
+      return true;
+    } catch (err) {
+      console.warn("[yandex] saveData failed", err);
+      return false;
+    }
+  }
+
+  /** Fetch catalog offer for one product (null when absent from the console). */
+  async fetchOffer(productId: string): Promise<StoreOffer | null> {
+    return this.getCatalogOffer(productId);
+  }
 }
 
 export const yandex = new YandexPlatform();

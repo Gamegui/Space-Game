@@ -247,3 +247,52 @@ Before future changes, preserve the exact title and the Yandex console identifie
 - Permanent purchase: `void_wraith`
 
 Next-chat note: treat this as the final release state unless the user reports a concrete moderation or gameplay issue. If asked to provide the build, use the latest `space-shooter-yandex.zip`; if asked about Yandex ads, explain the distinction between Yandex Games SDK ads and external RСЯ/RTB website blocks.
+
+## v1.5.0 — Engagement overhaul — 2026-08-28
+
+Merged PR #7 (`fix/loading-api-ready-timing`) into `main` first, then branched
+`feature/v1.5.0-engagement-overhaul`. Version bumped to `1.5.0`.
+
+### New systems (all cloud-saved via Yandex Player Data, key `meta_v1`)
+
+1. **Meta-progression — «Осколки ядра» + Ангар.** Every run earns permanent
+   shards (formula: `floor(score/120 + wave*4 + kills*1.5 + victory?80:0)`,
+   doubled by the `premium_pass` product, +10%/level from the `shard_magnet`
+   meta upgrade). Spent in the Hangar (`src/game/meta.ts`) on 9 permanent
+   upgrades (HP, shield, magnet, free rerolls, damage, homing, starting
+   upgrade, shard bonus, nuke charges). State is cloud-saved + localStorage
+   fallback; corrupted saves normalize to defaults.
+2. **Weapon/upgrade evolutions** (`src/game/evolutions.ts`): 7 super-synergies
+   that fire once per run when a build owns all required upgrades (e.g.
+   «АННИГИЛЯТОР» = double_shot + piercing + explosive). Announced in the
+   upgrade panel like synergies.
+3. **Missions/achievements**: 24 missions tracking cumulative + per-run goals,
+   with shard rewards claimed in the Hangar.
+4. **New in-app purchases** (`src/game/products.ts`): `premium_pass` (x2 shards
+   +1 reroll +50 start shards) and `starter_pack` (+1 banish, +25 shield, epic
+   choices). Catalog-parity preserved: products hidden from purchase UI when
+   absent from the console. The existing `void_wraith` ship purchase is
+   unchanged.
+5. **«Торговец осколков»** event on the route screen (~50% chance, needs 30+
+   shards): a meta-currency sink trading permanent shards for a temporary
+   in-run buff (risk: currency spent even on a failed run).
+6. **Combo escalation juice**: banner at combo milestones 10/25/50.
+7. **Cloud save**: `yandex.loadData`/`saveData` added for arbitrary Player Data.
+
+### Verification
+- `tsc --noEmit` clean. `npm run build` + `npm run package:yandex` clean; ZIP is
+  a single root `index.html`.
+- 10 Node logic tests (`test/meta.test.mts`, tsx) pass: economy scaling, meta
+  apply-to-player, shard multiplier, mission tracking + claim, save
+  normalization, evolution single-trigger.
+
+### Yandex console products to create (ids must match exactly)
+- `void_wraith` (existing), `premium_pass` (new), `starter_pack` (new).
+All are **permanent** (non-consumable). If a product is not created/active in
+the console, the game hides its purchase CTA automatically (catalog parity,
+Game Requirements §1.13).
+
+### Remaining external acceptance (unchanged + new)
+- Verify real rewarded/interstitial ads, real purchases (incl. the two new
+  products), leaderboard `highscore`, cloud score + cloud meta state, mobile
+  touch — all in the Yandex Games draft before publishing.

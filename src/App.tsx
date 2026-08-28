@@ -15,6 +15,15 @@ import {
 } from "./game/renderer";
 import UpgradePanel from "./components/UpgradePanel";
 import HUD from "./components/HUD";
+import Hangar, { type ProductStatus } from "./components/Hangar";
+import {
+  META_KEY, META_UPGRADES, MISSIONS, defaultMetaState, normalizeMetaState,
+  buyMetaUpgrade, applyMetaToPlayer, metaBonusRerolls,
+  computeShardsEarned, updateMissions, claimMission,
+  type MetaState, type RunResult, type MissionContext,
+} from "./game/meta";
+import { PRODUCTS } from "./game/products";
+import { checkEvolutions } from "./game/evolutions";
 
 // ─── Initial game objects ──────────────────────────────────────────────────────
 function makeInitialObjects(player: PlayerState): GameObjects {
@@ -71,6 +80,17 @@ const ROUTES: RouteChoice[] = [
   { id: "asteroids", icon: "☄️", name: "ПОЯС АСТЕРОИДОВ", description: "Каменный дождь пересекает арену и заставляет постоянно маневрировать.", risk: "Метеоры · −15% врагов", reward: "+30% опыта" },
   { id: "warzone", icon: "⚔️", name: "ВОЕННЫЙ СЕКТОР", description: "Ударный корпус присылает усиленные элитные эскадрильи.", risk: "+25% врагов · элиты", reward: "+60% опыта и очков" },
   { id: "anomaly", icon: "🌀", name: "АНОМАЛИЯ", description: "Гравитация, ускоренные пули или помехи оружия меняют правила волны.", risk: "Случайное правило", reward: "Рискованная награда" },
+];
+
+// v1.5.0 — «Торговец осколков» on the route screen: a meta-currency sink that
+// trades permanent shards for a temporary in-run buff. Risk/reward: spending
+// permanent currency on a run that may still fail.
+type MerchantBuff = { id: string; name: string; icon: string; cost: number; desc: string };
+const MERCHANT_BUFFS: MerchantBuff[] = [
+  { id: "multishot", name: "Боевой заряд", icon: "⚡", cost: 50, desc: "+1 снаряд за выстрел (этот забег)" },
+  { id: "shield", name: "Усиленный щит", icon: "🛡️", cost: 60, desc: "+30 HP щита (этот забег)" },
+  { id: "nuke", name: "Ядерный боезапас", icon: "💣", cost: 45, desc: "+1 ядерный заряд" },
+  { id: "chrono", name: "Сброс хронозамедления", icon: "⏱️", cost: 30, desc: "Мгновенная готовность хроно-замедления" },
 ];
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -147,6 +167,26 @@ export default function App() {
   // price and the portal currency (name + icon) are always taken from Yandex.
   const [premiumOffer, setPremiumOffer] = useState<StoreOffer | null>(null);
   const [premiumCatalogChecked, setPremiumCatalogChecked] = useState(false);
+  // ── Meta-progression (v1.5.0): cloud-saved permanent upgrades + shards + missions.
+  const [meta, setMeta] = useState<MetaState>(() => {
+    try { return normalizeMetaState(JSON.parse(localStorage.getItem("meta_v1") ?? "null")); }
+    catch { return defaultMetaState(); }
+  });
+  const metaRef = useRef(meta);
+  metaRef.current = meta;
+  const [productStatuses, setProductStatuses] = useState<Record<string, ProductStatus>>({});
+  const [productOffers, setProductOffers] = useState<Record<string, StoreOffer | null>>({});
+  const [purchasePendingId, setPurchasePendingId] = useState<string | null>(null);
+  const [evolutionNotice, setEvolutionNotice] = useState<string | null>(null);
+  const [comboNotice, setComboNotice] = useState<string | null>(null);
+  const [lastShardsEarned, setLastShardsEarned] = useState(0);
+  const runStartRef = useRef<number>(0);
+  const runRevivedRef = useRef(false);
+  const runSynergiesRef = useRef(0);
+  const runEvolutionsRef = useRef(0);
+  const comboTierRef = useRef(0);
+  const runFinalizedRef = useRef(false);
+  const merchantRollRef = useRef<{ available: boolean; bought: Set<string> }>({ available: false, bought: new Set() });
   const [adminOpen, setAdminOpen] = useState(false);
   const [adminGod, setAdminGod] = useState(false);
   const [, setAdminRefresh] = useState(0);
@@ -161,10 +201,23 @@ export default function App() {
   useEffect(() => {
     void yandex.init().then(async () => {
       setAdsAvailable(yandex.isAvailable());
-      const [cloudScore, ownsPremiumShip, catalogOffer] = await Promise.all([
+      // Cloud meta state (permanent upgrades, shards, missions). Falls back to
+      // the localStorage snapshot when the SDK is absent or the player is a guest.
+      const cloudMeta = await yandex.loadData<unknown>(META_KEY);
+      if (cloudMeta) {
+        const normalized = normalizeMetaState(cloudMeta);
+        try { localStorage.setItem("meta_v1", JSON.stringify(normalized)); } catch { /* storage blocked */ }
+        setMeta(normalized);
+      }
+      // Product catalog-parity: fetch ownership + offers for every known product
+      // (void_wraith + the new premium_pass / starter_pack). Absent products are
+      // hidden from purchase UI (Game Requirements §1.13).
+      const productIds = PRODUCTS.map(p => p.id);
+      const [cloudScore, ownsPremiumShip, catalogOffer, ...ownershipChecks] = await Promise.all([
         yandex.loadHighScore(),
         yandex.hasPermanentPurchase("void_wraith"),
         yandex.getCatalogOffer("void_wraith"),
+        ...productIds.map(id => yandex.hasPermanentPurchase(id)),
       ]);
       if (cloudScore !== null) setHiscore(current => Math.max(current, cloudScore));
       // Outside the Yandex catalogue the ship is unlocked for development and QA.
@@ -173,6 +226,26 @@ export default function App() {
       // absent from the game, so the offer stays null and the CTA never shows.
       setPremiumOffer(catalogOffer);
       setPremiumCatalogChecked(true);
+      // Sync meta.unlockedProducts from real ownership, then fetch offers.
+      setMeta(prev => {
+        const owned = new Set(prev.unlockedProducts);
+        productIds.forEach((id, i) => {
+          const owns = Boolean(ownershipChecks[i]) || !yandex.isPlatformAvailable();
+          if (owns) owned.add(id);
+        });
+        if (owned.size === prev.unlockedProducts.length) return prev;
+        return { ...prev, unlockedProducts: [...owned] };
+      });
+      const statuses: Record<string, ProductStatus> = {};
+      const offers: Record<string, StoreOffer | null> = {};
+      for (const id of productIds) {
+        if (ownershipChecks[productIds.indexOf(id)] || !yandex.isPlatformAvailable()) { statuses[id] = { state: "owned" }; offers[id] = null; continue; }
+        const off = await yandex.getCatalogOffer(id);
+        offers[id] = off;
+        statuses[id] = { state: off ? "available" : "absent" };
+      }
+      setProductStatuses(statuses);
+      setProductOffers(offers);
     });
     const pauseForFocusLoss = () => {
       // Yandex checks focus loss independently of document.visibilityState. Some
@@ -231,7 +304,93 @@ export default function App() {
     if (g.bossActive && g.boss) {
       setBossHpPct(Math.max(0, g.boss.hp / g.boss.maxHp));
     }
+    // v1.5.0: combo escalation “juice” — banner + colour shift at milestones.
+    const combo = g.player.comboTimer > 0 ? g.player.combo : 0;
+    const tier = combo >= 50 ? 3 : combo >= 25 ? 2 : combo >= 10 ? 1 : 0;
+    if (tier !== comboTierRef.current) {
+      comboTierRef.current = tier;
+      if (tier > 0) {
+        const labels = ["", "РАЗГОН!", "ЯРОВОЙ СВЯЗЬ!", "ПОРОГ ВОЙНЫ!"];
+        setComboNotice(`${labels[tier]} x${combo}`);
+        setTimeout(() => setComboNotice(null), 2200);
+      }
+    }
   }, []);
+
+  // ── Meta-progression persistence & run finalisation (v1.5.0) ───────────────
+  // Writes the meta state to localStorage immediately (instant UI on reload)
+  // and mirrors it to the Yandex Player Data cloud (best-effort, async).
+  const persistMeta = useCallback((next: MetaState) => {
+    metaRef.current = next;
+    try { localStorage.setItem("meta_v1", JSON.stringify(next)); } catch { /* storage blocked */ }
+    void yandex.saveData(META_KEY, next);
+  }, []);
+
+  /** Apply permanent meta upgrades + owned product bonuses to a fresh run. */
+  const applyRunBonuses = useCallback((player: PlayerState) => {
+    const m = metaRef.current;
+    applyMetaToPlayer(m, player);
+    // «Ускоритель прогресса»: +1 free reroll (on top of field_logistics).
+    // «Стартовый набор»: +1 banish and an extra starting shield.
+    if (m.unlockedProducts.includes("starter_pack")) {
+      if (!player.shield) player.shield = { hp: 0, maxHp: 0, regenTimer: 0 };
+      player.shield.maxHp += 25;
+      player.shield.hp = player.shield.maxHp;
+    }
+  }, []);
+
+  /** Compute the run result, award shards, update missions/totals, persist.
+   *  Reads from metaRef.current (not the state updater) so it stays pure w.r.t.
+   *  React and is guarded against double-fire on death+later frames. */
+  const finalizeRun = useCallback((victory: boolean) => {
+    if (runFinalizedRef.current) return;
+    runFinalizedRef.current = true;
+    const g = gameRef.current;
+    if (!g) return;
+    const st = g.player.stats;
+    const accuracy = st.shotsFired > 0 ? Math.round((st.shotsHit / st.shotsFired) * 100) : 0;
+    const run: RunResult = {
+      score: g.player.score,
+      wave: waveRef.current,
+      kills: g.player.kills,
+      bossesKilled: st.bossesKilled,
+      elitesKilled: st.elitesKilled,
+      powerupsCollected: st.powerupsCollected,
+      synergiesUnlocked: runSynergiesRef.current,
+      evolutionsTriggered: runEvolutionsRef.current,
+      accuracy,
+      shotsFired: st.shotsFired,
+      durationSec: Math.max(1, Math.round((performance.now() - runStartRef.current) / 1000)),
+      victory,
+      revived: runRevivedRef.current,
+      bossDamageTaken: 0,
+      shipClass: g.player.shipClass,
+    };
+    const prev = metaRef.current;
+    // Deep-ish clone of the mutable nested fields so updateMissions / totals
+    // edits do not mutate the previous state object in place.
+    const next: MetaState = {
+      ...prev,
+      missions: { ...prev.missions },
+      claimedMissions: { ...prev.claimedMissions },
+      totals: { ...prev.totals },
+    };
+    next.totals.kills += run.kills;
+    next.totals.bossesKilled += run.bossesKilled;
+    next.totals.elitesKilled += run.elitesKilled;
+    next.totals.powerupsCollected += run.powerupsCollected;
+    next.totals.runs += 1;
+    next.totals.synergies += run.synergiesUnlocked;
+    next.totals.evolutions += run.evolutionsTriggered;
+    const earned = computeShardsEarned(run, next);
+    next.shards += earned;
+    next.totals.shardsEarned += earned;
+    const ctx: MissionContext = { run, totals: next.totals, unlockedProducts: next.unlockedProducts };
+    updateMissions(ctx, next);
+    setLastShardsEarned(earned);
+    persistMeta(next);
+    setMeta(next);
+  }, [persistMeta]);
 
   // ─── Sound Toggle ───────────────────────────────────────────────────────────
   const handleToggleSound = useCallback(() => {
@@ -246,6 +405,8 @@ export default function App() {
     audio.startAmbientBGM();
 
     const player = makeInitialPlayer(shipClass);
+    // v1.5.0: apply permanent meta upgrades + owned product bonuses to the run.
+    applyRunBonuses(player);
     const objects = makeInitialObjects(player);
     // Premium «Немезида» opening: the ship materializes into the arena and
     // starts with a Phase Shift already researched (synergy head-start).
@@ -281,14 +442,22 @@ export default function App() {
     setTimeSlow(false);
     setReviveUsed(false);
     setAdPending(false);
-    setRerollsLeft(3);
-    setBanishesLeft(1);
+    // Free rerolls = base 3 + field_logistics meta + premium_pass bonus.
+    const bonusRerolls = metaBonusRerolls(metaRef.current) + (metaRef.current.unlockedProducts.includes("premium_pass") ? 1 : 0);
+    setRerollsLeft(3 + bonusRerolls);
+    setBanishesLeft(1 + (metaRef.current.unlockedProducts.includes("starter_pack") ? 1 : 0));
     banishedUpgradeIdsRef.current.clear();
     setUpgradeAdPending(false);
     setBonusChoiceUsed(false);
     setWaveNotice(null);
+    runStartRef.current = performance.now();
+    runRevivedRef.current = false;
+    runSynergiesRef.current = 0;
+    runEvolutionsRef.current = 0;
+    runFinalizedRef.current = false;
+    comboTierRef.current = 0;
     syncUI();
-  }, [adminEnabled, premiumUnlocked, qualityMode, selectedClass, syncUI]);
+  }, [adminEnabled, premiumUnlocked, qualityMode, selectedClass, syncUI, applyRunBonuses]);
 
   // ─── Wave advance ────────────────────────────────────────────────────────────
   const advanceWave = useCallback((route: RouteId = "asteroids") => {
@@ -412,8 +581,17 @@ export default function App() {
     }
     const unlockedSynergies = unlockAvailableSynergies(g.player);
     if (unlockedSynergies.length > 0) {
+      runSynergiesRef.current += unlockedSynergies.length;
       setSynergyNotice(`${unlockedSynergies[0].icon} СИНЕРГИЯ: ${unlockedSynergies[0].name}`);
       setTimeout(() => setSynergyNotice(null), 3200);
+    }
+    // v1.5.0: weapon/upgrade evolutions (super-synergies). Fires at most once
+    // per evolution per run (tracked in player.evolved).
+    const triggered = checkEvolutions(g.player);
+    if (triggered.length > 0) {
+      runEvolutionsRef.current += triggered.length;
+      setEvolutionNotice(`${triggered[0].icon} ЭВОЛЮЦИЯ: ${triggered[0].name}`);
+      setTimeout(() => setEvolutionNotice(null), 3600);
     }
     pendingLevelUpsRef.current--;
     if (pendingLevelUpsRef.current > 0) {
@@ -536,6 +714,75 @@ export default function App() {
     setTimeSlow(true);
   }, []);
 
+  // ── Merchant (route-screen meta sink, v1.5.0) ───────────────────────────────
+  const handleBuyMerchant = useCallback((buffId: string) => {
+    const g = gameRef.current;
+    const buff = MERCHANT_BUFFS.find(b => b.id === buffId);
+    if (!g || !buff) return;
+    if (merchantRollRef.current.bought.has(buffId)) return;
+    // Read current shards from the ref (not the state updater) so the deduction
+    // is synchronous and safe against React StrictMode double-invocation.
+    const prev = metaRef.current;
+    if (prev.shards < buff.cost) return;
+    const next = { ...prev, shards: prev.shards - buff.cost };
+    metaRef.current = next;
+    setMeta(next);
+    persistMeta(next);
+    merchantRollRef.current.bought.add(buffId);
+    // Apply the temporary in-run buff to the live player.
+    const p = g.player;
+    switch (buff.id) {
+      case "multishot": p.multishot += 1; break;
+      case "shield":
+        if (!p.shield) p.shield = { hp: 0, maxHp: 0, regenTimer: 0 };
+        p.shield.maxHp += 30; p.shield.hp = p.shield.maxHp; break;
+      case "nuke": p.nukeCharges += 1; break;
+      case "chrono": p.timeSlowCooldown = 0; timeSlowRef.current = false; setTimeSlow(false); break;
+    }
+    audio.playPowerup();
+  }, [persistMeta]);
+
+  // ── Hangar handlers (v1.5.0) ────────────────────────────────────────────────
+  const handleBuyMetaUpgrade = useCallback((id: string) => {
+    const def = META_UPGRADES.find(d => d.id === id);
+    if (!def) return;
+    const prev = metaRef.current;
+    const next = { ...prev, upgrades: { ...prev.upgrades } };
+    if (!buyMetaUpgrade(next, def)) return;
+    persistMeta(next);
+    setMeta(next);
+  }, [persistMeta]);
+
+  const handleClaimMission = useCallback((id: string) => {
+    const def = MISSIONS.find(d => d.id === id);
+    if (!def) return;
+    const prev = metaRef.current;
+    const next = { ...prev, claimedMissions: { ...prev.claimedMissions } };
+    if (!claimMission(next, def)) return;
+    persistMeta(next);
+    setMeta(next);
+  }, [persistMeta]);
+
+  const handleBuyProduct = useCallback(async (id: string) => {
+    if (purchasePendingId) return;
+    setPurchasePendingId(id);
+    yandex.setGameplay(false);
+    audio.suspend();
+    const purchased = await yandex.purchasePermanent(id);
+    audio.resume();
+    setPurchasePendingId(null);
+    if (!purchased) return;
+    // Reflect ownership immediately and refresh catalog offers.
+    const prev = metaRef.current;
+    if (!prev.unlockedProducts.includes(id)) {
+      const next = { ...prev, unlockedProducts: [...prev.unlockedProducts, id] };
+      persistMeta(next);
+      setMeta(next);
+    }
+    setProductStatuses(p => ({ ...p, [id]: { state: "owned" } }));
+    if (id === "void_wraith") setPremiumUnlocked(true);
+  }, [purchasePendingId, persistMeta]);
+
   const handlePremiumPurchase = useCallback(async () => {
     if (purchasePending || premiumUnlocked || !premiumOffer) return;
     setPurchasePending(true);
@@ -544,8 +791,19 @@ export default function App() {
     const purchased = await yandex.purchasePermanent("void_wraith");
     audio.resume();
     setPurchasePending(false);
-    if (purchased) setPremiumUnlocked(true);
-  }, [premiumUnlocked, premiumOffer, purchasePending]);
+    if (purchased) {
+      setPremiumUnlocked(true);
+      // Keep the meta ownership + shop UI in sync immediately so the wraith_owner
+      // mission and the Hangar shop reflect the purchase without a reload.
+      const prev = metaRef.current;
+      if (!prev.unlockedProducts.includes("void_wraith")) {
+        const next = { ...prev, unlockedProducts: [...prev.unlockedProducts, "void_wraith"] };
+        persistMeta(next);
+        setMeta(next);
+      }
+      setProductStatuses(p => ({ ...p, void_wraith: { state: "owned" } }));
+    }
+  }, [premiumUnlocked, premiumOffer, purchasePending, persistMeta]);
 
   // The purchase gate opens only when the console product is active (an offer
   // was loaded); otherwise the premium ship stays unselectable and unpurchasable.
@@ -578,6 +836,7 @@ export default function App() {
     current.bullets = current.bullets.filter(b => b.fromPlayer);
     current.screenShake = 0;
     setReviveUsed(true);
+    runRevivedRef.current = true;
     phaseRef.current = "playing";
     setPhase("playing");
     audio.startAmbientBGM();
@@ -677,6 +936,7 @@ export default function App() {
           try { localStorage.setItem("hs", String(hs)); } catch { /* storage may be blocked */ }
           setHiscore(hs);
           void yandex.saveHighScore(hs);
+          finalizeRun(false);
           phaseRef.current = "dead";
           setPhase("dead");
         },
@@ -687,6 +947,7 @@ export default function App() {
         },
         onWaveComplete: () => {
           if (phaseRef.current === "playing") {
+            merchantRollRef.current = { available: metaRef.current.shards >= 30 && Math.random() < 0.5, bought: new Set() };
             phaseRef.current = "route";
             setPhase("route");
           }
@@ -703,9 +964,11 @@ export default function App() {
               try { localStorage.setItem("hs", String(hs)); } catch { /* optional */ }
               setHiscore(hs);
               void yandex.saveHighScore(hs);
+              finalizeRun(true);
               phaseRef.current = "victory";
               setPhase("victory");
             } else {
+              merchantRollRef.current = { available: metaRef.current.shards >= 30 && Math.random() < 0.5, bought: new Set() };
               phaseRef.current = "route";
               setPhase("route");
             }
@@ -804,7 +1067,7 @@ export default function App() {
     // Tell Yandex the game is visually ready now that the canvas and loop exist.
     yandex.markReady();
     return () => cancelAnimationFrame(rafRef.current);
-  }, [advanceWave, handleLevelUp, hiscore, syncUI, bossName]);
+  }, [advanceWave, handleLevelUp, hiscore, syncUI, bossName, finalizeRun]);
 
   // ─── Mouse / Touch controls ───────────────────────────────────────────────
   const isMouseDownRef = useRef(false);
@@ -1161,12 +1424,46 @@ export default function App() {
                 </button>
               ))}
             </div>
+            {merchantRollRef.current.available && (
+              <div className="mt-5 w-full max-w-4xl rounded-2xl border border-fuchsia-700 bg-fuchsia-950/30 p-4">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="font-black text-fuchsia-200">🛒 ТОРГОВЕЦ ОСКОЛКОВ</span>
+                  <span className="font-mono text-xs text-fuchsia-300">✨ {meta.shards.toLocaleString()} доступно</span>
+                </div>
+                <p className="mb-3 text-xs text-slate-400">Потратьте постоянные осколки на временный бонус этого забега. Риск: валюта тратится даже при гибели.</p>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  {MERCHANT_BUFFS.map(buff => {
+                    const bought = merchantRollRef.current.bought.has(buff.id);
+                    const afford = meta.shards >= buff.cost;
+                    return (
+                      <button key={buff.id} onClick={() => handleBuyMerchant(buff.id)} disabled={bought || !afford} className={`rounded-xl border p-2 text-left transition ${bought?"border-emerald-700 bg-emerald-950/50 opacity-60":afford?"border-fuchsia-600 bg-slate-900/70 hover:border-fuchsia-400 cursor-pointer":"border-slate-800 bg-slate-950/50 opacity-50 cursor-not-allowed"}`}>
+                        <div className="text-xl">{buff.icon}</div>
+                        <div className="text-[11px] font-black text-white leading-tight">{buff.name}</div>
+                        <div className="text-[9px] text-fuchsia-300 font-mono">✨ {buff.cost}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
         {synergyNotice && (
           <div className="absolute left-1/2 top-40 z-40 -translate-x-1/2 rounded-full border border-fuchsia-400 bg-fuchsia-950/95 px-7 py-3 font-mono text-lg font-black text-fuchsia-100 shadow-2xl shadow-fuchsia-900">
             {synergyNotice}
+          </div>
+        )}
+
+        {evolutionNotice && (
+          <div className="absolute left-1/2 top-52 z-40 -translate-x-1/2 rounded-full border border-amber-300 bg-gradient-to-r from-amber-600 to-orange-600 px-8 py-3 font-mono text-lg font-black text-white shadow-2xl shadow-orange-900 animate-pulse">
+            {evolutionNotice}
+          </div>
+        )}
+
+        {comboNotice && (
+          <div className="absolute left-1/2 top-28 z-40 -translate-x-1/2 rounded-full border border-cyan-300 bg-cyan-950/95 px-6 py-2 font-mono text-sm font-black text-cyan-100 shadow-xl">
+            {comboNotice}
           </div>
         )}
 
@@ -1362,8 +1659,29 @@ export default function App() {
                         )
                         : "СЕЙЧАС НЕДОСТУПНО"}
               </button>
+
+              {/* v1.5.0: Hangar — permanent upgrades, missions, shop. */}
+              <button
+                onClick={() => { audio.resume(); phaseRef.current = "hangar"; setPhase("hangar"); }}
+                className="mt-3 w-full py-3 bg-gradient-to-r from-fuchsia-600 to-purple-700 hover:from-fuchsia-500 hover:to-purple-600 text-white font-black text-base rounded-full shadow-xl transition-all active:scale-95 cursor-pointer"
+              >
+                🛰️ АНГАР {meta.shards > 0 && <span className="font-mono text-fuchsia-200">· ✨{meta.shards.toLocaleString()}</span>}
+              </button>
             </div>
           </div>
+        )}
+
+        {phase === "hangar" && (
+          <Hangar
+            meta={meta}
+            productStatuses={productStatuses}
+            offers={productOffers}
+            purchasePendingId={purchasePendingId}
+            onBuyUpgrade={handleBuyMetaUpgrade}
+            onClaimMission={handleClaimMission}
+            onBuyProduct={handleBuyProduct}
+            onBack={() => { phaseRef.current = "menu"; setPhase("menu"); }}
+          />
         )}
 
         {/* Victory after the wave-50 Omega; endless mode remains optional. */}
@@ -1394,6 +1712,14 @@ export default function App() {
               <div className="text-6xl mb-2 animate-bounce">💀</div>
               <h2 className="text-4xl font-black text-red-400 mb-1">КОРАБЛЬ УНИЧТОЖЕН</h2>
               <p className="text-slate-400 font-mono text-xs mb-5">Ваше судно было сбито в глубоком космосе</p>
+
+              {lastShardsEarned > 0 && (
+                <div className="mb-4 rounded-xl border border-fuchsia-700 bg-fuchsia-950/50 px-4 py-2.5 text-center">
+                  <span className="font-mono text-xs text-fuchsia-300">ЗАРАБОТАНО</span>
+                  <div className="font-black text-2xl text-fuchsia-200">✨ +{lastShardsEarned} осколков</div>
+                  <span className="font-mono text-[10px] text-slate-400">Потратьте в Ангаре на постоянные улучшения</span>
+                </div>
+              )}
 
               <div className="bg-slate-900/90 rounded-2xl border border-slate-700 p-5 mb-5 space-y-2.5 font-mono text-sm">
                 <div className="flex justify-between items-center pb-2 border-b border-slate-800">

@@ -181,6 +181,8 @@ export interface PlayerState {
   xpToNext: number;
   upgrades: PlayerUpgrade[];
   synergies: string[];
+  /** Evolutions triggered this run (ids from evolutions.ts). */
+  evolved: string[];
   invincTimer: number;
   magnetRange: number;
   aura: boolean;
@@ -274,4 +276,4 @@ export interface Mine {
   radius: number;
 }
 
-export type GamePhase = "menu" | "ship_select" | "tutorial" | "playing" | "upgrade" | "route" | "boss_intro" | "paused" | "dead" | "victory";
+export type GamePhase = "menu" | "ship_select" | "tutorial" | "playing" | "upgrade" | "route" | "boss_intro" | "paused" | "dead" | "victory" | "hangar";

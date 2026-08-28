@@ -238,7 +238,7 @@ export const MISSIONS: MissionDef[] = [
   { id: "boss_master", name: "Палач боссов", icon: "⚔️", reward: 30, goal: 10, description: "Победите 10 боссов", progress: c => c.totals.bossesKilled },
   { id: "elite_hunter", name: "Охотник на элиту", icon: "🎯", reward: 20, goal: 50, description: "Уничтожьте 50 элитных врагов", progress: c => c.totals.elitesKilled },
   { id: "synergy_apprentice", name: "Синергия", icon: "🔗", reward: 15, goal: 1, description: "Откройте 1 синергию", progress: c => c.totals.synergies },
-  { id: "synergy_master", name: "Мастер связей", icon: "🌟", reward: 40, goal: 4, description: "Откройте все 4 синергии за забег", progress: c => c.run.synergiesUnlocked },
+  { id: "synergy_master", name: "Мастер связей", icon: "🌟", reward: 40, goal: 4, description: "Откройте 4 синергии за забег", progress: c => c.run.synergiesUnlocked },
   { id: "rich", name: "Богач", icon: "💰", reward: 20, goal: 5000, description: "Наберите 5000 очков за забег", progress: c => c.run.score },
   { id: "richer", name: "Миллиардер", icon: "💎", reward: 50, goal: 50000, description: "Наберите 50000 очков за забег", progress: c => c.run.score },
   { id: "no_revive", name: "Без передышки", icon: "🚫", reward: 25, goal: 1, description: "Дойдите до 25 волны без revive", progress: c => (c.run.wave >= 25 && !c.run.revived ? 1 : 0) },

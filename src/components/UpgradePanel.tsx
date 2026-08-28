@@ -3,6 +3,7 @@ import type { UpgradeDef } from "../game/types";
 import type { PlayerState } from "../game/types";
 import { ALL_UPGRADES, canUpgrade, getUpgradeLevel } from "../game/upgrades";
 import { SYNERGIES } from "../game/synergies";
+import { EVOLUTIONS } from "../game/evolutions";
 
 interface Props {
   choices: UpgradeDef[];
@@ -61,6 +62,10 @@ export default function UpgradePanel({
           const visiblePips = Math.min(maxLevel, 8);
           const stars = Array.from({ length: visiblePips }, (_, i) => i < Math.min(currentLevel, visiblePips));
           const relatedSynergies = SYNERGIES.filter(synergy => synergy.requires.includes(u.id));
+          // Индикатор прогресса эволюций: игрок видит, что строит билд
+          // («до эволюции осталось 1 улучшение»).
+          const relatedEvolutions = EVOLUTIONS.filter(evolution =>
+            !player.evolved.includes(evolution.id) && evolution.requires.includes(u.id));
 
           return (
             <button
@@ -111,6 +116,22 @@ export default function UpgradePanel({
                     return (
                       <div key={synergy.id} className={`rounded-md border px-2 py-1 text-[9px] font-black leading-tight ${style}`}>
                         {active ? "✓ АКТИВНА" : completes ? "✦ ЗАВЕРШАЕТ" : "🧬 ДЛЯ СИНЕРГИИ"}: {synergy.name} · {afterPick}/{synergy.requires.length}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Evolution hint: super-synergy progress on this card. */}
+              {relatedEvolutions.length > 0 && (
+                <div className="mb-2 space-y-1">
+                  {relatedEvolutions.map(evolution => {
+                    const found = evolution.requires.filter(id => getUpgradeLevel(player, id) > 0).length;
+                    const afterPick = Math.min(evolution.requires.length, found + (currentLevel === 0 ? 1 : 0));
+                    const completes = afterPick === evolution.requires.length;
+                    return (
+                      <div key={evolution.id} className={`rounded-md border px-2 py-1 text-[9px] font-black leading-tight ${completes ? "border-orange-400 bg-orange-500/20 text-orange-200 animate-pulse" : "border-amber-600/50 bg-amber-950/60 text-amber-200"}`}>
+                        {completes ? "⚡ ЗАПУСКАЕТ ЭВОЛЮЦИЮ" : `🧬 ЭВОЛЮЦИЯ ${afterPick}/${evolution.requires.length}`}: {evolution.name}
                       </div>
                     );
                   })}

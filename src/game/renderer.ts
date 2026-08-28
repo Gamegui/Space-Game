@@ -143,31 +143,32 @@ export function drawBackground(ctx: CanvasRenderingContext2D, frame: number) {
 // sprites per variant — the ship renders up to 4 body copies per frame (echo
 // clone + phased double-exposure ghosts + main hull), which with live
 // shadowBlur was the Wraith's single biggest frame cost.
+type WraithBodyVariant = "idle" | "phased" | "echo";
+
 const WRAITH_SPRITE_SIZE = 120; // body spans +/-34 px plus shadowBlur bleed
 const wraithBodySprites = new Map<string, HTMLCanvasElement>();
 const wraithCoreSprites = new Map<string, HTMLCanvasElement>();
 
-function getWraithBodySprite(phased: boolean): HTMLCanvasElement {
-  const key = phased ? "phased" : "idle";
-  const cached = wraithBodySprites.get(key);
+function getWraithBodySprite(variant: WraithBodyVariant): HTMLCanvasElement {
+  const cached = wraithBodySprites.get(variant);
   if (cached) return cached;
-  return cacheSprite(wraithBodySprites, key, WRAITH_SPRITE_SIZE, WRAITH_SPRITE_SIZE, sctx => {
+  return cacheSprite(wraithBodySprites, variant, WRAITH_SPRITE_SIZE, WRAITH_SPRITE_SIZE, sctx => {
     sctx.translate(WRAITH_SPRITE_SIZE / 2, WRAITH_SPRITE_SIZE / 2);
-    drawWraithBodyShapes(sctx, phased);
+    drawWraithBodyShapes(sctx, variant);
   });
 }
 
-function getWraithCoreSprite(phased: boolean): HTMLCanvasElement {
-  const key = phased ? "phased" : "idle";
-  const cached = wraithCoreSprites.get(key);
+function getWraithCoreSprite(variant: WraithBodyVariant): HTMLCanvasElement {
+  const cached = wraithCoreSprites.get(variant);
   if (cached) return cached;
   const size = 24;
-  return cacheSprite(wraithCoreSprites, key, size, size, sctx => {
+  return cacheSprite(wraithCoreSprites, variant, size, size, sctx => {
     sctx.translate(size / 2, size / 2);
+    const coreColor = variant === "echo" ? "#a5f3fc" : variant === "phased" ? "#ffffff" : "#f0abfc";
     const g = sctx.createRadialGradient(0, 0, 0, 0, 0, size / 2);
     g.addColorStop(0, "#ffffff");
-    g.addColorStop(0.3, phased ? "#ffffff" : "#f0abfc");
-    g.addColorStop(1, "rgba(240,171,252,0)");
+    g.addColorStop(0.3, coreColor);
+    g.addColorStop(1, variant === "echo" ? "rgba(165,243,252,0)" : "rgba(240,171,252,0)");
     sctx.fillStyle = g;
     sctx.beginPath();
     sctx.arc(0, 0, size / 2, 0, Math.PI * 2);
@@ -175,11 +176,11 @@ function getWraithCoreSprite(phased: boolean): HTMLCanvasElement {
   });
 }
 
-function drawWraithBodyShapes(ctx: CanvasRenderingContext2D, phased: boolean) {
-  const main = phased ? "#f0abfc" : "#e879f9";
+function drawWraithBodyShapes(ctx: CanvasRenderingContext2D, variant: WraithBodyVariant) {
+  const main = variant === "phased" ? "#f0abfc" : variant === "echo" ? "#67e8f9" : "#e879f9";
 
   // Membrane wings
-  ctx.shadowBlur = phased ? 16 : 10;
+  ctx.shadowBlur = variant === "idle" ? 10 : 16;
   ctx.shadowColor = main;
   ctx.fillStyle = "rgba(232,121,249,0.22)";
   ctx.strokeStyle = main;
@@ -198,7 +199,7 @@ function drawWraithBodyShapes(ctx: CanvasRenderingContext2D, phased: boolean) {
   ctx.fill(); ctx.stroke();
 
   // Blade hull
-  ctx.shadowBlur = phased ? 18 : 12;
+  ctx.shadowBlur = variant === "idle" ? 12 : 18;
   ctx.shadowColor = main;
   ctx.fillStyle = "#150a1e";
   ctx.strokeStyle = main;
@@ -228,14 +229,20 @@ function drawWraithBodyShapes(ctx: CanvasRenderingContext2D, phased: boolean) {
   ctx.shadowBlur = 0;
 }
 
-function drawWraithBody(ctx: CanvasRenderingContext2D, frame: number, phased: boolean) {
-  blitSprite(ctx, getWraithBodySprite(phased), WRAITH_SPRITE_SIZE, WRAITH_SPRITE_SIZE);
+function drawWraithBody(ctx: CanvasRenderingContext2D, frame: number, variant: WraithBodyVariant) {
+  blitSprite(ctx, getWraithBodySprite(variant), WRAITH_SPRITE_SIZE, WRAITH_SPRITE_SIZE);
   // Pulsing void core — a cached glow sprite scaled by the pulse instead of a
-  // live shadowBlur'd circle.
-  const coreR = 3 + Math.sin(frame * 0.3) * 1.3;
-  const glow = 8 + Math.max(1.5, coreR) * 3;
-  ctx.drawImage(getWraithCoreSprite(phased), -glow / 2, 6 - glow / 2, glow, glow);
+  // live shadowBlur'd circle. Насыщенность Бездны усиливает свечение ядра.
+  const soulsFrac = ctxSoulsFraction;
+  const coreR = (3 + Math.sin(frame * 0.3) * 1.3) * (1 + soulsFrac * 0.5);
+  const glow = (8 + Math.max(1.5, coreR) * 3) * (1 + soulsFrac * 0.6);
+  ctx.drawImage(getWraithCoreSprite(variant), -glow / 2, 6 - glow / 2, glow, glow);
 }
+
+// Доля насыщения души (0..1) для визуальной эскалации корпуса «Немезиды».
+// Устанавливается drawPlayer перед отрисовкой (25/50/75/100% → рост свечения,
+// длины следа и яркости крыльев).
+let ctxSoulsFraction = 0;
 
 // Arena-wide void tint while the Wraith's phase window is open. The gradient
 // is baked once at the maximum possible alpha and blitted with a scaled
@@ -265,6 +272,9 @@ export function drawVoidPhaseVignette(ctx: CanvasRenderingContext2D, frame: numb
 
 export function drawPlayer(ctx: CanvasRenderingContext2D, state: PlayerState, frame: number) {
   const { pos, invincTimer, shield, satellites, drones, aura, shipClass, rapidBoostTimer } = state;
+  // Насыщенность Бездны (0..1) — визуальная эскалация премиальной механики:
+  // свечение ядра, длина следа и яркость крыльев растут на 25/50/75/100%.
+  ctxSoulsFraction = shipClass === "void_wraith" ? Math.min(1, state.voidSouls / 20) : 0;
 
   // Phase echo: the Wraith's fading clone left behind by the blink. Drawn
   // before the damage-blink early return so it survives the ship's flash.
@@ -276,16 +286,16 @@ export function drawPlayer(ctx: CanvasRenderingContext2D, state: PlayerState, fr
     ctx.translate(state.voidEchoPos.x, state.voidEchoPos.y);
     if (renderPerformanceTier === 0) {
       const eg = ctx.createRadialGradient(0, 0, 2, 0, 0, 26);
-      eg.addColorStop(0, "rgba(232,121,249,0.5)");
-      eg.addColorStop(1, "rgba(232,121,249,0)");
+      eg.addColorStop(0, "rgba(103,232,249,0.5)");
+      eg.addColorStop(1, "rgba(103,232,249,0)");
       ctx.fillStyle = eg;
       ctx.beginPath();
       ctx.arc(0, 0, 26, 0, Math.PI * 2);
       ctx.fill();
     } else {
-      ctx.shadowBlur = renderPerformanceTier === 1 ? 10 : 14;
-      ctx.shadowColor = "#e879f9";
-      drawWraithBody(ctx, frame, false);
+      // Эхо визуально отличается от самого корабля: бледно-циановый силуэт
+      // призрачного двойника (корабль остаётся фиолетовым).
+      drawWraithBody(ctx, frame, "echo");
     }
     ctx.restore();
   }
@@ -345,13 +355,18 @@ export function drawPlayer(ctx: CanvasRenderingContext2D, state: PlayerState, fr
   eg.addColorStop(0.5, "rgba(99,102,241,0.5)");
   eg.addColorStop(1, "rgba(0,0,0,0)");
   ctx.fillStyle = eg;
-  const trailH = 22 + Math.sin(frame * 0.3) * 8;
+  // След растёт в Фазе Бездны и от накопленных душ — сила «читается» глазами.
+  const phasedNow = shipClass === "void_wraith" && state.ghostTimer > 0;
+  const trailBoost = (phasedNow ? 1.6 : 1) * (1 + ctxSoulsFraction * 0.5);
+  const trailH = (22 + Math.sin(frame * 0.3) * 8) * trailBoost;
+  ctx.globalAlpha = phasedNow ? 0.95 : 1;
   ctx.beginPath();
   ctx.moveTo(-8, 14);
   ctx.lineTo(0, 14 + trailH);
   ctx.lineTo(8, 14);
   ctx.closePath();
   ctx.fill();
+  ctx.globalAlpha = 1;
 
   // The Wraith drags two side plasma wisps behind its blade hull.
   if (shipClass === "void_wraith" && renderPerformanceTier >= 1) {
@@ -401,25 +416,31 @@ export function drawPlayer(ctx: CanvasRenderingContext2D, state: PlayerState, fr
         ctx.fill();
       }
     }
-    ctx.globalAlpha = phased ? 1 : 0.82 + 0.18 * Math.sin(frame * 0.22);
+    // Переход в фазу: на первые ~12 кадров корпус почти исчезает и быстро
+    // «проявляется» обратно — ощущение смены состояния, а не просто свечения.
+    const phaseFade = phased && state.ghostTimer > 108
+      ? 0.15 + (120 - state.ghostTimer) / 12 * 0.85
+      : 1;
+    // globalAlpha > 1 молча игнорируется canvas API — обязательно клампим.
+    ctx.globalAlpha = Math.min(1, (phased ? phaseFade : 0.82 + 0.18 * Math.sin(frame * 0.22)) * (1 + ctxSoulsFraction * 0.18));
     if (phased && renderPerformanceTier === 2) {
       // Double-exposure ghosting while phased (high tier only).
       for (const gx of [3, -3]) {
         ctx.save();
-        ctx.globalAlpha = 0.28;
+        ctx.globalAlpha = 0.28 * phaseFade;
         ctx.translate(gx, -2);
-        drawWraithBody(ctx, frame, true);
+        drawWraithBody(ctx, frame, "phased");
         ctx.restore();
       }
     }
     if (phased && renderPerformanceTier === 1) {
       ctx.save();
-      ctx.globalAlpha = 0.28;
+      ctx.globalAlpha = 0.28 * phaseFade;
       ctx.translate(3, -2);
-      drawWraithBody(ctx, frame, true);
+      drawWraithBody(ctx, frame, "phased");
       ctx.restore();
     }
-    drawWraithBody(ctx, frame, phased);
+    drawWraithBody(ctx, frame, phased ? "phased" : "idle");
     ctx.globalAlpha = 1;
   } else {
     ctx.shadowBlur = 15;

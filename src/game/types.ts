@@ -45,7 +45,12 @@ export interface Bullet {
   color: string;
   pierce: number;
   homing: boolean;
-  homingTarget?: number;
+  /** Удержанная цель самонаведения (до смерти/выхода за дистанцию). */
+  target?: Enemy;
+  /** Уже поражённые этим снарядом цели (не даёт пробитию бить одну цель повторно). */
+  hitEnemies?: WeakSet<Enemy>;
+  /** Оставшиеся кадры полёта (undefined = без ограничения). */
+  life?: number;
 }
 
 export interface Enemy {
@@ -171,11 +176,15 @@ export interface PlayerState {
   piercing: number;
   multishot: number;
   spreadAngle: number;
+  /** «Широкий сектор»: доля сужения разброса крайних снарядов (0..0.2). */
+  spreadTighten: number;
   homing: boolean;
   homingStrength: number;
   satellites: Satellite[];
   drones: Drone[];
   shield: Shield | null;
+  /** «Конденсатор щита»: множитель скорости восстановления щита. */
+  shieldRegenMultiplier: number;
   xp: number;
   level: number;
   xpToNext: number;
@@ -185,6 +194,12 @@ export interface PlayerState {
   evolved: string[];
   invincTimer: number;
   magnetRange: number;
+  /** «Магнитный гравизахват»: бонус к скорости притяжения опыта. */
+  magnetPullBonus: number;
+  /** «Ускоритель плазмы»: бонус к дальности полёта снарядов. */
+  bulletRangeBonus: number;
+  /** «Турбодвигатель»: кадры непрерывного движения (для бонуса разгона). */
+  turboStreak: number;
   aura: boolean;
   auraDamage: number;
   auraTimer: number;
@@ -218,6 +233,10 @@ export interface PlayerState {
   voidSoulIdleTimer: number;
   voidEchoTimer: number;
   voidEchoPos: Vec2;
+  /** «ГОЛОД БЕЗДНЫ» (синергия Немезиды): убийства лечат и кормят души. */
+  voidHunger: boolean;
+  /** «ПРИЗРАЧНЫЙ АРСЕНАЛ» (синергия Немезиды): усиление снарядов в фазе. */
+  ghostArsenal: boolean;
   blackHole: boolean;
   blackHoleTimer: number;
   blackHoleCooldown: number;

@@ -15,8 +15,14 @@ export const ALL_UPGRADES: UpgradeDef[] = [
   },
   {
     id: "spread_shot", name: "Широкий сектор", icon: "🌊", rarity: "common", category: "атака", maxLevel: 4,
-    description: "Увеличивает угол веерной стрельбы и +1 снаряд",
-    apply: (s, l) => { s.spreadAngle += 10; if (l % 2 === 1) s.multishot += 1; },
+    description: "+1 снаряд и шире веер (макс. 85°); чётные уровни на 10% сужают разброс крайних снарядов",
+    apply: (s, l) => {
+      // Кап разброса: крайние снаряды не должны улетать мимо зоны боя.
+      s.spreadAngle = Math.min(s.spreadAngle + 10, 85);
+      if (l % 2 === 1) s.multishot += 1;
+      // Чётные уровни (2 и 4) подтягивают крайние снаряды к центру веера.
+      s.spreadTighten = Math.min(0.2, 0.1 * Math.floor(l / 2));
+    },
   },
   {
     id: "rapid_fire", name: "Скорострельность", icon: "🔥", rarity: "common", category: "атака", maxLevel: 5,
@@ -25,8 +31,8 @@ export const ALL_UPGRADES: UpgradeDef[] = [
   },
   {
     id: "damage_up", name: "Силовое ядро", icon: "💠", rarity: "common", category: "атака", maxLevel: 8,
-    description: "Урон снарядов +20%",
-    apply: (s, _l) => { s.bulletDamage *= 1.2; },
+    description: "Урон снарядов +18% (уровни 1–4), далее +12%",
+    apply: (s, l) => { s.bulletDamage *= l <= 4 ? 1.18 : 1.12; },
   },
   {
     id: "big_bullets", name: "Тяжёлый калибр", icon: "🔵", rarity: "common", category: "атака", maxLevel: 4,
@@ -35,8 +41,12 @@ export const ALL_UPGRADES: UpgradeDef[] = [
   },
   {
     id: "bullet_speed", name: "Ускоритель плазмы", icon: "💨", rarity: "common", category: "атака", maxLevel: 4,
-    description: "Скорость снарядов +20% и +5% к наведению",
-    apply: (s, _l) => { s.bulletSpeed *= 1.2; s.homingStrength = Math.min(0.15, s.homingStrength + 0.005); },
+    description: "Скорость снарядов +20%, дальность полёта +10% и +5% к наведению",
+    apply: (s, _l) => {
+      s.bulletSpeed *= 1.2;
+      s.homingStrength = Math.min(0.15, s.homingStrength + 0.005);
+      s.bulletRangeBonus += 0.1;
+    },
   },
   {
     id: "piercing", name: "Бронебойные снаряды", icon: "🗡️", rarity: "rare", category: "атака", maxLevel: 4,
@@ -157,8 +167,13 @@ export const ALL_UPGRADES: UpgradeDef[] = [
   },
   {
     id: "shield_regen", name: "Конденсатор щита", icon: "⚡🛡️", rarity: "common", category: "защита", maxLevel: 3,
-    description: "Щит перезаряжается на 35% быстрее и мгновенно +25 HP щита",
-    apply: (s, _l) => { if (s.shield) { s.shield.hp = Math.min(s.shield.maxHp, s.shield.hp + 25); } },
+    description: "Мгновенно +25 HP щита и +25% к скорости восстановления щита",
+    apply: (s, _l) => {
+      // Отдельная характеристика (а не чтение уровня в gameLoop): мгновенный
+      // ремонт + постоянное ускорение регена, как в описании предмета.
+      s.shieldRegenMultiplier += 0.25;
+      if (s.shield) s.shield.hp = Math.min(s.shield.maxHp, s.shield.hp + 25);
+    },
   },
   {
     id: "max_hp", name: "Бронелисты корпуса", icon: "❤️", rarity: "common", category: "защита", maxLevel: 6,
@@ -182,8 +197,8 @@ export const ALL_UPGRADES: UpgradeDef[] = [
   },
   {
     id: "magnet", name: "Магнитный гравизахват", icon: "🧲", rarity: "common", category: "утилиты", maxLevel: 4,
-    description: "Мгновенно собирает весь опыт и ускоряет притяжение",
-    apply: (s, _l) => { s.magnetRange += 60; },
+    description: "+70 к радиусу притяжения опыта и +10% к скорости притяжения",
+    apply: (s, _l) => { s.magnetRange += 70; s.magnetPullBonus += 0.1; },
   },
   {
     id: "ghost", name: "Фазовый сдвиг", icon: "👻", rarity: "epic", category: "защита", maxLevel: 2,
@@ -259,7 +274,13 @@ export const ALL_UPGRADES: UpgradeDef[] = [
   { id: "neutron_star", name: "Нейтронная звезда", icon: "⭐", rarity: "legendary", category: "особое", maxLevel: 1, description: "Мощнейшая постоянная аура уничтожения", apply: (s, _l) => { s.aura = true; s.auraDamage += 2; } },
   { id: "orbital_strike", name: "Орбитальный удар", icon: "🌠", rarity: "legendary", category: "спутники", maxLevel: 2, description: "Добавляет две ударные орбитальные платформы", apply: (s, l) => { for (let i = 0; i < 2 && s.satellites.length < 8; i++) s.satellites.push({ angle: Math.random() * Math.PI * 2, radius: 60 + i * 20, speed: 0.05, level: l + 2, shootTimer: 0 }); } },
   { id: "vortex", name: "Гравитационный вихрь", icon: "🌪️", rarity: "legendary", category: "особое", maxLevel: 1, description: "Усиленное наведение и увеличенные снаряды", apply: (s, _l) => { s.homing = true; s.homingStrength = 0.15; s.bulletSize *= 1.5; } },
-  { id: "turbo_engine", name: "Турбодвигатель", icon: "⚙️", rarity: "rare", category: "защита", maxLevel: 3, description: "+30% к скорости движения", apply: (s, _l) => { s.speed *= 1.3; } },
+  {
+    id: "turbo_engine", name: "Турбодвигатель", icon: "⚙️", rarity: "rare", category: "защита", maxLevel: 3,
+    description: "+25% к скорости; при непрерывном движении (1 с) ещё +10%",
+    // Роль разведена с «Форсажными двигателями» (+15%, стабильный бонус):
+    // Турбодвигатель — редкая версия для тех, кто постоянно в движении.
+    apply: (s, _l) => { s.speed *= 1.25; },
+  },
   { id: "battle_magnet", name: "Магнит боя", icon: "🔰", rarity: "rare", category: "утилиты", maxLevel: 3, description: "Убитые враги с шансом роняют бонус-дроп", apply: (s, _l) => { s.battleMagnet = true; s.battleMagnetChance += 0.12; } },
   { id: "overload", name: "Перегрузка", icon: "♻️", rarity: "common", category: "особое", maxLevel: 4, description: "Каждые 5 секунд корабль выпускает волну урона вокруг себя", apply: (s, _l) => { s.overload = true; s.overloadDamage += 0.6; } },
   { id: "quantum_tunnel", name: "Квантовый туннель", icon: "🌌", rarity: "legendary", category: "особое", maxLevel: 1, description: "+10 пробитых целей для каждого снаряда", apply: (s, _l) => { s.piercing += 10; } },
@@ -362,7 +383,13 @@ const VOID_UPGRADES = new Set([
 
 export function rollUpgrades(state: PlayerState, count = 3, excludeIds: string[] = []): UpgradeDef[] {
   const excluded = new Set(excludeIds);
-  const available = ALL_UPGRADES.filter(u => canUpgrade(state, u) && !excluded.has(u.id));
+  const available = ALL_UPGRADES.filter(u =>
+    canUpgrade(state, u)
+    && !excluded.has(u.id)
+    // «Конденсатор щита» не имеет смысла без щита (сам «Энергетический щит»
+    // и создающие щит предметы остаются в пуле).
+    && !(u.id === "shield_regen" && !state.shield)
+  );
   // A maxed-out build must still resolve queued level-ups. Without a fallback,
   // two simultaneous levels could leave the player trapped in an empty panel.
   if (available.length === 0) return [LIMIT_BREAK];
@@ -471,7 +498,10 @@ export function applyUpgrade(state: PlayerState, def: UpgradeDef): PlayerState {
   state.auraDamage = Math.min(state.auraDamage, 12);
   state.explosionRadius = Math.min(state.explosionRadius, 220);
   state.goldMultiplier = Math.min(state.goldMultiplier, 8);
-  state.speed = Math.min(state.speed, 8.5);
+  // 10.5: полный стек мобильности (Форсаж ×4 + Турбо ×3) должен работать,
+  // а не упираться в старый потолок 8.5.
+  state.speed = Math.min(state.speed, 10.5);
+  state.homingStrength = Math.min(state.homingStrength, 0.15);
   state.critChance = Math.min(state.critChance, 0.65);
   state.critMultiplier = Math.min(state.critMultiplier, 6);
   state.burnChance = Math.min(state.burnChance, 0.65);

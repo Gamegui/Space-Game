@@ -55,17 +55,22 @@ export function makeInitialPlayer(shipClass: ShipClassId = "interceptor"): Playe
     piercing: 0,
     multishot: 0,
     spreadAngle: 0,
+    spreadTighten: 0,
     homing: false,
     homingStrength: 0.06,
     satellites: [],
     drones: [],
     shield: { hp: 20, maxHp: 20, regenTimer: 0 },
+    shieldRegenMultiplier: 1,
     xp: 0, level: 1, xpToNext: 30,
     upgrades: [],
     synergies: [],
     evolved: [],
     invincTimer: 0,
     magnetRange: 120,
+    magnetPullBonus: 0,
+    bulletRangeBonus: 0,
+    turboStreak: 0,
     aura: false, auraDamage: 0.25, auraTimer: 0,
     lasers: 0, laserTimer: 0,
     rearShot: false,
@@ -84,6 +89,7 @@ export function makeInitialPlayer(shipClass: ShipClassId = "interceptor"): Playe
     ghostMode: false, ghostTimer: 0,
     voidSouls: 0, voidSoulIdleTimer: 0,
     voidEchoTimer: 0, voidEchoPos: { x: W / 2, y: H - 100 },
+    voidHunger: false, ghostArsenal: false,
     blackHole: false, blackHoleTimer: 0, blackHoleCooldown: 0,
     nukeCharges: 1,
     nukeCooldown: 0,
@@ -250,14 +256,20 @@ export function devourSoul(
   floatingTexts: FloatingText[],
 ): number {
   if (player.shipClass !== "void_wraith") return 0;
+  // Фаза Бездны расширяет зону пожирания — фаза → активное уничтожение →
+  // ускоренный сбор душ (взаимодействие существующих механик).
+  const inPhase = player.ghostTimer > 0;
+  const radius = VOID_SOUL_RADIUS * (inPhase ? 1.5 : 1);
   const dx = e.pos.x - player.pos.x, dy = e.pos.y - player.pos.y;
-  if (dx * dx + dy * dy > VOID_SOUL_RADIUS * VOID_SOUL_RADIUS) return 0;
+  if (dx * dx + dy * dy > radius * radius) return 0;
   if (player.voidSouls >= VOID_SOUL_MAX) return 0;
-  const value = e.isBoss ? 5 : (e.isElite ? 2 : 1);
+  let value = e.isBoss ? 5 : (e.isElite ? 2 : 1);
+  if (inPhase && Math.random() < 0.4) value += 1;
+  const before = player.voidSouls;
   player.voidSouls = Math.min(VOID_SOUL_MAX, player.voidSouls + value);
   player.voidSoulIdleTimer = 0;
   particles.push(...makeSuckParticles(e.pos, player.pos, e.isBoss ? 14 : 10));
-  const soulWord = value === 1 ? "ДУША" : (value === 5 ? "ДУШ" : "ДУШИ");
+  const soulWord = value === 1 ? "ДУША" : (value >= 5 ? "ДУШ" : "ДУШИ");
   floatingTexts.push({
     id: uid(),
     pos: { x: e.pos.x, y: e.pos.y - 14 },
@@ -267,6 +279,25 @@ export function devourSoul(
     size: e.isBoss ? 18 : 13,
     life: 50, maxLife: 50,
   });
+  // Пороговая обратная связь: рост силы должен быть заметен, а не скрыт
+  // в переменной. 25% / 50% / 75% → «УРОН УВЕЛИЧЕН», максимум → насыщение.
+  const after = player.voidSouls;
+  const feedText = (text: string, size: number) => floatingTexts.push({
+    id: uid(),
+    pos: { x: player.pos.x, y: player.pos.y - 46 },
+    vel: { x: 0, y: -0.7 },
+    text,
+    color: "#f0abfc",
+    size,
+    life: 60, maxLife: 60,
+  });
+  if (before < VOID_SOUL_MAX && after >= VOID_SOUL_MAX) {
+    feedText("БЕЗДНА НАСЫЩЕНА", 17);
+  } else {
+    for (const threshold of [VOID_SOUL_MAX * 0.25, VOID_SOUL_MAX * 0.5, VOID_SOUL_MAX * 0.75]) {
+      if (before < threshold && after >= threshold) { feedText("УРОН УВЕЛИЧЕН", 14); break; }
+    }
+  }
   return value;
 }
 
@@ -393,11 +424,20 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   // Physical KeyW/A/S/D codes make movement independent from keyboard layout.
   // The chrono ability slows the world, not the player's own ship.
   // Devoured souls give the Wraith a small but visible edge in mobility.
-  const spd = player.speed * dashSpeedMult * (1 + player.voidSouls * 0.004);
-  if ((keys.has("ArrowLeft")  || keys.has("KeyA")) && player.pos.x > 25) player.pos.x -= spd;
-  if ((keys.has("ArrowRight") || keys.has("KeyD")) && player.pos.x < W - 25) player.pos.x += spd;
-  if ((keys.has("ArrowUp")    || keys.has("KeyW")) && player.pos.y > 60) player.pos.y -= spd;
-  if ((keys.has("ArrowDown")  || keys.has("KeyS")) && player.pos.y < H - 32) player.pos.y += spd;
+  const movingLeft  = keys.has("ArrowLeft")  || keys.has("KeyA");
+  const movingRight = keys.has("ArrowRight") || keys.has("KeyD");
+  const movingUp    = keys.has("ArrowUp")    || keys.has("KeyW");
+  const movingDown  = keys.has("ArrowDown")  || keys.has("KeyS");
+  const isMoving = movingLeft || movingRight || movingUp || movingDown;
+  // «Турбодвигатель»: 1 секунда непрерывного движения = ещё +10% скорости;
+  // полная остановка сбрасывает разгон.
+  player.turboStreak = isMoving ? player.turboStreak + 1 : 0;
+  const turboSurge = getUpgradeLevel(player, "turbo_engine") > 0 && player.turboStreak >= 60 ? 1.1 : 1;
+  const spd = player.speed * dashSpeedMult * turboSurge * (1 + player.voidSouls * 0.004);
+  if (movingLeft  && player.pos.x > 25) player.pos.x -= spd;
+  if (movingRight && player.pos.x < W - 25) player.pos.x += spd;
+  if (movingUp    && player.pos.y > 60) player.pos.y -= spd;
+  if (movingDown  && player.pos.y < H - 32) player.pos.y += spd;
 
   player.pos.x = Math.max(25, Math.min(W - 25, player.pos.x));
   player.pos.y = Math.max(60, Math.min(H - 32, player.pos.y));
@@ -440,8 +480,9 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 
   // ─── Shield regen ──────────────────────────────────────────────────────────
   if (player.shield) {
-    const shieldRegenBonus = getUpgradeLevel(player, "shield_regen") * 0.35;
-    let regenRate = 1 + shieldRegenBonus;
+    // «Конденсатор щита» поднимает отдельную характеристику-множитель —
+    // реализация соответствует описанию предмета.
+    let regenRate = player.shieldRegenMultiplier;
     // The Wraith's Void Shield recharges noticeably faster than standard ones.
     if (player.shipClass === "void_wraith") regenRate *= 1.8;
     if (player.shield.hp < player.shield.maxHp) {
@@ -1024,43 +1065,61 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     const b = bullets[i];
     const bts = timeScale * (!b.fromPlayer && obj.routeEffect === "bullet_storm" ? 1.22 : 1);
 
-    // Aim assist is the hottest O(bullets × enemies) path. Recalculate steering
-    // periodically; velocity persists between recalculations with no visual loss.
-    const homingInterval = obj.performanceTier === 0 ? 5 : obj.performanceTier === 1 ? 3 : 2;
-    if (b.fromPlayer && enemies.length > 0 && (b.id + frame) % homingInterval === 0) {
+    // Aim assist is the hottest O(bullets × enemies) path. Each bullet KEEPS
+    // its locked target and steers toward it every frame (cheap vector math);
+    // the full scan runs only when the target is dead / out of range, plus a
+    // slow refresh so a better target can still be found later.
+    if (b.fromPlayer && enemies.length > 0) {
       const isFullHoming = b.homing || player.homing;
       const strength = isFullHoming ? Math.max(player.homingStrength, 0.07) : 0.032;
       const maxDistance = isFullHoming ? 650 : 450;
+      const maxDistanceSq = maxDistance * maxDistance;
 
-      let bestTarget: Enemy | null = null;
-      let bestScore = -Infinity;
+      const targetGone = !b.target
+        || b.target.hp <= 0
+        || (() => { const tdx = b.target!.pos.x - b.pos.x, tdy = b.target!.pos.y - b.pos.y; return tdx * tdx + tdy * tdy > maxDistanceSq; })();
+      const homingInterval = obj.performanceTier === 0 ? 5 : obj.performanceTier === 1 ? 3 : 2;
+      const scanDue = targetGone
+        ? (b.id + frame) % homingInterval === 0
+        : (b.id + frame) % 36 === 0; // редкий поиск более удачной цели
 
-      for (const e of enemies) {
-        const dx = e.pos.x - b.pos.x;
-        const dy = e.pos.y - b.pos.y;
-        const distSq = dx * dx + dy * dy;
-        if (distSq > maxDistance * maxDistance) continue;
+      if (scanDue) {
+        let bestTarget: Enemy | null = null;
+        let bestScore = -Infinity;
 
-        const dist = Math.sqrt(distSq);
-        const bSpeed = Math.sqrt(b.vel.x * b.vel.x + b.vel.y * b.vel.y);
-        const dot = bSpeed > 0 ? (b.vel.x * dx + b.vel.y * dy) / (bSpeed * Math.max(dist, 1)) : 0;
+        for (const e of enemies) {
+          if (e.hp <= 0) continue;
+          const dx = e.pos.x - b.pos.x;
+          const dy = e.pos.y - b.pos.y;
+          const distSq = dx * dx + dy * dy;
+          if (distSq > maxDistanceSq) continue;
 
-        if (!isFullHoming && dot < 0.15) continue;
+          const dist = Math.sqrt(distSq);
+          const bSpeed = Math.sqrt(b.vel.x * b.vel.x + b.vel.y * b.vel.y);
+          const dot = bSpeed > 0 ? (b.vel.x * dx + b.vel.y * dy) / (bSpeed * Math.max(dist, 1)) : 0;
 
-        const score = (dot * 3) - (dist / 220);
-        if (score > bestScore) {
-          bestScore = score;
-          bestTarget = e;
+          if (!isFullHoming && dot < 0.15) continue;
+
+          const score = (dot * 3) - (dist / 220);
+          if (score > bestScore) {
+            bestScore = score;
+            bestTarget = e;
+          }
         }
+        b.target = bestTarget ?? undefined;
       }
 
-      if (bestTarget) {
-        const dx = bestTarget.pos.x - b.pos.x;
-        const dy = bestTarget.pos.y - b.pos.y;
+      if (b.target && b.target.hp > 0) {
+        const target = b.target;
+        const dx = target.pos.x - b.pos.x;
+        const dy = target.pos.y - b.pos.y;
         const dist = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
 
-        b.vel.x += (dx / dist) * strength * player.bulletSpeed;
-        b.vel.y += (dy / dist) * strength * player.bulletSpeed;
+        // Ежекадровое плавное доведение (масштаб подобран так, чтобы суммарная
+        // скорость поворота соответствовала прежнему интервальному наведению).
+        const steer = strength * player.bulletSpeed / 3;
+        b.vel.x += (dx / dist) * steer;
+        b.vel.y += (dy / dist) * steer;
 
         const curSpeed = Math.sqrt(b.vel.x * b.vel.x + b.vel.y * b.vel.y);
         if (curSpeed > 0) {
@@ -1078,6 +1137,12 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     if (b.fromPlayer && player.ricochet) {
       if (b.pos.x < 0 || b.pos.x > W) { b.vel.x *= -1; }
       if (b.pos.y < 0) { b.vel.y *= -1; }
+    }
+
+    // «Ускоритель плазмы»: дальность полёта (кадры жизни снаряда).
+    if (b.life !== undefined && --b.life <= 0) {
+      bullets.splice(i, 1);
+      continue;
     }
 
     if (b.pos.x < -40 || b.pos.x > W + 40 || b.pos.y < -60 || b.pos.y > H + 40) {
@@ -1121,10 +1186,15 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       if (enemiesToRemove.has(e.id)) continue;
       // Phantoms are intangible during the dim phase of their cycle.
       if (e.type === "phantom" && Math.floor(e.patternTimer / 90) % 3 === 0) continue;
+      // Пробитие: одна цель не получает урон от одного снаряда дважды —
+      // иначе перекрытие на несколько кадров сжигало заряды pierce и
+      // раз за разом било по щиту одной и той же цели.
+      if (b.hitEnemies?.has(e)) continue;
       const size = getEnemySize(e.type);
       const dx = b.pos.x - e.pos.x, dy = b.pos.y - e.pos.y;
       if (dx * dx + dy * dy < (size + b.size) * (size + b.size)) {
         player.stats.shotsHit++;
+        if (b.pierce > 0) (b.hitEnemies ??= new WeakSet<Enemy>()).add(e);
         audio.playHit();
 
         // Hit shield first
@@ -1218,6 +1288,16 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           if (e.isElite) player.stats.elitesKilled++;
           if (e.isBoss) player.stats.bossesKilled++;
           devourSoul(player, e, particles, floatingTexts);
+
+          // «ГОЛОД БЕЗДНЫ» (синергия Немезиды): убийства подлечивают корпус
+          // и иногда кормят дополнительной душой (в пределах лимита).
+          if (player.voidHunger) {
+            if (Math.random() < 0.15) player.hp = Math.min(player.hp + 2, player.maxHp);
+            if (Math.random() < 0.25 && player.voidSouls < VOID_SOUL_MAX) {
+              player.voidSouls++;
+              player.voidSoulIdleTimer = 0;
+            }
+          }
 
           // Explosion
           if (player.explosiveBullets) {
@@ -1427,7 +1507,8 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     orb.attracted = true;
 
     const magnetBonus = Math.max(0, (player.magnetRange - 80) * 0.05);
-    const pullSpeed = Math.min(18, 8.5 + (dist > 250 ? 3.5 : 0) + magnetBonus);
+    // «Магнитный гравизахват» ускоряет само притяжение, а не только радиус.
+    const pullSpeed = Math.min(22, (8.5 + (dist > 250 ? 3.5 : 0) + magnetBonus) * (1 + player.magnetPullBonus));
 
     orb.pos.x += (dx / Math.max(dist, 1)) * pullSpeed;
     orb.pos.y += (dy / Math.max(dist, 1)) * pullSpeed;
@@ -1632,21 +1713,35 @@ function enforceObjectBudgets(obj: GameObjects) {
 
 function makePlayerBullet(player: PlayerState, pos: Vec2, vel: Vec2): Bullet {
   player.stats.shotsFired++;
+  // «ПРИЗРАЧНЫЙ АРСЕНАЛ»: в Фазе Бездны снаряды чуть быстрее и вспыхивают
+  // призрачным светом (визуально отличается от обычных болтов).
+  const arsenalActive = player.ghostArsenal && player.ghostTimer > 0;
   return {
-    id: uid(), pos: { ...pos }, vel,
+    id: uid(), pos: { ...pos },
+    vel: arsenalActive ? { x: vel.x * 1.15, y: vel.y * 1.15 } : vel,
     fromPlayer: true,
     // Devoured souls permanently boost every bolt the Wraith fires this run.
     damage: player.bulletDamage * soulDamageMult(player),
     size: player.bulletSize,
-    color: player.snipeMode ? "#ffffff" : (player.shipClass === "tempest" ? "#c084fc" : (player.shipClass === "dreadnought" ? "#f59e0b" : (player.shipClass === "void_wraith" ? "#e879f9" : "#38bdf8"))),
+    color: arsenalActive ? "#f5d0fe"
+      : player.snipeMode ? "#ffffff"
+      : (player.shipClass === "tempest" ? "#c084fc" : (player.shipClass === "dreadnought" ? "#f59e0b" : (player.shipClass === "void_wraith" ? "#e879f9" : "#38bdf8"))),
     pierce: player.piercing,
     homing: player.homing,
+    // «Ускоритель плазмы» продлевает полёт: базовой дальности хватает на
+    // несколько экранов, так что прямой стрельбе лимит не мешает — выгоду
+    // получают наводящиеся и криволинейные снаряды.
+    life: Math.round(160 * (1 + player.bulletRangeBonus)),
   };
 }
 
 function firePlayerBullets(bullets: Bullet[], player: PlayerState, _enemies: Enemy[], _frame: number) {
   const shots = 1 + player.multishot;
-  const totalSpread = player.spreadAngle;
+  // «Широкий сектор» (чётные уровни) подтягивает крайние снаряды к центру,
+  // сохраняя полную окружность для круговых билдов.
+  const totalSpread = player.spreadAngle >= 350
+    ? player.spreadAngle
+    : player.spreadAngle * (1 - player.spreadTighten);
 
   for (let i = 0; i < shots; i++) {
     let angle: number;

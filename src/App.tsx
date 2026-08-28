@@ -147,7 +147,7 @@ export default function App() {
   // price and the portal currency (name + icon) are always taken from Yandex.
   const [premiumOffer, setPremiumOffer] = useState<StoreOffer | null>(null);
   const [premiumCatalogChecked, setPremiumCatalogChecked] = useState(false);
-  const [adminOpen, setAdminOpen] = useState(true);
+  const [adminOpen, setAdminOpen] = useState(false);
   const [adminGod, setAdminGod] = useState(false);
   const [, setAdminRefresh] = useState(0);
   const [synergyNotice, setSynergyNotice] = useState<string | null>(null);
@@ -179,6 +179,7 @@ export default function App() {
       // browsers fire blur while the document is still visible, so always stop
       // audio and freeze combat here instead of relying only on document.hidden.
       audio.suspend();
+      yandex.setGameplay(false);
       if (phaseRef.current === "playing") {
         phaseRef.current = "paused";
         setPhase("paused");
@@ -369,6 +370,12 @@ export default function App() {
         46: "НОВАЯ УГРОЗА: СИНГУЛЯРНОСТИ ИСКАЖАЮТ ПОЛЕ",
       };
       if (newThreats[newWave]) setWaveNotice(newThreats[newWave]);
+      // Warn about upcoming Black Cortege guard encounter
+      const guardWaves = [20, 26, 32, 38, 44, 50, 56, 62, 68, 74, 80];
+      const nextGuard = guardWaves.find(w => w > newWave);
+      if (nextGuard && nextGuard - newWave <= 2 && g.player.level >= 12 && g.powerRating >= 80) {
+        setTimeout(() => setWaveNotice(`⚠ ЧЁРНЫЙ КОРТЕЖ НА ВОЛНЕ ${nextGuard}!`), 2600);
+      }
     }
   }, []);
 
@@ -395,6 +402,14 @@ export default function App() {
     if (!g) return;
     audio.playPowerup();
     applyUpgrade(g.player, u);
+    // Magnet: instantly pull all XP orbs on screen when picked
+    if (u.id === "magnet") {
+      for (const orb of g.xpOrbs) {
+        orb.attracted = true;
+        orb.pos.x = g.player.pos.x;
+        orb.pos.y = g.player.pos.y;
+      }
+    }
     const unlockedSynergies = unlockAvailableSynergies(g.player);
     if (unlockedSynergies.length > 0) {
       setSynergyNotice(`${unlockedSynergies[0].icon} СИНЕРГИЯ: ${unlockedSynergies[0].name}`);
@@ -579,8 +594,8 @@ export default function App() {
       if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(e.code)) e.preventDefault();
 
       if (!e.repeat && e.code === "Escape") {
-        if (phaseRef.current === "playing") { phaseRef.current = "paused"; setPhase("paused"); }
-        else if (phaseRef.current === "paused") { setConfirmExit(false); phaseRef.current = "playing"; setPhase("playing"); }
+        if (phaseRef.current === "playing") { phaseRef.current = "paused"; setPhase("paused"); yandex.setGameplay(false); }
+        else if (phaseRef.current === "paused") { setConfirmExit(false); phaseRef.current = "playing"; setPhase("playing"); yandex.setGameplay(true); }
       }
       if (!e.repeat && e.code === "KeyM") handleToggleSound();
       if (!e.repeat && e.code === "KeyX") handleNuke();
@@ -657,6 +672,7 @@ export default function App() {
             return;
           }
           audio.stopAmbientBGM();
+          yandex.setGameplay(false);
           const hs = Math.max(g.player.score, hiscore);
           try { localStorage.setItem("hs", String(hs)); } catch { /* storage may be blocked */ }
           setHiscore(hs);
@@ -682,6 +698,7 @@ export default function App() {
             setBossActive(false);
             if (waveRef.current >= 50) {
               audio.stopAmbientBGM();
+              yandex.setGameplay(false);
               const hs = Math.max(g.player.score, hiscore);
               try { localStorage.setItem("hs", String(hs)); } catch { /* optional */ }
               setHiscore(hs);
@@ -784,6 +801,8 @@ export default function App() {
     }
 
     rafRef.current = requestAnimationFrame(loop);
+    // Tell Yandex the game is visually ready now that the canvas and loop exist.
+    yandex.markReady();
     return () => cancelAnimationFrame(rafRef.current);
   }, [advanceWave, handleLevelUp, hiscore, syncUI, bossName]);
 
@@ -1188,7 +1207,7 @@ export default function App() {
               <label className="text-slate-400">💥 {sfxVolume}% <input aria-label="Громкость эффектов" type="range" min="0" max="100" step="5" value={sfxVolume} onChange={event => setSfxVolume(Number(event.target.value))} className="w-20 align-middle accent-cyan-500" /></label>
             </div>
             <button
-              onClick={() => { setConfirmExit(false); audio.resume(); phaseRef.current = "playing"; setPhase("playing"); }}
+              onClick={() => { setConfirmExit(false); audio.resume(); phaseRef.current = "playing"; setPhase("playing"); yandex.setGameplay(true); }}
               className="px-10 py-3.5 bg-sky-600 hover:bg-sky-500 text-white font-black text-lg rounded-full transition-all active:scale-95 shadow-lg shadow-sky-900/50 cursor-pointer mb-3"
             >
               ПРОДОЛЖИТЬ ИГРУ

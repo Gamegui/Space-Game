@@ -63,7 +63,7 @@ export function applyShipClassStats(player: PlayerState, classId: ShipClassId) {
       player.speed = 5.6;
       player.fireRate = 10;
       player.bulletDamage = 1.3;
-      player.shield = { hp: 20, maxHp: 20, regenTimer: 0, active: true };
+      player.shield = { hp: 20, maxHp: 20, regenTimer: 0 };
       break;
 
     case "dreadnought":
@@ -74,7 +74,7 @@ export function applyShipClassStats(player: PlayerState, classId: ShipClassId) {
       player.bulletDamage = 2.1;
       player.bulletSize = 4.5;
       player.piercing = 1;
-      player.shield = { hp: 25, maxHp: 25, regenTimer: 0, active: true };
+      player.shield = { hp: 25, maxHp: 25, regenTimer: 0 };
       break;
 
     case "tempest":
@@ -86,7 +86,7 @@ export function applyShipClassStats(player: PlayerState, classId: ShipClassId) {
       player.critMultiplier = 2.75;
       player.lightningChance = 0.25;
       player.lightningChain = 2;
-      player.shield = { hp: 15, maxHp: 15, regenTimer: 0, active: true };
+      player.shield = { hp: 15, maxHp: 15, regenTimer: 0 };
       break;
 
     case "commander":
@@ -101,7 +101,7 @@ export function applyShipClassStats(player: PlayerState, classId: ShipClassId) {
       player.drones = [
         { id: 999, pos: { x: player.pos.x, y: player.pos.y }, angle: 0, orbitAngle: 0, orbitRadius: 110, speed: 2.2, shootTimer: 0, level: 1 },
       ];
-      player.shield = { hp: 15, maxHp: 15, regenTimer: 0, active: true };
+      player.shield = { hp: 15, maxHp: 15, regenTimer: 0 };
       break;
 
     case "void_wraith":
@@ -124,7 +124,7 @@ export function applyShipClassStats(player: PlayerState, classId: ShipClassId) {
       player.voidSoulIdleTimer = 0;
       player.voidEchoTimer = 0;
       player.voidEchoPos = { ...player.pos };
-      player.shield = { hp: 35, maxHp: 35, regenTimer: 0, active: true };
+      player.shield = { hp: 35, maxHp: 35, regenTimer: 0 };
       break;
   }
 }

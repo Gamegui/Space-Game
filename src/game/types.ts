@@ -133,7 +133,6 @@ export interface Shield {
   hp: number;
   maxHp: number;
   regenTimer: number;
-  active: boolean;
 }
 
 export interface Lightning {
@@ -190,7 +189,6 @@ export interface PlayerState {
   lasers: number;
   laserTimer: number;
   rearShot: boolean;
-  rearShotTimer: number;
   explosiveBullets: boolean;
   explosionRadius: number;
   ricochet: boolean;
@@ -218,8 +216,6 @@ export interface PlayerState {
   voidSoulIdleTimer: number;
   voidEchoTimer: number;
   voidEchoPos: Vec2;
-  teleportCooldown: number;
-  teleportTimer: number;
   blackHole: boolean;
   blackHoleTimer: number;
   blackHoleCooldown: number;
@@ -235,6 +231,20 @@ export interface PlayerState {
   snipeMode: boolean;
   rapidMode: boolean;
   rapidBoostTimer: number; // powerup boost
+  // New unique mechanics replacing duplicate upgrades
+  chainDetonation: boolean;
+  chainDetonationRadius: number;
+  phaseDischarge: boolean;
+  phaseDischargeCount: number;
+  livingShield: boolean;
+  livingShieldAmount: number;
+  sniperProtocol: boolean;
+  sniperBonus: number;
+  battleMagnet: boolean;
+  battleMagnetChance: number;
+  overload: boolean;
+  overloadDamage: number;
+  overloadTimer: number;
   score: number;
   kills: number;
   combo: number;

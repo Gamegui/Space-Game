@@ -15,8 +15,8 @@ export const ALL_UPGRADES: UpgradeDef[] = [
   },
   {
     id: "spread_shot", name: "Широкий сектор", icon: "🌊", rarity: "common", category: "атака", maxLevel: 4,
-    description: "Увеличивает угол веерной стрельбы",
-    apply: (s, _l) => { s.spreadAngle += 10; s.multishot = Math.max(s.multishot, 1); },
+    description: "Увеличивает угол веерной стрельбы и +1 снаряд",
+    apply: (s, l) => { s.spreadAngle += 10; if (l % 2 === 1) s.multishot += 1; },
   },
   {
     id: "rapid_fire", name: "Скорострельность", icon: "🔥", rarity: "common", category: "атака", maxLevel: 5,
@@ -35,8 +35,8 @@ export const ALL_UPGRADES: UpgradeDef[] = [
   },
   {
     id: "bullet_speed", name: "Ускоритель плазмы", icon: "💨", rarity: "common", category: "атака", maxLevel: 4,
-    description: "Скорость полёта снарядов +20%",
-    apply: (s, _l) => { s.bulletSpeed *= 1.2; },
+    description: "Скорость снарядов +20% и +5% к наведению",
+    apply: (s, _l) => { s.bulletSpeed *= 1.2; s.homingStrength = Math.min(0.15, s.homingStrength + 0.005); },
   },
   {
     id: "piercing", name: "Бронебойные снаряды", icon: "🗡️", rarity: "rare", category: "атака", maxLevel: 4,
@@ -54,9 +54,9 @@ export const ALL_UPGRADES: UpgradeDef[] = [
     apply: (s, l) => { s.explosiveBullets = true; s.explosionRadius = 40 + l * 20; },
   },
   {
-    id: "ricochet", name: "Рикошет", icon: "↩️", rarity: "rare", category: "атака", maxLevel: 3,
-    description: "Снаряды отскакивают от стен",
-    apply: (s, _l) => { s.ricochet = true; s.ricochetCount += 1; },
+    id: "sniper_protocol", name: "Снайперский протокол", icon: "↩️", rarity: "rare", category: "атака", maxLevel: 3,
+    description: "+40% урона по одиночным целям (нет врагов рядом = бонус)",
+    apply: (s, _l) => { s.sniperProtocol = true; s.sniperBonus += 0.15; },
   },
   {
     id: "rear_shot", name: "Кормовая турель", icon: "🔙", rarity: "rare", category: "атака", maxLevel: 2,
@@ -76,7 +76,7 @@ export const ALL_UPGRADES: UpgradeDef[] = [
   {
     id: "snipe_mode", name: "Протокол снайпера", icon: "🔭", rarity: "rare", category: "атака", maxLevel: 1,
     description: "Трёхкратный урон, максимальная скорость и точность",
-    apply: (s, _l) => { s.snipeMode = true; s.bulletDamage *= 3; s.bulletSpeed *= 2; s.spreadAngle = 0; },
+    apply: (s, _l) => { s.snipeMode = true; s.bulletDamage *= 3; s.bulletSpeed *= 2; s.spreadAngle = Math.min(s.spreadAngle, 5); },
   },
   {
     id: "mirror_shots", name: "Зеркальная матрица", icon: "🪞", rarity: "epic", category: "атака", maxLevel: 2,
@@ -151,14 +151,14 @@ export const ALL_UPGRADES: UpgradeDef[] = [
     id: "shield", name: "Энергетический щит", icon: "🛡️", rarity: "rare", category: "защита", maxLevel: 4,
     description: "Генерирует самовосстанавливающееся силовое поле",
     apply: (s, l) => {
-      if (!s.shield) s.shield = { hp: 50 * l, maxHp: 50 * l, regenTimer: 0, active: true };
+      if (!s.shield) s.shield = { hp: 50 * l, maxHp: 50 * l, regenTimer: 0 };
       else { s.shield.maxHp += 50; s.shield.hp = Math.min(s.shield.hp + 50, s.shield.maxHp); }
     },
   },
   {
     id: "shield_regen", name: "Конденсатор щита", icon: "⚡🛡️", rarity: "common", category: "защита", maxLevel: 3,
-    description: "Щит перезаряжается на 35% быстрее",
-    apply: (_s, _l) => {},
+    description: "Щит перезаряжается на 35% быстрее и мгновенно +25 HP щита",
+    apply: (s, _l) => { if (s.shield) { s.shield.hp = Math.min(s.shield.maxHp, s.shield.hp + 25); } },
   },
   {
     id: "max_hp", name: "Бронелисты корпуса", icon: "❤️", rarity: "common", category: "защита", maxLevel: 6,
@@ -182,7 +182,7 @@ export const ALL_UPGRADES: UpgradeDef[] = [
   },
   {
     id: "magnet", name: "Магнитный гравизахват", icon: "🧲", rarity: "common", category: "утилиты", maxLevel: 4,
-    description: "Заметно ускоряет притяжение всех сфер опыта",
+    description: "Мгновенно собирает весь опыт и ускоряет притяжение",
     apply: (s, _l) => { s.magnetRange += 60; },
   },
   {
@@ -218,18 +218,18 @@ export const ALL_UPGRADES: UpgradeDef[] = [
   },
   {
     id: "xp_boost", name: "Усилитель опыта", icon: "✨", rarity: "common", category: "утилиты", maxLevel: 5,
-    description: "+25% больше опыта со всех поверженных врагов",
-    apply: (_s, _l) => {},
+    description: "+25% больше опыта и мгновенно +50 XP",
+    apply: (s, _l) => { s.xp += 50; },
   },
   {
     id: "score_boost", name: "Множитель очков", icon: "🏆", rarity: "common", category: "утилиты", maxLevel: 5,
-    description: "+0.5x к множителю очков",
+    description: "+0.5x к множителю очков и +1 XP за убийство",
     apply: (s, _l) => { s.goldMultiplier += 0.5; },
   },
   {
     id: "heal_on_kill", name: "Полевой медик", icon: "💊", rarity: "rare", category: "защита", maxLevel: 3,
-    description: "Восстанавливает +2 HP за каждое уничтожение",
-    apply: (_s, _l) => {},
+    description: "Восстанавливает +4 HP за каждое уничтожение и мгновенно +15 HP",
+    apply: (s, _l) => { s.hp = Math.min(s.maxHp, s.hp + 15); },
   },
   {
     id: "megaton", name: "Мегатонные снаряды", icon: "🎇", rarity: "epic", category: "атака", maxLevel: 2,
@@ -238,7 +238,7 @@ export const ALL_UPGRADES: UpgradeDef[] = [
   },
   // ═══ РАСШИРЕННЫЙ АРСЕНАЛ (возвращён из полной версии) ═══
   { id: "satellite_damage", name: "Усиление спутников", icon: "💫", rarity: "common", category: "спутники", maxLevel: 4, description: "Повышает мощность всех орбитальных спутников", apply: (s, l) => { s.satellites.forEach(sat => { sat.level += l; }); } },
-  { id: "teleport", name: "Импульсный привод", icon: "🌀", rarity: "epic", category: "особое", maxLevel: 2, description: "+25% скорости и короткая фазовая неуязвимость", apply: (s, _l) => { s.speed *= 1.25; s.ghostMode = true; } },
+  { id: "phase_discharge", name: "Фазовый разряд", icon: "🌀", rarity: "epic", category: "атака", maxLevel: 2, description: "Каждый 5-й выстрел разлетается на 4 осколка при попадании", apply: (s, _l) => { s.phaseDischarge = true; s.phaseDischargeCount += 2; } },
   { id: "laser_side", name: "Бортовые лазеры", icon: "🔴", rarity: "rare", category: "атака", maxLevel: 3, description: "Дополнительные боковые залпы и +1 снаряд", apply: (s, _l) => { s.lasers += 1; s.multishot += 1; s.spreadAngle += 8; } },
   { id: "chain_lightning", name: "Шаровая молния", icon: "🌩️", rarity: "epic", category: "стихии", maxLevel: 3, description: "Усиливает шанс и число цепных разрядов", apply: (s, l) => { s.lightningChance += 0.2; s.lightningChain = Math.max(s.lightningChain, l + 2); } },
   { id: "auto_turret", name: "Автоматические турели", icon: "🔫", rarity: "epic", category: "спутники", maxLevel: 2, description: "Развёртывает две мощные орбитальные турели", apply: (s, l) => { for (let i = 0; i < 2 && s.satellites.length < 8; i++) s.satellites.push({ angle: Math.random() * Math.PI * 2, radius: 100, speed: 0.015, level: l + 1, shootTimer: 0 }); } },
@@ -247,40 +247,40 @@ export const ALL_UPGRADES: UpgradeDef[] = [
   { id: "energy_blade", name: "Энергетический клинок", icon: "⚔️", rarity: "epic", category: "атака", maxLevel: 2, description: "Мощная аура ближнего боя вокруг корабля", apply: (s, _l) => { s.aura = true; s.auraDamage += 0.8; } },
   { id: "plasma_cannon", name: "Плазменная пушка", icon: "🔮", rarity: "epic", category: "атака", maxLevel: 2, description: "Огромные разрывные снаряды с большим радиусом", apply: (s, _l) => { s.bulletSize *= 1.7; s.explosiveBullets = true; s.explosionRadius += 50; s.fireRate *= 1.25; } },
   { id: "bullet_hail", name: "Шквал снарядов", icon: "🌧️", rarity: "rare", category: "атака", maxLevel: 3, description: "+4 снаряда в широком секторе", apply: (s, _l) => { s.multishot += 4; s.spreadAngle = Math.max(s.spreadAngle, 120); } },
-  { id: "death_nova", name: "Защитная нова", icon: "💀", rarity: "epic", category: "защита", maxLevel: 2, description: "Усиливает щит и радиус взрывов", apply: (s, _l) => { if (!s.shield) s.shield = { hp: 30, maxHp: 30, regenTimer: 0, active: true }; s.explosionRadius += 30; } },
+  { id: "death_nova", name: "Защитная нова", icon: "💀", rarity: "epic", category: "защита", maxLevel: 2, description: "Усиливает щит и радиус взрывов", apply: (s, _l) => { if (!s.shield) s.shield = { hp: 30, maxHp: 30, regenTimer: 0 }; s.explosionRadius += 30; } },
   { id: "swarm_missiles", name: "Рой микроракет", icon: "🚀", rarity: "epic", category: "атака", maxLevel: 2, description: "+3 самонаводящиеся микроракеты", apply: (s, _l) => { s.homing = true; s.multishot += 3; s.homingStrength = Math.max(s.homingStrength, 0.08); } },
-  { id: "shield_bash", name: "Импульс щита", icon: "🛡️", rarity: "rare", category: "защита", maxLevel: 2, description: "Щит создаёт повреждающее поле вокруг корабля", apply: (s, _l) => { s.aura = true; s.auraDamage += 0.5; if (!s.shield) s.shield = { hp: 40, maxHp: 40, regenTimer: 0, active: true }; } },
+  { id: "shield_bash", name: "Импульс щита", icon: "🛡️", rarity: "rare", category: "защита", maxLevel: 2, description: "Щит создаёт повреждающее поле вокруг корабля", apply: (s, _l) => { s.aura = true; s.auraDamage += 0.5; if (!s.shield) s.shield = { hp: 40, maxHp: 40, regenTimer: 0 }; } },
   { id: "empowered_crit", name: "Смертельная точность", icon: "🎯", rarity: "rare", category: "атака", maxLevel: 3, description: "+20% шанса критического и разрывного попадания", apply: (s, _l) => { s.critChance += 0.2; s.explosiveBullets = true; } },
   { id: "multi_explosion", name: "Цепная реакция", icon: "💥", rarity: "legendary", category: "атака", maxLevel: 2, description: "Радиус всех взрывов увеличен на 50%", apply: (s, _l) => { s.explosiveBullets = true; s.explosionRadius *= 1.5; } },
   { id: "overcharge", name: "Сверхзаряд", icon: "⚡", rarity: "legendary", category: "атака", maxLevel: 1, description: "Резко повышает шанс и силу критического урона", apply: (s, _l) => { s.critChance += 0.2; s.critMultiplier += 5; } },
   { id: "berserker", name: "Протокол берсерка", icon: "😤", rarity: "epic", category: "атака", maxLevel: 2, description: "Скорострельность растёт при потере здоровья", apply: (s, _l) => { s.rapidMode = true; } },
-  { id: "fortress", name: "Протокол «Крепость»", icon: "🏰", rarity: "legendary", category: "защита", maxLevel: 1, description: "+100 HP и щита ценой 15% скорости", apply: (s, _l) => { s.maxHp += 100; s.hp = Math.min(s.hp + 100, s.maxHp); if (!s.shield) s.shield = { hp: 100, maxHp: 100, regenTimer: 0, active: true }; else { s.shield.maxHp += 100; s.shield.hp += 100; } s.speed *= 0.85; } },
+  { id: "fortress", name: "Протокол «Крепость»", icon: "🏰", rarity: "legendary", category: "защита", maxLevel: 1, description: "+100 HP и щита ценой 15% скорости", apply: (s, _l) => { s.maxHp += 100; s.hp = Math.min(s.hp + 100, s.maxHp); if (!s.shield) s.shield = { hp: 100, maxHp: 100, regenTimer: 0 }; else { s.shield.maxHp += 100; s.shield.hp += 100; } s.speed *= 0.85; } },
   { id: "glass_cannon", name: "Стеклянная пушка", icon: "🔱", rarity: "legendary", category: "атака", maxLevel: 1, description: "Тройной урон, но вдвое меньше прочности", apply: (s, _l) => { s.bulletDamage *= 3; s.maxHp = Math.max(20, Math.floor(s.maxHp / 2)); s.hp = Math.min(s.hp, s.maxHp); } },
   { id: "neutron_star", name: "Нейтронная звезда", icon: "⭐", rarity: "legendary", category: "особое", maxLevel: 1, description: "Мощнейшая постоянная аура уничтожения", apply: (s, _l) => { s.aura = true; s.auraDamage += 2; } },
   { id: "orbital_strike", name: "Орбитальный удар", icon: "🌠", rarity: "legendary", category: "спутники", maxLevel: 2, description: "Добавляет две ударные орбитальные платформы", apply: (s, l) => { for (let i = 0; i < 2 && s.satellites.length < 8; i++) s.satellites.push({ angle: Math.random() * Math.PI * 2, radius: 60 + i * 20, speed: 0.05, level: l + 2, shootTimer: 0 }); } },
   { id: "vortex", name: "Гравитационный вихрь", icon: "🌪️", rarity: "legendary", category: "особое", maxLevel: 1, description: "Усиленное наведение и увеличенные снаряды", apply: (s, _l) => { s.homing = true; s.homingStrength = 0.15; s.bulletSize *= 1.5; } },
   { id: "turbo_engine", name: "Турбодвигатель", icon: "⚙️", rarity: "rare", category: "защита", maxLevel: 3, description: "+30% к скорости движения", apply: (s, _l) => { s.speed *= 1.3; } },
-  { id: "reactive_armor", name: "Реактивная броня", icon: "🔰", rarity: "rare", category: "защита", maxLevel: 3, description: "+10% урона и +10 максимальной прочности", apply: (s, _l) => { s.bulletDamage *= 1.1; s.maxHp += 10; s.hp += 10; } },
-  { id: "energy_recycler", name: "Рециркулятор энергии", icon: "♻️", rarity: "common", category: "утилиты", maxLevel: 4, description: "Ускоряет стрельбу и перезарядку хроно-системы", apply: (s, _l) => { s.fireRate = Math.max(2, s.fireRate * 0.94); s.timeSlowCooldown = Math.max(0, s.timeSlowCooldown - 90); } },
+  { id: "battle_magnet", name: "Магнит боя", icon: "🔰", rarity: "rare", category: "утилиты", maxLevel: 3, description: "Убитые враги с шансом роняют бонус-дроп", apply: (s, _l) => { s.battleMagnet = true; s.battleMagnetChance += 0.12; } },
+  { id: "overload", name: "Перегрузка", icon: "♻️", rarity: "common", category: "особое", maxLevel: 4, description: "Каждые 5 секунд корабль выпускает волну урона вокруг себя", apply: (s, _l) => { s.overload = true; s.overloadDamage += 0.6; } },
   { id: "quantum_tunnel", name: "Квантовый туннель", icon: "🌌", rarity: "legendary", category: "особое", maxLevel: 1, description: "+10 пробитых целей для каждого снаряда", apply: (s, _l) => { s.piercing += 10; } },
   { id: "solar_flare", name: "Солнечная вспышка", icon: "☀️", rarity: "epic", category: "стихии", maxLevel: 2, description: "+50% шанса поджога и увеличенный радиус взрыва", apply: (s, _l) => { s.burnChance += 0.5; s.explosionRadius += 20; } },
   { id: "ice_storm", name: "Ледяная буря", icon: "🌨️", rarity: "epic", category: "стихии", maxLevel: 2, description: "+30% шанса заморозки и два дополнительных снаряда", apply: (s, _l) => { s.freezeChance += 0.3; s.multishot += 2; } },
   { id: "death_ray", name: "Луч аннигиляции", icon: "☠️", rarity: "legendary", category: "атака", maxLevel: 1, description: "Гигантские снаряды с двойным уроном и пробитием", apply: (s, _l) => { s.piercing += 20; s.bulletDamage *= 2; s.bulletSize *= 3; } },
-  { id: "nano_shield", name: "Нанощит", icon: "🔵", rarity: "rare", category: "защита", maxLevel: 3, description: "+30 к ёмкости энергетического щита", apply: (s, _l) => { if (!s.shield) s.shield = { hp: 60, maxHp: 60, regenTimer: 0, active: true }; else { s.shield.maxHp += 30; s.shield.hp += 30; } } },
+  { id: "nano_shield", name: "Нанощит", icon: "🔵", rarity: "rare", category: "защита", maxLevel: 3, description: "+30 к ёмкости энергетического щита", apply: (s, _l) => { if (!s.shield) s.shield = { hp: 60, maxHp: 60, regenTimer: 0 }; else { s.shield.maxHp += 30; s.shield.hp += 30; } } },
   { id: "revenge", name: "Система возмездия", icon: "🩸", rarity: "epic", category: "атака", maxLevel: 2, description: "+15% к урону и +10% к критическому шансу", apply: (s, _l) => { s.bulletDamage *= 1.15; s.critChance += 0.1; } },
   { id: "unstoppable", name: "Неудержимая сила", icon: "💪", rarity: "legendary", category: "атака", maxLevel: 1, description: "+50% урона и скорости, +5 пробитий", apply: (s, _l) => { s.bulletDamage *= 1.5; s.bulletSpeed *= 1.5; s.piercing += 5; } },
   { id: "doom_satellite", name: "Спутник Судного дня", icon: "☄️", rarity: "legendary", category: "спутники", maxLevel: 1, description: "Сверхмощный спутник десятого уровня", apply: (s, _l) => { s.satellites.push({ angle: 0, radius: 90, speed: 0.025, level: 10, shootTimer: 0 }); } },
-  { id: "wormhole", name: "Генератор червоточин", icon: "🕳️", rarity: "legendary", category: "особое", maxLevel: 1, description: "Активирует периодический фазовый сдвиг", apply: (s, _l) => { s.ghostMode = true; } },
+  { id: "chain_detonation", name: "Цепная детонация", icon: "💣", rarity: "legendary", category: "атака", maxLevel: 1, description: "Убитые враги взрываются, нанося урон всем поблизости", apply: (s, _l) => { s.chainDetonation = true; s.chainDetonationRadius = 100; } },
   { id: "atomic_bomb", name: "Атомная боеголовка", icon: "💣", rarity: "legendary", category: "особое", maxLevel: 2, description: "+2 заряда ядерного удара", apply: (s, _l) => { s.nukeCharges += 2; } },
-  { id: "hyperdrive", name: "Гипердвигатель", icon: "💫", rarity: "epic", category: "защита", maxLevel: 2, description: "+20% скорости и периодическая фазовая защита", apply: (s, _l) => { s.speed *= 1.2; s.ghostMode = true; } },
+  { id: "living_shield", name: "Живой щит", icon: "💫", rarity: "epic", category: "защита", maxLevel: 2, description: "Убитые враги временно восстанавливают щит", apply: (s, _l) => { s.livingShield = true; s.livingShieldAmount += 4; } },
   { id: "omnidirectional", name: "Круговая батарея", icon: "🔄", rarity: "epic", category: "атака", maxLevel: 2, description: "+6 снарядов с круговым разбросом", apply: (s, _l) => { s.multishot += 6; s.spreadAngle = 360; } },
-  { id: "power_surge", name: "Энергетический всплеск", icon: "🌩️", rarity: "epic", category: "атака", maxLevel: 2, description: "+15% урона и +10% скорострельности", apply: (s, _l) => { s.bulletDamage *= 1.15; s.fireRate *= 0.9; } },
+  { id: "power_surge", name: "Энергетический всплеск", icon: "🌩️", rarity: "epic", category: "атака", maxLevel: 2, description: "+25% урона и +5% скорострельности", apply: (s, _l) => { s.bulletDamage *= 1.25; s.fireRate *= 0.95; } },
   // ═══ СИНЕРГИИ ПОЗДНЕЙ ИГРЫ ═══
-  { id: "adaptive_armor", name: "Адаптивная броня", icon: "🧬", rarity: "rare", category: "защита", maxLevel: 3, description: "+20 HP и +15 к ёмкости щита", apply: (s, _l) => { s.maxHp += 20; s.hp += 20; if (s.shield) { s.shield.maxHp += 15; s.shield.hp += 15; } } },
+  { id: "adaptive_armor", name: "Адаптивная броня", icon: "🧬", rarity: "rare", category: "защита", maxLevel: 3, description: "+35 HP и +25 к ёмкости щита", apply: (s, _l) => { s.maxHp += 35; s.hp += 35; if (s.shield) { s.shield.maxHp += 25; s.shield.hp += 25; } } },
   { id: "drone_link", name: "Нейросвязь дронов", icon: "🔗", rarity: "rare", category: "спутники", maxLevel: 3, description: "Повышает уровень всех дронов и спутников", apply: (s, _l) => { s.drones.forEach(d => d.level++); s.satellites.forEach(sat => sat.level++); } },
   { id: "singularity_rounds", name: "Сингулярные снаряды", icon: "🌌", rarity: "epic", category: "особое", maxLevel: 2, description: "Самонаведение, взрывы и увеличенный радиус поражения", apply: (s, _l) => { s.homing = true; s.explosiveBullets = true; s.explosionRadius += 25; } },
   { id: "phase_ammo", name: "Фазовые боеприпасы", icon: "👁️", rarity: "epic", category: "стихии", maxLevel: 2, description: "+2 пробития и +20% шанс заморозки", apply: (s, _l) => { s.piercing += 2; s.freezeChance += 0.2; } },
-  { id: "overdrive_reactor", name: "Реактор перегрузки", icon: "🔋", rarity: "rare", category: "атака", maxLevel: 3, description: "+12% урона и скорострельности", apply: (s, _l) => { s.bulletDamage *= 1.12; s.fireRate *= 0.88; } },
+  { id: "overdrive_reactor", name: "Реактор перегрузки", icon: "🔋", rarity: "rare", category: "атака", maxLevel: 3, description: "+8% урона и +15% скорострельности", apply: (s, _l) => { s.bulletDamage *= 1.08; s.fireRate *= 0.85; } },
   { id: "collector_core", name: "Ядро сборщика", icon: "🧲", rarity: "common", category: "утилиты", maxLevel: 4, description: "Быстрее притягивает опыт и повышает множитель очков", apply: (s, _l) => { s.magnetRange += 45; s.goldMultiplier += 0.15; } },
   { id: "guardian_protocol", name: "Протокол хранителя", icon: "💎", rarity: "epic", category: "защита", maxLevel: 2, description: "Усиливает регенерацию корпуса и щита", apply: (s, _l) => { s.regenRate += 0.5; if (s.shield) { s.shield.maxHp += 35; s.shield.hp += 35; } } },
   { id: "hunter_protocol", name: "Протокол охотника", icon: "🦅", rarity: "rare", category: "атака", maxLevel: 3, description: "Самонаведение и +12% критического шанса", apply: (s, _l) => { s.homing = true; s.homingStrength += 0.025; s.critChance += 0.12; } },
@@ -357,7 +357,7 @@ export function canUpgrade(state: PlayerState, def: UpgradeDef): boolean {
 // extends its phase kit.
 const VOID_UPGRADES = new Set([
   "ghost", "quantum_tunnel", "singularity_rounds",
-  "wormhole", "hyperdrive", "teleport", "void_arsenal",
+  "chain_detonation", "living_shield", "phase_discharge", "void_arsenal",
 ]);
 
 export function rollUpgrades(state: PlayerState, count = 3, excludeIds: string[] = []): UpgradeDef[] {
@@ -486,7 +486,7 @@ export function applyUpgrade(state: PlayerState, def: UpgradeDef): PlayerState {
     state.shield.maxHp = Math.min(state.shield.maxHp, 220);
     state.shield.hp = Math.min(state.shield.hp, state.shield.maxHp);
   }
-  if (state.satellites.length > 6) state.satellites.length = 6;
+  if (state.satellites.length > 8) state.satellites.length = 8;
   if (state.drones.length > 5) state.drones.length = 5;
   return state;
 }

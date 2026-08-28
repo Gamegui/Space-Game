@@ -91,12 +91,14 @@ class YandexPlatform {
         }
       } catch (error) {
         console.warn("Yandex Games SDK is unavailable:", error);
-      } finally {
-        // Tell the catalogue that the game is visually ready only after React has mounted.
-        try { this.sdk?.features?.LoadingAPI?.ready(); } catch { /* older SDK */ }
       }
     })();
     return this.initPromise;
+  }
+
+  /** Call once the game canvas and loop are fully initialised. */
+  markReady() {
+    try { this.sdk?.features?.LoadingAPI?.ready(); } catch { /* older SDK */ }
   }
 
   isAvailable() {

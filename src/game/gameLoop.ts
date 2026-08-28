@@ -59,7 +59,7 @@ export function makeInitialPlayer(shipClass: ShipClassId = "interceptor"): Playe
     homingStrength: 0.06,
     satellites: [],
     drones: [],
-    shield: { hp: 20, maxHp: 20, regenTimer: 0, active: true },
+    shield: { hp: 20, maxHp: 20, regenTimer: 0 },
     xp: 0, level: 1, xpToNext: 30,
     upgrades: [],
     synergies: [],
@@ -67,9 +67,9 @@ export function makeInitialPlayer(shipClass: ShipClassId = "interceptor"): Playe
     magnetRange: 120,
     aura: false, auraDamage: 0.25, auraTimer: 0,
     lasers: 0, laserTimer: 0,
-    rearShot: false, rearShotTimer: 0,
+    rearShot: false,
     explosiveBullets: false, explosionRadius: 60,
-    ricochet: false, ricochetCount: 1,
+    ricochet: false, ricochetCount: 0,
     mineCount: 0, mineTimer: 0,
     // Chrono-slow is a core ability advertised in the controls, not a hidden upgrade.
     timeSlow: true, timeSlowTimer: 0, timeSlowCooldown: 0,
@@ -83,7 +83,6 @@ export function makeInitialPlayer(shipClass: ShipClassId = "interceptor"): Playe
     ghostMode: false, ghostTimer: 0,
     voidSouls: 0, voidSoulIdleTimer: 0,
     voidEchoTimer: 0, voidEchoPos: { x: W / 2, y: H - 100 },
-    teleportCooldown: 0, teleportTimer: 0,
     blackHole: false, blackHoleTimer: 0, blackHoleCooldown: 0,
     nukeCharges: 1,
     nukeCooldown: 0,
@@ -94,6 +93,12 @@ export function makeInitialPlayer(shipClass: ShipClassId = "interceptor"): Playe
     waveShot: false, waveShotTimer: 0,
     snipeMode: false, rapidMode: false,
     rapidBoostTimer: 0,
+    chainDetonation: false, chainDetonationRadius: 80,
+    phaseDischarge: false, phaseDischargeCount: 0,
+    livingShield: false, livingShieldAmount: 0,
+    sniperProtocol: false, sniperBonus: 0,
+    battleMagnet: false, battleMagnetChance: 0,
+    overload: false, overloadDamage: 0, overloadTimer: 0,
     score: 0, kills: 0,
     combo: 0, comboTimer: 0,
     stats: {
@@ -603,6 +608,24 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     }
   }
 
+  // ─── Overload nova ───────────────────────────────────────────────────────
+  if (player.overload) {
+    player.overloadTimer += timeScale;
+    if (player.overloadTimer >= 300) { // every 5 seconds
+      player.overloadTimer = 0;
+      const novaR = 110;
+      for (const e of enemies) {
+        const dx = e.pos.x - player.pos.x, dy = e.pos.y - player.pos.y;
+        if (dx * dx + dy * dy < novaR * novaR) {
+          const novaDmg = damageEnemy(e, player.overloadDamage * player.bulletDamage, frame, enemies);
+          player.stats.damageDealt += novaDmg;
+        }
+      }
+      particles.push(...makeBurst(player.pos, "#f97316", 20, true));
+      obj.screenShake = Math.max(obj.screenShake, 4);
+    }
+  }
+
   // ─── Mines ─────────────────────────────────────────────────────────────────
   if (player.mineCount > 0) {
     player.mineTimer--;
@@ -658,15 +681,22 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     if (obj.blackHoleTimer <= 0) obj.blackHolePos = null;
   }
 
+  // Pre-declare collision sets so the early enemy-resolution loop can check them.
+  const enemiesToRemove = new Set<number>();
+
   // Resolve enemies finished by aura, mines, status effects, black holes or a
   // dash. Previously they could remain alive at zero/negative HP until a bullet
   // touched them, which also produced broken health bars.
+  // Skip enemies already handled by the bullet-collision path to avoid
+  // double-counting kills (especially bosses).
   for (let i = enemies.length - 1; i >= 0; i--) {
     const enemy = enemies[i];
     if (enemy.hp > 0) continue;
     enemy.hp = 0;
+    if (enemiesToRemove.has(enemy.id)) continue;
     const xpBoostLevel = getUpgradeLevel(player, "xp_boost");
-    const xpGained = Math.floor(enemy.xp * (1 + xpBoostLevel * 0.25) * obj.routeXpMultiplier);
+    const scoreBoostXp = getUpgradeLevel(player, "score_boost");
+    const xpGained = Math.floor((enemy.xp + scoreBoostXp) * (1 + xpBoostLevel * 0.25) * obj.routeXpMultiplier);
     audio.playExplosion(enemy.isBoss);
     particles.push(...makeBurst(enemy.pos, enemy.isBoss ? "#f43f5e" : "#fb923c", enemy.isBoss ? 45 : 14, enemy.isBoss));
     xpOrbs.push(makeXpOrb(enemy.pos, xpGained));
@@ -674,6 +704,24 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     player.kills++;
     if (enemy.isElite) player.stats.elitesKilled++;
     if (enemy.isBoss) player.stats.bossesKilled++;
+    // Chain Detonation for non-bullet kills (no cascade)
+    if (player.chainDetonation && !enemy.isBoss) {
+      const detRadius = player.chainDetonationRadius + (enemy.isElite ? 40 : 0);
+      for (const other of enemies) {
+        if (other.id === enemy.id) continue;
+        const ddx = other.pos.x - enemy.pos.x, ddy = other.pos.y - enemy.pos.y;
+        if (ddx * ddx + ddy * ddy < detRadius * detRadius) {
+          const detDmg = damageEnemy(other, player.bulletDamage * 2.5, frame, enemies);
+          player.stats.damageDealt += detDmg;
+        }
+      }
+      obj.explosions.push({ id: uid(), pos: { ...enemy.pos }, radius: detRadius, progress: 0 });
+      obj.screenShake = Math.max(obj.screenShake, 4);
+    }
+    // Living Shield for non-bullet kills
+    if (player.livingShield && player.shield) {
+      player.shield.hp = Math.min(player.shield.maxHp, player.shield.hp + player.livingShieldAmount);
+    }
     devourSoul(player, enemy, particles, floatingTexts);
     if (player.shipClass === "void_wraith") particles.push(...makeShards(enemy.pos));
     enemies.splice(i, 1);
@@ -887,6 +935,53 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           player.pos.x += (dx / distance) * 0.24;
           player.pos.y += (dy / distance) * 0.18;
         }
+        // ── Omega unique mechanics ──
+        // Shockwave ring: every 4 seconds in phase 1+, expanding ring of bullets
+        if (e.phase >= 1 && frame % 240 === 0) {
+          const ringCount = 16 + e.phase * 6;
+          for (let i = 0; i < ringCount; i++) {
+            const a = (i / ringCount) * Math.PI * 2;
+            const ringSpd = 2.8 + e.phase * 0.4;
+            bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * ringSpd, y: Math.sin(a) * ringSpd }, fromPlayer: false, damage: 2.5 + wave * 0.1, size: 5, color: "#ff4444", pierce: 0, homing: false });
+          }
+          obj.screenShake = Math.max(obj.screenShake, 6);
+        }
+        // Laser beam: aimed burst every 2.5s in phase 2+
+        if (e.phase >= 2 && frame % 150 === 0) {
+          const ldx = player.pos.x - e.pos.x, ldy = player.pos.y - e.pos.y;
+          const aim = Math.atan2(ldy, ldx);
+          const beamSpd = 3.6 + wave * 0.08;
+          const beamDmg = (2.5 + wave * 0.22) * 1.5;
+          const beamCount = e.phase >= 3 ? 7 : 5;
+          for (let i = 0; i < beamCount; i++) {
+            const spread = (i - (beamCount - 1) / 2) * 0.06;
+            const angle = aim + spread;
+            bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(angle) * beamSpd * 2.2, y: Math.sin(angle) * beamSpd * 2.2 }, fromPlayer: false, damage: beamDmg, size: 8, color: "#ffffff", pierce: 2, homing: false });
+          }
+        }
+        // Vortex pull: in phase 3, pull player bullets toward Omega every 3s
+        if (e.phase >= 3 && frame % 180 === 0) {
+          for (const b of bullets) {
+            if (!b.fromPlayer) continue;
+            const bdx = e.pos.x - b.pos.x, bdy = e.pos.y - b.pos.y;
+            const bdist = Math.max(1, Math.sqrt(bdx * bdx + bdy * bdy));
+            if (bdist < 300) {
+              b.vel.x += (bdx / bdist) * 1.2;
+              b.vel.y += (bdy / bdist) * 1.2;
+            }
+          }
+          obj.screenShake = Math.max(obj.screenShake, 5);
+          particles.push(...makeBurst(e.pos, "#e11d48", 12));
+        }
+        // Rage mode: phase 3 Omega slowly drifts toward the player
+        if (e.phase >= 3) {
+          const rdx = player.pos.x - e.pos.x, rdy = player.pos.y - e.pos.y;
+          const rdist = Math.max(1, Math.sqrt(rdx * rdx + rdy * rdy));
+          if (rdist > 100) {
+            e.pos.x += (rdx / rdist) * 0.35;
+            e.pos.y += (rdy / rdist) * 0.2;
+          }
+        }
       } else {
         if (bossHpPct < 0.5 && e.phase === 0) {
           e.phase = 1;
@@ -991,7 +1086,6 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 
   // ─── Bullet collision with enemies ─────────────────────────────────────────
   const bulletsToRemove = new Set<number>();
-  const enemiesToRemove = new Set<number>();
   const spawnedFromSplit: Enemy[] = [];
 
   // Spatial grid avoids testing every player bullet against every enemy.
@@ -1044,6 +1138,16 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 
         // Crit calculation
         let dmg = b.damage;
+        // Sniper Protocol: +damage when target has no nearby allies
+        if (player.sniperProtocol) {
+          let allyCount = 0;
+          for (const other of enemies) {
+            if (other.id === e.id) continue;
+            const adx = other.pos.x - e.pos.x, ady = other.pos.y - e.pos.y;
+            if (adx * adx + ady * ady < 120 * 120) { allyCount++; if (allyCount >= 2) break; }
+          }
+          if (allyCount < 2) dmg *= (1 + player.sniperBonus);
+        }
         const isCrit = Math.random() < player.critChance;
         if (isCrit) {
           dmg *= player.critMultiplier;
@@ -1096,10 +1200,14 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           player.comboTimer = 180;
 
           if (getUpgradeLevel(player, "heal_on_kill") > 0) {
-            player.hp = Math.min(player.hp + 2 * getUpgradeLevel(player, "heal_on_kill"), player.maxHp);
+            player.hp = Math.min(player.hp + 4 * getUpgradeLevel(player, "heal_on_kill"), player.maxHp);
+          }
+          if (player.livingShield && player.shield) {
+            player.shield.hp = Math.min(player.shield.maxHp, player.shield.hp + player.livingShieldAmount);
           }
           const xpBoostLevel = getUpgradeLevel(player, "xp_boost");
-          const xpGained = Math.floor(e.xp * (1 + xpBoostLevel * 0.25) * obj.routeXpMultiplier);
+          const scoreBoostXp = getUpgradeLevel(player, "score_boost");
+          const xpGained = Math.floor((e.xp + scoreBoostXp) * (1 + xpBoostLevel * 0.25) * obj.routeXpMultiplier);
           enemiesToRemove.add(e.id);
           input.onKill(xpGained, e.pos, e.isBoss);
 
@@ -1152,11 +1260,29 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           }
 
           // Random Combat Powerup drop
-          const dropChance = e.isBoss ? 1.0 : (e.isElite ? 0.65 : 0.08);
+          const battleMagnetBonus = player.battleMagnet ? player.battleMagnetChance : 0;
+          const dropChance = Math.min(1.0, (e.isBoss ? 1.0 : (e.isElite ? 0.65 : 0.08)) + battleMagnetBonus);
           if (Math.random() < dropChance) {
             const types: PowerupType[] = ["heal", "rapid", "shield", "magnet", "nuke"];
             const pType = types[Math.floor(Math.random() * types.length)];
             powerups.push(makePowerup(e.pos, pType));
+          }
+
+          // Chain Detonation: killed enemies explode, damaging nearby enemies
+          // (no cascade: explosion damage cannot trigger further chain detonations)
+          if (player.chainDetonation && !e.isBoss) {
+            const detRadius = player.chainDetonationRadius + (e.isElite ? 40 : 0);
+            for (const other of enemies) {
+              if (other.id === e.id || enemiesToRemove.has(other.id)) continue;
+              const ddx = other.pos.x - e.pos.x, ddy = other.pos.y - e.pos.y;
+              if (ddx * ddx + ddy * ddy < detRadius * detRadius) {
+                const detDmg = damageEnemy(other, player.bulletDamage * 2.5, frame, enemies);
+                player.stats.damageDealt += detDmg;
+                // Don't add to enemiesToRemove — prevents cascade chain reactions
+              }
+            }
+            obj.explosions.push({ id: uid(), pos: { ...e.pos }, radius: detRadius, progress: 0 });
+            obj.screenShake = Math.max(obj.screenShake, 4);
           }
 
           const col = e.isBoss ? "#f43f5e" : (e.isElite ? "#fbbf24" : "#fb923c");
@@ -1165,7 +1291,23 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           xpOrbs.push(makeXpOrb(e.pos, xpGained));
         }
 
-        hit_particle: { particles.push(...makeBurst(b.pos, "#fbbf24", 3)); break hit_particle; }
+        particles.push(...makeBurst(b.pos, "#fbbf24", 3));
+
+        // Phase Discharge: every Nth hit spawns shard bullets
+        if (player.phaseDischarge && player.phaseDischargeCount > 0) {
+          const shardInterval = Math.max(3, 8 - player.phaseDischargeCount);
+          if (frame % shardInterval === 0) {
+            for (let si = 0; si < 4; si++) {
+              const sa = (si / 4) * Math.PI * 2 + Math.random() * 0.5;
+              bullets.push({
+                id: uid(), pos: { x: b.pos.x, y: b.pos.y },
+                vel: { x: Math.cos(sa) * player.bulletSpeed * 0.7, y: Math.sin(sa) * player.bulletSpeed * 0.7 },
+                fromPlayer: true, damage: b.damage * 0.5, size: 2, color: "#c084fc",
+                pierce: 0, homing: false,
+              });
+            }
+          }
+        }
 
         if (b.pierce <= 0) { bulletsToRemove.add(b.id); break; }
         else (b as { pierce: number }).pierce--;
@@ -1248,7 +1390,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           player.rapidBoostTimer = 360;
           break;
         case "shield":
-          if (!player.shield) player.shield = { hp: 30, maxHp: 30, regenTimer: 0, active: true };
+          if (!player.shield) player.shield = { hp: 30, maxHp: 30, regenTimer: 0 };
           else player.shield.hp = player.shield.maxHp;
           player.invincTimer = 180;
           break;
@@ -1352,18 +1494,14 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       input.onWaveComplete();
       return;
     }
-    const clearFrames = Math.max(1, frame - obj.waveStartedFrame);
     // Never append a guard after boss defeat; that transition belongs to loot/route UI.
-    const cortegeEligible = wave >= 16 && player.level >= 12 && obj.powerRating >= 90;
-    const fastClear = cortegeEligible && wave % 5 !== 0 && clearFrames < Math.max(720, 1050 - wave * 5);
-    if (fastClear) obj.fastClearStreak = Math.min(5, obj.fastClearStreak + 1);
-    else obj.fastClearStreak = Math.max(0, obj.fastClearStreak - 1);
-
-    const guardChance = Math.min(0.78, 0.12 + obj.fastClearStreak * 0.13 + Math.max(0, obj.powerRating - 100) / 1800);
-    if (fastClear && !obj.guardSpawnedThisWave && Math.random() < guardChance) {
+    // Deterministic schedule: guards appear at wave 20, then every 6 waves (26, 32, 38...).
+    // Player must meet level/power gates to trigger the encounter.
+    const cortegeEligible = wave >= 20 && wave % 5 !== 0 && player.level >= 12 && obj.powerRating >= 80;
+    const guardWave = cortegeEligible && (wave === 20 || (wave > 20 && (wave - 20) % 6 === 0));
+    if (guardWave && !obj.guardSpawnedThisWave) {
       spawnAdaptiveGuard(obj, wave);
       obj.guardSpawnedThisWave = true;
-      obj.fastClearStreak = Math.max(0, obj.fastClearStreak - 2);
       const omens = ["ТВОЯ МОЩЬ БЫЛА ЗАМЕЧЕНА", "ПУСТОТА ПРОИЗНЕСЛА ТВОЁ ИМЯ", "ЧЁРНЫЙ КОРТЕЖ УЖЕ ЗДЕСЬ"];
       obj.floatingTexts.push(makeFloatingText({ x: W / 2, y: H / 2 }, omens[Math.floor(Math.random() * omens.length)], "#e879f9", true));
       obj.floatingTexts.push(makeFloatingText({ x: W / 2, y: H / 2 + 42 }, "УНИЧТОЖЬ ПРОВОЗВЕСТНИКА ПЕРВЫМ", "#fbbf24", true));

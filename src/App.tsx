@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { PlayerState, UpgradeDef, GamePhase, ShipClassId, Enemy } from "./game/types";
 import type { GameObjects } from "./game/gameLoop";
-import { stepGame, makeStars, makeInitialPlayer, makeMaterializeBurst, devourSoul, getNextLevelXp, spawnAdaptiveGuard, bindParticleFrame, particleDebugStats, W, H, uid } from "./game/gameLoop";
+import { stepGame, makeStars, makeInitialPlayer, makeMaterializeBurst, devourSoul, getNextLevelXp, spawnAdaptiveGuard, bindParticleFrame, particleDebugStats, objectPoolStats, W, H, uid } from "./game/gameLoop";
 import { ALL_UPGRADES, rollUpgrades, rollPremiumUpgradeChoices, rollHighRarityUpgrade, applyUpgrade, getUpgradeLevel, getAdaptiveDifficulty } from "./game/upgrades";
 import { getWaveComposition, isBossWave, spawnBoss, getBossName } from "./game/enemies";
 import { SHIP_CLASSES } from "./game/shipClasses";
@@ -1175,7 +1175,8 @@ export default function App() {
             `слои: ${layers} | tier=${g.performanceTier} | враги=${g.enemies.length} пули=${g.bullets.length} ` +
             `частицы=${pstats.active}/${pstats.budget}(+${pstats.spawnedThisFrame}) пул=${pstats.pooled} ` +
             `сферы=${g.xpOrbs.length} тексты=${g.floatingTexts.length} взрывы=${g.explosions.length} ` +
-            `молнии=${g.lightnings.length} мины=${g.mines.length}`
+            `молнии=${g.lightnings.length} мины=${g.mines.length} ` +
+            `пулы(пули/тексты/сферы/молнии)=${Object.values(objectPoolStats()).join("/")}`
           );
         }
       }

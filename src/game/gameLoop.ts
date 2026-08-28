@@ -123,27 +123,29 @@ export function makeInitialPlayer(shipClass: ShipClassId = "interceptor"): Playe
 }
 
 export function makeXpOrb(pos: Vec2, value: number): XpOrb {
-  return {
-    id: uid(),
-    pos: { x: pos.x + randRange(-10, 10), y: pos.y + randRange(-10, 10) },
-    vel: { x: randRange(-1.5, 1.5), y: randRange(-2, 0.5) },
-    value,
-    attracted: true,
-  };
+  const orb = xpOrbPool.pop() ?? { id: uid(), pos: { x: 0, y: 0 }, vel: { x: 0, y: 0 }, value: 0, attracted: true };
+  orb.pos.x = pos.x + randRange(-10, 10);
+  orb.pos.y = pos.y + randRange(-10, 10);
+  orb.vel.x = randRange(-1.5, 1.5);
+  orb.vel.y = randRange(-2, 0.5);
+  orb.value = value;
+  orb.attracted = true;
+  return orb;
 }
 
 export function makeFloatingText(pos: Vec2, text: string, color: string, isCrit = false): FloatingText {
-  return {
-    id: uid(),
-    pos: { x: pos.x + randRange(-8, 8), y: pos.y + randRange(-6, 6) },
-    vel: { x: randRange(-0.8, 0.8), y: -1.8 },
-    text,
-    color,
-    size: isCrit ? 18 : 13,
-    life: isCrit ? 45 : 35,
-    maxLife: isCrit ? 45 : 35,
-    isCrit,
-  };
+  const ft = floatingTextPool.pop() ?? { id: uid(), pos: { x: 0, y: 0 }, vel: { x: 0, y: 0 }, text: "", color: "", size: 13, life: 35, maxLife: 35, isCrit: false };
+  ft.pos.x = pos.x + randRange(-8, 8);
+  ft.pos.y = pos.y + randRange(-6, 6);
+  ft.vel.x = randRange(-0.8, 0.8);
+  ft.vel.y = -1.8;
+  ft.text = text;
+  ft.color = color;
+  ft.size = isCrit ? 18 : 13;
+  ft.life = isCrit ? 45 : 35;
+  ft.maxLife = ft.life;
+  ft.isCrit = isCrit;
+  return ft;
 }
 
 export function makePowerup(pos: Vec2, type: PowerupType): PowerupItem {
@@ -201,6 +203,80 @@ function acquireParticle(): Particle | null {
 
 function releaseParticle(p: Particle): void {
   if (particlePool.length < PARTICLE_POOL_CAP) particlePool.push(p);
+}
+
+function makeLightning(from: Vec2, to: Vec2, life: number): Lightning {
+  const l = lightningPool.pop() ?? { id: uid(), from: { x: 0, y: 0 }, to: { x: 0, y: 0 }, life: 8 };
+  l.from.x = from.x; l.from.y = from.y;
+  l.to.x = to.x; l.to.y = to.y;
+  l.life = life;
+  return l;
+}
+
+// ─── Пулы игровых объектов (анти-GC) ─────────────────────────────────────────
+// Перф-лог показал: колбэк игры стоит 1-2 мс, а фризы приходят из сборщика
+// мусора ПОСЛЕ массовых боёв (LONGTASK 3.6 с). Пули/тексты/сферы/молнии живут
+// секундами и попадают в старое поколение — их churn и вызывал major GC.
+// Теперь объекты переиспользуются: смерть = возврат в пул.
+const bulletPool: Bullet[] = [];
+const BULLET_POOL_CAP = 800;
+const floatingTextPool: FloatingText[] = [];
+const xpOrbPool: XpOrb[] = [];
+const lightningPool: Lightning[] = [];
+const FX_POOL_CAP = 300;
+
+function acquireBullet(): Bullet {
+  const b = bulletPool.pop() ?? { id: uid(), pos: { x: 0, y: 0 }, vel: { x: 0, y: 0 }, fromPlayer: false, damage: 0, size: 3, color: "#ffffff", pierce: 0, homing: false };
+  b.target = undefined;
+  b.hitList = undefined;
+  b.life = undefined;
+  return b;
+}
+
+function releaseBullet(b: Bullet): void {
+  // Ссылки на врагов обязаны обнуляться — иначе пул удерживает мёртвых врагов.
+  b.target = undefined;
+  b.hitList = undefined;
+  if (bulletPool.length < BULLET_POOL_CAP) bulletPool.push(b);
+}
+
+/** Пул-версия player-пули с произвольным уроном (спутники, дроны, осколки).
+ *  Дальность — как у обычных снарядов игрока. */
+function spawnPlayerSideBullet(player: PlayerState, pos: Vec2, vel: Vec2, damage: number, size: number, color: string): Bullet {
+  const b = acquireBullet();
+  b.fromPlayer = true;
+  b.pos.x = pos.x; b.pos.y = pos.y;
+  b.vel.x = vel.x; b.vel.y = vel.y;
+  b.damage = damage; b.size = size; b.color = color;
+  b.pierce = 0; b.homing = false;
+  b.life = Math.round(160 * (1 + player.bulletRangeBonus));
+  return b;
+}
+
+/** Пул-версия создания вражеской пули: поля копируются в переиспользуемый объект. */
+function spawnEnemyBullet(pos: Vec2, vel: Vec2, damage: number, size: number, color: string, pierce = 0, homing = false): Bullet {
+  const b = acquireBullet();
+  b.fromPlayer = false;
+  b.pos.x = pos.x; b.pos.y = pos.y;
+  b.vel.x = vel.x; b.vel.y = vel.y;
+  b.damage = damage; b.size = size; b.color = color;
+  b.pierce = pierce; b.homing = homing;
+  return b;
+}
+
+function releaseFloatingText(ft: FloatingText): void {
+  if (floatingTextPool.length < FX_POOL_CAP) floatingTextPool.push(ft);
+}
+function releaseXpOrb(orb: XpOrb): void {
+  if (xpOrbPool.length < FX_POOL_CAP) xpOrbPool.push(orb);
+}
+function releaseLightning(l: Lightning): void {
+  if (lightningPool.length < FX_POOL_CAP) lightningPool.push(l);
+}
+
+/** Размеры пулов объектов (анти-GC) — видны в перф-логе. */
+export function objectPoolStats(): { bullets: number; texts: number; orbs: number; lightnings: number } {
+  return { bullets: bulletPool.length, texts: floatingTextPool.length, orbs: xpOrbPool.length, lightnings: lightningPool.length };
 }
 
 /** Отладочные счётчики (§15.12): активные/в пуле/создано за кадр/лимит. */
@@ -488,7 +564,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     for (let i = bullets.length - 1; i >= 0; i--) {
       const bullet = bullets[i];
       const dx = bullet.pos.x - player.pos.x, dy = bullet.pos.y - player.pos.y;
-      if (!bullet.fromPlayer && dx * dx + dy * dy < 120 * 120) bullets.splice(i, 1);
+      if (!bullet.fromPlayer && dx * dx + dy * dy < 120 * 120) { releaseBullet(bullet); bullets.splice(i, 1); }
     }
     for (const enemy of enemies) {
       const dx = enemy.pos.x - player.pos.x, dy = enemy.pos.y - player.pos.y;
@@ -668,12 +744,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         const dx = nearest.pos.x - sx, dy = nearest.pos.y - sy;
         const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
         const dmg = player.bulletDamage * (0.55 + sat.level * 0.35);
-        bullets.push({
-          id: uid(), pos: { x: sx, y: sy },
-          vel: { x: (dx / dist) * 11, y: (dy / dist) * 11 },
-          fromPlayer: true, damage: dmg, size: 3.5, color: "#fbbf24",
-          pierce: 0, homing: false,
-        });
+        bullets.push(spawnPlayerSideBullet(player, { x: sx, y: sy }, { x: (dx / dist) * 11, y: (dy / dist) * 11 }, dmg, 3.5, "#fbbf24"));
       }
     }
   }
@@ -700,12 +771,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         const dx = nearest.pos.x - drone.pos.x, dy = nearest.pos.y - drone.pos.y;
         const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
         const dmg = player.bulletDamage * (0.45 + drone.level * 0.3);
-        bullets.push({
-          id: uid(), pos: { ...drone.pos },
-          vel: { x: (dx / dist) * 10.5, y: (dy / dist) * 10.5 },
-          fromPlayer: true, damage: dmg, size: 3.5, color: "#a78bfa",
-          pierce: 0, homing: false,
-        });
+        bullets.push(spawnPlayerSideBullet(player, { ...drone.pos }, { x: (dx / dist) * 10.5, y: (dy / dist) * 10.5 }, dmg, 3.5, "#a78bfa"));
       }
     }
   }
@@ -854,7 +920,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   if (obj.activeRoute === "asteroids" && frame % 105 === 0) {
     const rockCount = 2 + Math.min(2, Math.floor(wave / 20));
     for (let i = 0; i < rockCount; i++) {
-      bullets.push({ id: uid(), pos: { x: randRange(35, W - 35), y: -25 }, vel: { x: randRange(-0.7, 0.7), y: randRange(3.2, 5.2) }, fromPlayer: false, damage: 1.2 + wave * 0.025, size: randRange(8, 13), color: "#a8a29e", pierce: 0, homing: false });
+      bullets.push(spawnEnemyBullet({ x: randRange(35, W - 35), y: -25 }, { x: randRange(-0.7, 0.7), y: randRange(3.2, 5.2) }, 1.2 + wave * 0.025, randRange(8, 13), "#a8a29e", 0, false));
     }
   }
   if (obj.routeEffect === "gravity") {
@@ -914,7 +980,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       if (hurtAlly) {
         hurtAlly.hp = Math.min(hurtAlly.maxHp, hurtAlly.hp + 4);
         particles.push(...makeBurst(hurtAlly.pos, "#4ade80", 4));
-        lightnings.push({ id: uid(), from: { ...e.pos }, to: { ...hurtAlly.pos }, life: 10 });
+        lightnings.push(makeLightning(e.pos, hurtAlly.pos, 10));
       }
     }
 
@@ -922,7 +988,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     if (e.guardRole === "herald" && frame % 12 === 0) {
       for (const linked of enemies) {
         if (linked.guardRole && linked.guardRole !== "herald" && linked.hp > 0) {
-          lightnings.push({ id: uid(), from: { ...e.pos }, to: { ...linked.pos }, life: 14 });
+          lightnings.push(makeLightning(e.pos, linked.pos, 14));
         }
       }
     }
@@ -934,7 +1000,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         if (ally.id !== e.id && dx * dx + dy * dy < 190 * 190) {
           ally.maxShieldHp = Math.max(ally.maxShieldHp, 18);
           ally.shieldHp = Math.min(ally.maxShieldHp, ally.shieldHp + 12);
-          lightnings.push({ id: uid(), from: { ...e.pos }, to: { ...ally.pos }, life: 12 });
+          lightnings.push(makeLightning(e.pos, ally.pos, 12));
         }
       }
     }
@@ -1045,7 +1111,8 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         } else if (bossHpPct < 0.25 && e.phase === 2) {
           transform(3, "ФИНАЛЬНАЯ ФОРМА ОМЕГИ", 5);
           enemies.push(spawnEnemy("phantom", wave, obj.adaptiveDifficulty), spawnEnemy("singularity", wave, obj.adaptiveDifficulty));
-          bullets.splice(0, Math.floor(bullets.length * 0.25));
+          const dropped = bullets.splice(0, Math.floor(bullets.length * 0.25));
+          for (const db of dropped) releaseBullet(db);
         }
         if (e.phase >= 3) {
           const dx = W / 2 - player.pos.x, dy = H / 2 - player.pos.y;
@@ -1060,7 +1127,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           for (let i = 0; i < ringCount; i++) {
             const a = (i / ringCount) * Math.PI * 2;
             const ringSpd = 2.8 + e.phase * 0.4;
-            bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * ringSpd, y: Math.sin(a) * ringSpd }, fromPlayer: false, damage: 2.5 + wave * 0.1, size: 5, color: "#ff4444", pierce: 0, homing: false });
+            bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(a) * ringSpd, y: Math.sin(a) * ringSpd }, 2.5 + wave * 0.1, 5, "#ff4444", 0, false));
           }
           obj.screenShake = Math.max(obj.screenShake, 6);
         }
@@ -1074,7 +1141,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           for (let i = 0; i < beamCount; i++) {
             const spread = (i - (beamCount - 1) / 2) * 0.06;
             const angle = aim + spread;
-            bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(angle) * beamSpd * 2.2, y: Math.sin(angle) * beamSpd * 2.2 }, fromPlayer: false, damage: beamDmg, size: 8, color: "#ffffff", pierce: 2, homing: false });
+            bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(angle) * beamSpd * 2.2, y: Math.sin(angle) * beamSpd * 2.2 }, beamDmg, 8, "#ffffff", 2, false));
           }
         }
         // Vortex pull: in phase 3, pull player bullets toward Omega every 3s
@@ -1217,11 +1284,13 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 
     // «Ускоритель плазмы»: дальность полёта (кадры жизни снаряда).
     if (b.life !== undefined && --b.life <= 0) {
+      releaseBullet(b);
       bullets.splice(i, 1);
       continue;
     }
 
     if (b.pos.x < -40 || b.pos.x > W + 40 || b.pos.y < -60 || b.pos.y > H + 40) {
+      releaseBullet(b);
       bullets.splice(i, 1);
     }
   }
@@ -1264,13 +1333,15 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       if (e.type === "phantom" && Math.floor(e.patternTimer / 90) % 3 === 0) continue;
       // Пробитие: одна цель не получает урон от одного снаряда дважды —
       // иначе перекрытие на несколько кадров сжигало заряды pierce и
-      // раз за разом било по щиту одной и той же цели.
-      if (b.hitEnemies?.has(e)) continue;
+      // раз за разом било по щиту одной и той же цели. Массив вместо WeakSet:
+      // pierce ≤ 12, линейная проверка дешевле и не аллоцирует GC-тяжёлые
+      // WeakSet на каждую пулю.
+      if (b.hitList?.includes(e)) continue;
       const size = getEnemySize(e.type);
       const dx = b.pos.x - e.pos.x, dy = b.pos.y - e.pos.y;
       if (dx * dx + dy * dy < (size + b.size) * (size + b.size)) {
         player.stats.shotsHit++;
-        if (b.pierce > 0) (b.hitEnemies ??= new WeakSet<Enemy>()).add(e);
+        if (b.pierce > 0) (b.hitList ??= []).push(e);
         audio.playHit();
 
         // Hit shield first
@@ -1458,12 +1529,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           if (frame % shardInterval === 0) {
             for (let si = 0; si < 4; si++) {
               const sa = (si / 4) * Math.PI * 2 + Math.random() * 0.5;
-              bullets.push({
-                id: uid(), pos: { x: b.pos.x, y: b.pos.y },
-                vel: { x: Math.cos(sa) * player.bulletSpeed * 0.7, y: Math.sin(sa) * player.bulletSpeed * 0.7 },
-                fromPlayer: true, damage: b.damage * 0.5, size: 2, color: "#c084fc",
-                pierce: 0, homing: false,
-              });
+              bullets.push(spawnPlayerSideBullet(player, { x: b.pos.x, y: b.pos.y }, { x: Math.cos(sa) * player.bulletSpeed * 0.7, y: Math.sin(sa) * player.bulletSpeed * 0.7 }, b.damage * 0.5, 2, "#c084fc"));
             }
           }
         }
@@ -1476,7 +1542,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 
   // Remove bullets/enemies and add splitters
   for (let i = bullets.length - 1; i >= 0; i--) {
-    if (bulletsToRemove.has(bullets[i].id)) bullets.splice(i, 1);
+    if (bulletsToRemove.has(bullets[i].id)) { releaseBullet(bullets[i]); bullets.splice(i, 1); }
   }
   for (let i = enemies.length - 1; i >= 0; i--) {
     if (enemiesToRemove.has(enemies[i].id)) enemies.splice(i, 1);
@@ -1493,6 +1559,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       if (b.fromPlayer) continue;
       const dx = b.pos.x - player.pos.x, dy = b.pos.y - player.pos.y;
       if (dx * dx + dy * dy < (18 + b.size) * (18 + b.size)) {
+        releaseBullet(b);
         bullets.splice(i, 1);
         takeDamage(player, b.damage * 8.5, particles, obj, input.onDeath);
         break; // invulnerability starts immediately; do not stack hits in one tick
@@ -1594,6 +1661,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     if (dist < 24) {
       audio.playXp();
       player.xp += orb.value;
+      releaseXpOrb(orb);
       xpOrbs.splice(i, 1);
       while (player.xp >= player.xpToNext) {
         player.xp -= player.xpToNext;
@@ -1613,13 +1681,13 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     ft.pos.y += ft.vel.y;
     ft.vel.y *= 0.95;
     ft.life--;
-    if (ft.life <= 0) floatingTexts.splice(i, 1);
+    if (ft.life <= 0) { releaseFloatingText(ft); floatingTexts.splice(i, 1); }
   }
 
   // ─── Lightnings ────────────────────────────────────────────────────────────
   for (let i = lightnings.length - 1; i >= 0; i--) {
     lightnings[i].life--;
-    if (lightnings[i].life <= 0) lightnings.splice(i, 1);
+    if (lightnings[i].life <= 0) { releaseLightning(lightnings[i]); lightnings.splice(i, 1); }
   }
 
   // ─── Particles ─────────────────────────────────────────────────────────────
@@ -1752,6 +1820,11 @@ const OBJECT_BUDGETS = {
   enemies: 80,
 } as const;
 
+/** Обрезка с возвратом вытесненных объектов в пул (анти-GC). */
+function trimToPool<T>(items: T[], max: number, release: (item: T) => void) {
+  while (items.length > max) release(items.shift()!);
+}
+
 function trimOldest<T>(items: T[], max: number) {
   if (items.length > max) items.splice(0, items.length - max);
 }
@@ -1772,6 +1845,7 @@ function enforceObjectBudgets(obj: GameObjects) {
       const target = bullet.fromPlayer ? playerBullets : enemyBullets;
       const max = bullet.fromPlayer ? playerBulletCap : enemyBulletCap;
       if (target.length < max) target.push(bullet);
+      else releaseBullet(bullet); // вытесненные возвращаются в пул
     }
     bullets.length = 0;
     bullets.push(...playerBullets.reverse(), ...enemyBullets.reverse());
@@ -1786,9 +1860,9 @@ function enforceObjectBudgets(obj: GameObjects) {
   // Частицы: жёсткий лимит уже действует в acquireParticle; страховочная
   // обрезка возвращает старые объекты в пул, а не выбрасывает.
   while (obj.particles.length > particleBudget) releaseParticle(obj.particles.shift()!);
-  trimOldest(obj.xpOrbs, Math.ceil(OBJECT_BUDGETS.xpOrbs * Math.max(0.75, qualityFactor)));
-  trimOldest(obj.floatingTexts, Math.ceil(OBJECT_BUDGETS.floatingTexts * qualityFactor));
-  trimOldest(obj.lightnings, Math.ceil(OBJECT_BUDGETS.lightnings * Math.max(0.6, qualityFactor)));
+  trimToPool(obj.xpOrbs, Math.ceil(OBJECT_BUDGETS.xpOrbs * Math.max(0.75, qualityFactor)), releaseXpOrb);
+  trimToPool(obj.floatingTexts, Math.ceil(OBJECT_BUDGETS.floatingTexts * qualityFactor), releaseFloatingText);
+  trimToPool(obj.lightnings, Math.ceil(OBJECT_BUDGETS.lightnings * Math.max(0.6, qualityFactor)), releaseLightning);
   trimOldest(obj.mines, OBJECT_BUDGETS.mines);
   trimOldest(obj.explosions, Math.ceil(OBJECT_BUDGETS.explosions * qualityFactor));
   trimOldest(obj.powerups, OBJECT_BUDGETS.powerups);
@@ -1799,23 +1873,25 @@ function makePlayerBullet(player: PlayerState, pos: Vec2, vel: Vec2): Bullet {
   // «ПРИЗРАЧНЫЙ АРСЕНАЛ»: в Фазе Бездны снаряды чуть быстрее и вспыхивают
   // призрачным светом (визуально отличается от обычных болтов).
   const arsenalActive = player.ghostArsenal && player.ghostTimer > 0;
-  return {
-    id: uid(), pos: { ...pos },
-    vel: arsenalActive ? { x: vel.x * 1.15, y: vel.y * 1.15 } : vel,
-    fromPlayer: true,
-    // Devoured souls permanently boost every bolt the Wraith fires this run.
-    damage: player.bulletDamage * soulDamageMult(player),
-    size: player.bulletSize,
-    color: arsenalActive ? "#f5d0fe"
-      : player.snipeMode ? "#ffffff"
-      : (player.shipClass === "tempest" ? "#c084fc" : (player.shipClass === "dreadnought" ? "#f59e0b" : (player.shipClass === "void_wraith" ? "#e879f9" : "#38bdf8"))),
-    pierce: player.piercing,
-    homing: player.homing,
-    // «Ускоритель плазмы» продлевает полёт: базовой дальности хватает на
-    // несколько экранов, так что прямой стрельбе лимит не мешает — выгоду
-    // получают наводящиеся и криволинейные снаряды.
-    life: Math.round(160 * (1 + player.bulletRangeBonus)),
-  };
+  // Пул: объект и его pos/vel переиспользуются — ноль аллокаций после прогрева.
+  const b = acquireBullet();
+  b.fromPlayer = true;
+  b.pos.x = pos.x; b.pos.y = pos.y;
+  if (arsenalActive) { b.vel.x = vel.x * 1.15; b.vel.y = vel.y * 1.15; }
+  else { b.vel.x = vel.x; b.vel.y = vel.y; }
+  // Devoured souls permanently boost every bolt the Wraith fires this run.
+  b.damage = player.bulletDamage * soulDamageMult(player);
+  b.size = player.bulletSize;
+  b.color = arsenalActive ? "#f5d0fe"
+    : player.snipeMode ? "#ffffff"
+    : (player.shipClass === "tempest" ? "#c084fc" : (player.shipClass === "dreadnought" ? "#f59e0b" : (player.shipClass === "void_wraith" ? "#e879f9" : "#38bdf8")));
+  b.pierce = player.piercing;
+  b.homing = player.homing;
+  // «Ускоритель плазмы» продлевает полёт: базовой дальности хватает на
+  // несколько экранов, так что прямой стрельбе лимит не мешает — выгоду
+  // получают наводящиеся и криволинейные снаряды.
+  b.life = Math.round(160 * (1 + player.bulletRangeBonus));
+  return b;
 }
 
 function firePlayerBullets(bullets: Bullet[], player: PlayerState, _enemies: Enemy[], _frame: number) {
@@ -1885,25 +1961,25 @@ function shootEnemy(e: Enemy, player: PlayerState, bullets: Bullet[], wave: numb
     case "bomber": {
       for (let i = 0; i < 6; i++) {
         const a = (i / 6) * Math.PI * 2;
-        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd, y: Math.sin(a) * spd }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
+        bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(a) * spd, y: Math.sin(a) * spd }, dmg, size, color, 0, false));
       }
       break;
     }
     case "sniper": {
-      bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: (dx / dist) * spd * 1.7, y: (dy / dist) * spd * 1.7 }, fromPlayer: false, damage: dmg * 1.8, size: size + 2, color, pierce: 0, homing: false });
+      bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: (dx / dist) * spd * 1.7, y: (dy / dist) * spd * 1.7 }, dmg * 1.8, size + 2, color, 0, false));
       break;
     }
     case "artillery": {
       for (let i = 0; i < 5; i++) {
         const a = (i / 5) * Math.PI * 2;
-        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd * 0.85, y: Math.sin(a) * spd * 0.85 }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
+        bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(a) * spd * 0.85, y: Math.sin(a) * spd * 0.85 }, dmg, size, color, 0, false));
       }
       break;
     }
     case "spinner": {
       for (let i = 0; i < 4; i++) {
         const a = (i / 4) * Math.PI * 2 + e.angle;
-        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd, y: Math.sin(a) * spd }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
+        bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(a) * spd, y: Math.sin(a) * spd }, dmg, size, color, 0, false));
       }
       break;
     }
@@ -1911,44 +1987,44 @@ function shootEnemy(e: Enemy, player: PlayerState, bullets: Bullet[], wave: numb
       const baseAngle = Math.atan2(dy, dx);
       for (const offset of [-0.22, 0, 0.22]) {
         const angle = baseAngle + offset;
-        bullets.push({ id: uid(), pos: { ...e.pos }, vel: { x: Math.cos(angle) * spd, y: Math.sin(angle) * spd }, fromPlayer: false, damage: dmg, size: size + 1, color, pierce: 0, homing: false });
+        bullets.push(spawnEnemyBullet({ ...e.pos }, { x: Math.cos(angle) * spd, y: Math.sin(angle) * spd }, dmg, size + 1, color, 0, false));
       }
       break;
     }
     case "phantom": {
       if (Math.floor(e.patternTimer / 90) % 3 !== 0) {
-        bullets.push({ id: uid(), pos: { ...e.pos }, vel: { x: (dx / dist) * spd * 1.65, y: (dy / dist) * spd * 1.65 }, fromPlayer: false, damage: dmg * 1.25, size, color, pierce: 0, homing: false });
+        bullets.push(spawnEnemyBullet({ ...e.pos }, { x: (dx / dist) * spd * 1.65, y: (dy / dist) * spd * 1.65 }, dmg * 1.25, size, color, 0, false));
       }
       break;
     }
     case "leecher": {
-      bullets.push({ id: uid(), pos: { ...e.pos }, vel: { x: (dx / dist) * spd * 1.25, y: (dy / dist) * spd * 1.25 }, fromPlayer: false, damage: dmg * 1.6, size: size + 3, color, pierce: 1, homing: false });
+      bullets.push(spawnEnemyBullet({ ...e.pos }, { x: (dx / dist) * spd * 1.25, y: (dy / dist) * spd * 1.25 }, dmg * 1.6, size + 3, color, 1, false));
       break;
     }
     case "carrier": {
       const baseAngle = Math.atan2(dy, dx);
       for (let i = -2; i <= 2; i++) {
         const angle = baseAngle + i * 0.18;
-        bullets.push({ id: uid(), pos: { ...e.pos }, vel: { x: Math.cos(angle) * spd * 0.9, y: Math.sin(angle) * spd * 0.9 }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
+        bullets.push(spawnEnemyBullet({ ...e.pos }, { x: Math.cos(angle) * spd * 0.9, y: Math.sin(angle) * spd * 0.9 }, dmg, size, color, 0, false));
       }
       break;
     }
     case "singularity": {
       for (let i = 0; i < 8; i++) {
         const angle = (i / 8) * Math.PI * 2 + e.angle;
-        bullets.push({ id: uid(), pos: { ...e.pos }, vel: { x: Math.cos(angle) * spd * 0.72, y: Math.sin(angle) * spd * 0.72 }, fromPlayer: false, damage: dmg * 1.15, size: size + 1, color, pierce: 0, homing: false });
+        bullets.push(spawnEnemyBullet({ ...e.pos }, { x: Math.cos(angle) * spd * 0.72, y: Math.sin(angle) * spd * 0.72 }, dmg * 1.15, size + 1, color, 0, false));
       }
       break;
     }
     case "boss_destroyer": {
-      bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: (dx / dist) * spd * 1.2, y: (dy / dist) * spd * 1.2 }, fromPlayer: false, damage: dmg, size: size + 2, color, pierce: 0, homing: false });
+      bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: (dx / dist) * spd * 1.2, y: (dy / dist) * spd * 1.2 }, dmg, size + 2, color, 0, false));
       for (let s2 = -1; s2 <= 1; s2 += 2) {
-        bullets.push({ id: uid(), pos: { x: e.pos.x + s2 * 45, y: e.pos.y }, vel: { x: s2 * spd * 0.45, y: spd * 0.95 }, fromPlayer: false, damage: dmg * 0.7, size, color, pierce: 0, homing: false });
+        bullets.push(spawnEnemyBullet({ x: e.pos.x + s2 * 45, y: e.pos.y }, { x: s2 * spd * 0.45, y: spd * 0.95 }, dmg * 0.7, size, color, 0, false));
       }
       if (e.phase >= 1) {
         for (let i = 0; i < 6; i++) {
           const a = (i / 6) * Math.PI * 2;
-          bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd * 0.8, y: Math.sin(a) * spd * 0.8 }, fromPlayer: false, damage: dmg * 0.6, size: size - 1, color, pierce: 0, homing: false });
+          bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(a) * spd * 0.8, y: Math.sin(a) * spd * 0.8 }, dmg * 0.6, size - 1, color, 0, false));
         }
       }
       break;
@@ -1956,32 +2032,32 @@ function shootEnemy(e: Enemy, player: PlayerState, bullets: Bullet[], wave: numb
     case "boss_mothership": {
       for (let i = 0; i < 6; i++) {
         const a = (i / 6) * Math.PI * 2 + e.angle * 0.02;
-        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd, y: Math.sin(a) * spd }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
+        bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(a) * spd, y: Math.sin(a) * spd }, dmg, size, color, 0, false));
       }
       if (e.phase >= 1) {
-        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: (dx / dist) * spd * 1.4, y: (dy / dist) * spd * 1.4 }, fromPlayer: false, damage: dmg * 1.3, size: size + 3, color, pierce: 1, homing: false });
+        bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: (dx / dist) * spd * 1.4, y: (dy / dist) * spd * 1.4 }, dmg * 1.3, size + 3, color, 1, false));
       }
       break;
     }
     case "boss_dreadnought": {
       for (let i = 0; i < 8; i++) {
         const a = (i / 8) * Math.PI * 2 + e.angle * 0.015;
-        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd * 0.9, y: Math.sin(a) * spd * 0.9 }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
+        bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(a) * spd * 0.9, y: Math.sin(a) * spd * 0.9 }, dmg, size, color, 0, false));
       }
       if (e.phase >= 1) {
-        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: (dx / dist) * spd * 1.7, y: (dy / dist) * spd * 1.7 }, fromPlayer: false, damage: dmg * 2, size: 11, color, pierce: 3, homing: false });
+        bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: (dx / dist) * spd * 1.7, y: (dy / dist) * spd * 1.7 }, dmg * 2, 11, color, 3, false));
       }
       break;
     }
     case "boss_eclipse": {
       for (let i = 0; i < 10; i++) {
         const a = (i / 10) * Math.PI * 2 + e.angle * 0.02;
-        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd, y: Math.sin(a) * spd }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
+        bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(a) * spd, y: Math.sin(a) * spd }, dmg, size, color, 0, false));
       }
       if (e.phase >= 1) {
         for (let i = 0; i < 5; i++) {
           const a = (i / 5) * Math.PI * 2;
-          bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd * 1.35, y: Math.sin(a) * spd * 1.35 }, fromPlayer: false, damage: dmg * 1.3, size: size + 2, color, pierce: 0, homing: true });
+          bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(a) * spd * 1.35, y: Math.sin(a) * spd * 1.35 }, dmg * 1.3, size + 2, color, 0, true));
         }
       }
       break;
@@ -1989,7 +2065,7 @@ function shootEnemy(e: Enemy, player: PlayerState, bullets: Bullet[], wave: numb
     case "boss_titan": {
       for (let i = 0; i < 12; i++) {
         const a = (i / 12) * Math.PI * 2;
-        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd * (0.5 + e.phase * 0.4), y: Math.sin(a) * spd * (0.5 + e.phase * 0.4) }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
+        bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(a) * spd * (0.5 + e.phase * 0.4), y: Math.sin(a) * spd * (0.5 + e.phase * 0.4) }, dmg, size, color, 0, false));
       }
       break;
     }
@@ -1998,19 +2074,19 @@ function shootEnemy(e: Enemy, player: PlayerState, bullets: Bullet[], wave: numb
       for (let i = 0; i < count; i++) {
         const a = (i / count) * Math.PI * 2 + e.angle * (0.025 + e.phase * 0.008);
         const speedBand = e.phase >= 2 && i % 2 === 0 ? 0.72 : 1.08 + e.phase * 0.08;
-        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd * speedBand, y: Math.sin(a) * spd * speedBand }, fromPlayer: false, damage: dmg * (e.phase >= 3 ? 1.15 : 1), size: size + e.phase, color, pierce: 0, homing: false });
+        bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(a) * spd * speedBand, y: Math.sin(a) * spd * speedBand }, dmg * (e.phase >= 3 ? 1.15 : 1), size + e.phase, color, 0, false));
       }
       if (e.phase >= 1) {
         const aim = Math.atan2(dy, dx);
         for (const offset of e.phase >= 3 ? [-0.3, -0.1, 0.1, 0.3] : [-0.14, 0.14]) {
           const angle = aim + offset;
-          bullets.push({ id: uid(), pos: { ...e.pos }, vel: { x: Math.cos(angle) * spd * 1.65, y: Math.sin(angle) * spd * 1.65 }, fromPlayer: false, damage: dmg * 1.25, size: size + 2, color: "#ffffff", pierce: 1, homing: false });
+          bullets.push(spawnEnemyBullet({ ...e.pos }, { x: Math.cos(angle) * spd * 1.65, y: Math.sin(angle) * spd * 1.65 }, dmg * 1.25, size + 2, "#ffffff", 1, false));
         }
       }
       break;
     }
     default: {
-      bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: (dx / dist) * spd, y: (dy / dist) * spd }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
+      bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: (dx / dist) * spd, y: (dy / dist) * spd }, dmg, size, color, 0, false));
     }
   }
 }
@@ -2027,7 +2103,7 @@ function chainLightning(source: Enemy, enemies: Enemy[], lightnings: Lightning[]
       if (d < nearDist && d < 220 * 220) { nearDist = d; nearest = e; }
     }
     if (!nearest) break;
-    lightnings.push({ id: uid(), from: { ...current.pos }, to: { ...nearest.pos }, life: 8 });
+    lightnings.push(makeLightning(current.pos, nearest.pos, 8));
     damageEnemy(nearest, dmg * 0.7, frame, enemies);
     current = nearest;
   }

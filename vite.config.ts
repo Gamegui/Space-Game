@@ -16,6 +16,13 @@ const PERF_LOG_FILE = path.resolve(__dirname, ".perf-logs.ndjson");
 const perfLogReceiver = {
   name: "perf-log-receiver",
   configureServer(server: ViteDevServer) {
+    // Журнал всех входящих запросов: видно, доходит ли браузер игрока
+    // до сервера вообще (диагностика «белого экрана» и кэша прокси).
+    server.middlewares.use((req, _res, next) => {
+      const ua = (req.headers["user-agent"] ?? "?").toString().slice(0, 60);
+      console.log(`[req] ${req.method} ${req.url} · ${ua}`);
+      next();
+    });
     server.middlewares.use("/__perf_log", (req, res) => {
       const writeRecord = (raw: string) => {
         const record = JSON.parse(raw);

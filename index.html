@@ -8,6 +8,32 @@
     <title>Космический Штурм: Ультра</title>
     <!-- Official Yandex Games SDK (relative path for Yandex hosting, per documentation). -->
     <script src="/sdk.js"></script>
+    <script>
+      // Ранний сборщик ошибок страницы: активен только в dev-сборке с VITE_ADMIN
+      // (в релизе %VITE_ADMIN% не определён и условие ложно). Любой краш рендера
+      // уходит на dev-сервер /__perf_log — белый экран больше не слепая зона.
+      if ("%VITE_ADMIN%" === "true") {
+        window.__sendPerfErr = function (kind, message, stack) {
+          try {
+            var payload = encodeURIComponent(JSON.stringify({
+              kind: kind,
+              message: String(message).slice(0, 600),
+              stack: String(stack || "").slice(0, 2500),
+              href: location.href,
+              ua: navigator.userAgent
+            }));
+            if (navigator.sendBeacon) navigator.sendBeacon("/__perf_log?d=" + payload);
+            else (new Image()).src = "/__perf_log?d=" + payload;
+          } catch (e) { /* канал мёртв — больше ничего не сделать */ }
+        };
+        window.addEventListener("error", function (e) {
+          window.__sendPerfErr("PAGE_ERROR", e.message, (e.error && e.error.stack) || (e.filename + ":" + e.lineno + ":" + e.colno));
+        });
+        window.addEventListener("unhandledrejection", function (e) {
+          window.__sendPerfErr("PAGE_REJECTION", (e.reason && e.reason.message) || String(e.reason), e.reason && e.reason.stack);
+        });
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

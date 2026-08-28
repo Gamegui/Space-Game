@@ -23,22 +23,27 @@ const perfLogReceiver = {
         appendFileSync(PERF_LOG_FILE, line + "\n");
         console.log(`[perf] ${line.slice(0, 300)}`);
       };
-      if (req.method === "GET") {
-        // Фолбэк-канал: /__perf_log?d=<urlencode(json)> — на случай, если
-        // прокси превью не пропускает POST-запросы из iframe.
-        try {
-          const url = new URL(req.url ?? "/", "http://localhost");
-          const data = url.searchParams.get("d");
-          if (data) writeRecord(decodeURIComponent(data));
-          else throw new Error("no data");
+      // Канал ?d=<urlencode(json)> работает для ЛЮБОГО метода: sendBeacon
+      // отправляет POST с данными в query, образ <img> — GET. Тело POST
+      // разбирается только когда query-параметра нет.
+      try {
+        const url = new URL(req.url ?? "/", "http://localhost");
+        const data = url.searchParams.get("d");
+        if (data) {
+          writeRecord(decodeURIComponent(data));
           res.statusCode = 204;
           res.end();
           return;
-        } catch {
-          res.statusCode = 400;
-          res.end();
-          return;
         }
+      } catch {
+        res.statusCode = 400;
+        res.end();
+        return;
+      }
+      if (req.method !== "POST") {
+        res.statusCode = 404;
+        res.end();
+        return;
       }
       if (req.method !== "POST") {
         res.statusCode = 404;

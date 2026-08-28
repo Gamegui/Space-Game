@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { PlayerState, UpgradeDef, GamePhase, ShipClassId, Enemy } from "./game/types";
 import type { GameObjects } from "./game/gameLoop";
-import { stepGame, makeStars, makeInitialPlayer, makeMaterializeBurst, devourSoul, getNextLevelXp, spawnAdaptiveGuard, W, H, uid } from "./game/gameLoop";
+import { stepGame, makeStars, makeInitialPlayer, makeMaterializeBurst, devourSoul, getNextLevelXp, spawnAdaptiveGuard, bindParticleFrame, particleDebugStats, W, H, uid } from "./game/gameLoop";
 import { ALL_UPGRADES, rollUpgrades, rollPremiumUpgradeChoices, rollHighRarityUpgrade, applyUpgrade, getUpgradeLevel, getAdaptiveDifficulty } from "./game/upgrades";
 import { getWaveComposition, isBossWave, spawnBoss, getBossName } from "./game/enemies";
 import { SHIP_CLASSES } from "./game/shipClasses";
@@ -424,6 +424,8 @@ export default function App() {
     const qualityTiers: Record<Exclude<QualityMode, "auto">, 0 | 1 | 2> = { low: 0, medium: 1, high: 2 };
     objects.performanceAuto = qualityMode === "auto";
     objects.performanceTier = qualityMode === "auto" ? detectPerformanceTier() : qualityTiers[qualityMode];
+    // Новый забег — новая привязка системы частиц (пул переиспользуется).
+    bindParticleFrame(objects.particles, objects.performanceTier);
     const initialDifficulty = getAdaptiveDifficulty(player, 1);
     objects.powerRating = initialDifficulty.power;
     objects.adaptiveDifficulty = initialDifficulty.scale;
@@ -1341,7 +1343,8 @@ export default function App() {
                     <div className="mb-2 rounded bg-slate-900 p-2 text-[10px] text-cyan-300">
                       СИЛА: {gameRef.current.powerRating} · ×{gameRef.current.adaptiveDifficulty.toFixed(2)}<br/>
                       УРОВЕНЬ: {gameRef.current.player.level} · КАЧЕСТВО: {gameRef.current.performanceTier}<br/>
-                      ВРАГИ: {gameRef.current.enemies.length} · ПУЛИ: {gameRef.current.bullets.length}
+                      ВРАГИ: {gameRef.current.enemies.length} · ПУЛИ: {gameRef.current.bullets.length}<br/>
+                      ЧАСТИЦЫ: {particleDebugStats().active}/{particleDebugStats().budget} · ПУЛ: {particleDebugStats().pooled} · +{particleDebugStats().spawnedThisFrame}/кадр
                     </div>
 
                     <div className="mt-2 text-[9px] font-black tracking-widest text-fuchsia-300">ИГРОК И БИЛД</div>

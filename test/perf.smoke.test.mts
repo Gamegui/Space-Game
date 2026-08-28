@@ -3,7 +3,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  stepGame, makeInitialPlayer, makeStars, VOID_SOUL_MAX,
+  stepGame, makeInitialPlayer, makeStars, VOID_SOUL_MAX, PARTICLE_LIMITS,
+  particleDebugStats,
   type GameObjects, type StepInput,
 } from "../src/game/gameLoop";
 import { spawnEnemy } from "../src/game/enemies";
@@ -101,7 +102,7 @@ test("поздние волны при максимуме эффектов: пр
     maxBullets = Math.max(maxBullets, obj.bullets.length);
     // Бюджеты объектов (ТЗ §11.1/11.2) — не бесконтрольный рост.
     if (frame % 120 === 0) {
-      assert.ok(obj.particles.length < 900, `частиц ${obj.particles.length}`);
+      assert.ok(obj.particles.length <= PARTICLE_LIMITS.high, `частиц ${obj.particles.length}`);
       assert.ok(obj.floatingTexts.length < 500, `текстов ${obj.floatingTexts.length}`);
     }
   }
@@ -114,3 +115,87 @@ test("поздние волны при максимуме эффектов: пр
   assert.ok(perStep < 8, `средний шаг ${perStep.toFixed(3)} мс превышает бюджет`);
   console.log(`    late-wave sim: ${steps} шагов за ${elapsed.toFixed(0)} мс (${perStep.toFixed(3)} мс/шаг), максимум снарядов ${maxBullets}, врагов добито: ${player.kills}`);
 });
+
+test("стресс-каскад: массовая гибель со взрывами не ломает лимиты частиц (§14)", () => {
+  // Сценарий зависания из ТЗ: взрывные снаряды + цепная детонация + рой +
+  // плотная толпа. Каждый убитый враг раньше порождал взрыв с 5 частицами
+  // НА КАЖДОГО врага в радиусе — до 6000 частиц за кадр.
+  const player = makeInitialPlayer("void_wraith");
+  player.level = 40;
+  for (const id of [
+    "damage_up", "rapid_fire", "explosive", "multi_explosion", "big_bullets",
+    "double_shot", "bullet_hail", "spread_shot", "piercing", "homing",
+    "chain_detonation", "megaton", "crit",
+  ]) maxOut(player, id);
+  unlockAvailableSynergies(player);
+  checkEvolutions(player);
+  player.voidSouls = VOID_SOUL_MAX;
+
+  const obj = makeObjects(player);
+  const types = ["scout", "fighter", "bomber", "tank", "spinner", "charger", "healer", "artillery"] as const;
+  // Плотная толпа прямо над кораблём: каждый взрыв накрывает всех.
+  const pack = () => {
+    while (obj.enemies.length < 60) {
+      const e = spawnEnemy(types[obj.enemies.length % types.length], 10);
+      e.pos = { x: 480 + (Math.random() - 0.5) * 300, y: 120 + (Math.random() - 0.5) * 300 };
+      obj.enemies.push(e);
+    }
+  };
+  pack();
+
+  const steps = 360;
+  const started = performance.now();
+  let maxActive = 0;
+  let maxSpawnedPerFrame = 0;
+  const xpBefore = player.xp;
+  for (let frame = 0; frame < steps; frame++) {
+    stepGame(obj, { ...makeInput(), frame });
+    if (frame % 30 === 0) pack();
+    const stats = particleDebugStats();
+    assert.ok(stats.active <= PARTICLE_LIMITS.high, `кадр ${frame}: активных частиц ${stats.active} > ${PARTICLE_LIMITS.high}`);
+    assert.ok(stats.spawnedThisFrame <= 80, `кадр ${frame}: создано за кадр ${stats.spawnedThisFrame} > 80`);
+    maxActive = Math.max(maxActive, stats.active);
+    maxSpawnedPerFrame = Math.max(maxSpawnedPerFrame, stats.spawnedThisFrame);
+  }
+  const elapsed = performance.now() - started;
+
+  // Игровая логика не зависит от визуальных лимитов: убийства и опыт идут.
+  assert.ok(player.kills > 30, `убийств ${player.kills} — логика должна работать`);
+  assert.ok(player.xp > xpBefore || player.level > 40, "опыт должен начисляться");
+  // Пул работает: погасшие частицы вернулись в пул для переиспользования.
+  assert.ok(particleDebugStats().pooled > 0, "пул должен накапливать освобождённые частицы");
+  const perStep = elapsed / steps;
+  assert.ok(perStep < 8, `средний шаг ${perStep.toFixed(3)} мс`);
+  console.log(`    cascade stress: убийств ${player.kills}, макс. частиц ${maxActive}/${PARTICLE_LIMITS.high}, макс. за кадр ${maxSpawnedPerFrame}/80, пул ${particleDebugStats().pooled}, ${perStep.toFixed(3)} мс/шаг`);
+});
+
+test("билд §14-2/3: максимальный multishot + пробитие держат бюджеты", () => {
+  const player = makeInitialPlayer("tempest");
+  player.level = 40;
+  for (const id of ["double_shot", "triple_shot", "spread_shot", "bullet_hail", "omnidirectional", "rapid_fire", "reload_speed", "piercing", "quantum_tunnel", "death_ray", "homing", "lightning", "chain_lightning"]) maxOut(player, id);
+  unlockAvailableSynergies(player);
+  checkEvolutions(player);
+  const obj = makeObjects(player);
+  const types = ["scout", "fighter", "spinner", "charger"] as const;
+  const pack = () => {
+    while (obj.enemies.length < 60) {
+      const e = spawnEnemy(types[obj.enemies.length % types.length], 20);
+      e.pos = { x: 60 + Math.random() * 840, y: 60 + Math.random() * 500 };
+      obj.enemies.push(e);
+    }
+  };
+  pack();
+  const started = performance.now();
+  for (let frame = 0; frame < 300; frame++) {
+    stepGame(obj, { ...makeInput(), frame });
+    if (frame % 30 === 0) pack();
+    const stats = particleDebugStats();
+    assert.ok(stats.active <= PARTICLE_LIMITS.high);
+    assert.ok(obj.bullets.length <= 1500, `снарядов ${obj.bullets.length}`);
+  }
+  console.log(`    multishot/pierce stress: ${(elapsedOf(started) / 300).toFixed(3)} мс/шаг, убийств ${player.kills}`);
+});
+
+function elapsedOf(started: number): number {
+  return performance.now() - started;
+}

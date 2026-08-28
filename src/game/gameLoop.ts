@@ -156,88 +156,163 @@ export function makePowerup(pos: Vec2, type: PowerupType): PowerupItem {
   };
 }
 
-function makeBurst(pos: Vec2, color: string, count: number, big = false): Particle[] {
-  const qualityMultiplier = runtimePerformanceTier === 0 ? 0.34 : runtimePerformanceTier === 1 ? 0.65 : 1;
-  const adjustedCount = Math.max(big ? 4 : 1, Math.ceil(count * qualityMultiplier));
-  return Array.from({ length: adjustedCount }, () => ({
-    id: uid(),
-    pos: { x: pos.x, y: pos.y },
-    vel: { x: randRange(-5, 5) * (big ? 1.5 : 1), y: randRange(-5, 5) * (big ? 1.5 : 1) },
-    life: randRange(20, big ? 60 : 40),
-    maxLife: big ? 60 : 40,
-    color,
-    size: randRange(big ? 4 : 2, big ? 10 : 6),
-    glow: true,
-    shape: "circle" as const,
-  }));
+// ─── Particle system: пул + жёсткие лимиты (критическая оптимизация) ────────
+// Правила: при достижении лимита новые ДЕКОРАТИВНЫЕ частицы не создаются,
+// но игровая логика (смерть, опыт, души, урон взрывов) работает как обычно.
+// Смерть частицы = возврат в пул (particle.active = false-эквивалент), а не
+// мусор для сборщика. Значения лимитов вынесены в константы для балансировки.
+export const PARTICLE_LIMITS = { low: 300, medium: 600, high: 1000 } as const;
+// Защита от массовой гибели: один кадр не может породить тысячи объектов.
+const MAX_PARTICLE_SPAWN_PER_FRAME = 80;
+const PARTICLE_POOL_CAP = 1000;
+
+const particlePool: Particle[] = [];
+let particlesSpawnedThisFrame = 0;
+let particleBudget: number = PARTICLE_LIMITS.high;
+let boundParticles: Particle[] | null = null;
+
+/** Привязка живого массива частиц и лимита к кадру (вызывается из stepGame
+ *  и при старте забега). Публично — для App.tsx и тестов. */
+export function bindParticleFrame(particles: Particle[], tier: 0 | 1 | 2): void {
+  boundParticles = particles;
+  particlesSpawnedThisFrame = 0;
+  particleBudget = tier === 0 ? PARTICLE_LIMITS.low : tier === 1 ? PARTICLE_LIMITS.medium : PARTICLE_LIMITS.high;
 }
 
-// Quality-tier particle budget, same curve as makeBurst so the premium FX
-// never overflow low-end hardware.
-function voidParticleBudget(count: number): number {
-  const qualityMultiplier = runtimePerformanceTier === 0 ? 0.34 : runtimePerformanceTier === 1 ? 0.65 : 1;
-  return Math.max(2, Math.ceil(count * qualityMultiplier));
+/** Адаптивная доля новых частиц от нагрузки (§9): до 30% лимита — 100%,
+ *  30–60% — 75%, 60–85% — 50%, 85–100% — 25%, на лимите — 0. */
+function particleLoadFactor(): number {
+  const load = (boundParticles?.length ?? 0) / particleBudget;
+  if (load >= 1) return 0;
+  if (load >= 0.85) return 0.25;
+  if (load >= 0.6) return 0.5;
+  if (load >= 0.3) return 0.75;
+  return 1;
+}
+
+function acquireParticle(): Particle | null {
+  // Жёсткий глобальный лимит и лимит кадра — только для декоратива.
+  if ((boundParticles?.length ?? 0) >= particleBudget) return null;
+  if (particlesSpawnedThisFrame >= MAX_PARTICLE_SPAWN_PER_FRAME) return null;
+  particlesSpawnedThisFrame++;
+  if (particlePool.length > 0) return particlePool.pop()!;
+  return { id: uid(), pos: { x: 0, y: 0 }, vel: { x: 0, y: 0 }, life: 1, maxLife: 1, color: "#ffffff", size: 2, glow: true, shape: "circle" };
+}
+
+function releaseParticle(p: Particle): void {
+  if (particlePool.length < PARTICLE_POOL_CAP) particlePool.push(p);
+}
+
+/** Отладочные счётчики (§15.12): активные/в пуле/создано за кадр/лимит. */
+export function particleDebugStats(): { active: number; pooled: number; spawnedThisFrame: number; budget: number } {
+  return {
+    active: boundParticles?.length ?? 0,
+    pooled: particlePool.length,
+    spawnedThisFrame: particlesSpawnedThisFrame,
+    budget: particleBudget,
+  };
+}
+
+/** Плановое число частиц эффекта: тир качества × адаптивная доля × остатки
+ *  жёстких лимитов. minKeep — гарантированный минимум эффекта смерти (§9):
+ *  враг не исчезает совсем, пока есть свободный лимит. */
+function particleCountFor(count: number, minKeep = 0): number {
+  const tierMult = runtimePerformanceTier === 0 ? 0.34 : runtimePerformanceTier === 1 ? 0.65 : 1;
+  let n = Math.ceil(count * tierMult * particleLoadFactor());
+  const hardCap = Math.min(
+    particleBudget - (boundParticles?.length ?? 0),
+    MAX_PARTICLE_SPAWN_PER_FRAME - particlesSpawnedThisFrame,
+  );
+  if (hardCap <= 0) return 0;
+  n = Math.min(n, hardCap);
+  return Math.max(Math.min(minKeep, hardCap), n);
+}
+
+function makeBurst(pos: Vec2, color: string, count: number, big = false, minKeep = 0): Particle[] {
+  const n = particleCountFor(count, minKeep);
+  const out: Particle[] = [];
+  for (let i = 0; i < n; i++) {
+    const p = acquireParticle();
+    if (!p) break;
+    p.pos.x = pos.x; p.pos.y = pos.y;
+    p.vel.x = randRange(-5, 5) * (big ? 1.5 : 1);
+    p.vel.y = randRange(-5, 5) * (big ? 1.5 : 1);
+    p.life = randRange(20, big ? 60 : 40);
+    p.maxLife = big ? 60 : 40;
+    p.color = color;
+    p.size = randRange(big ? 4 : 2, big ? 10 : 6);
+    p.glow = true;
+    p.shape = "circle";
+    out.push(p);
+  }
+  return out;
 }
 
 // Particles flying from a slain enemy towards the Wraith (soul devouring).
+// Премиальный эффект — с гарантированным минимумом (minKeep 1): души всегда
+// заметны, но не создают неограниченных массивов.
 export function makeSuckParticles(from: Vec2, to: Vec2, count = 6): Particle[] {
   const dx = to.x - from.x, dy = to.y - from.y;
   const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
   const baseAngle = Math.atan2(dy, dx);
   const speed = 6.5 + (150 / (dist + 40)) * 4;
-  const n = voidParticleBudget(count);
-  return Array.from({ length: n }, () => {
+  const n = particleCountFor(count, 1);
+  const out: Particle[] = [];
+  for (let i = 0; i < n; i++) {
+    const p = acquireParticle();
+    if (!p) break;
     const a = baseAngle + randRange(-0.55, 0.55);
     const v = speed * randRange(0.7, 1.25);
-    return {
-      id: uid(),
-      pos: { x: from.x + randRange(-6, 6), y: from.y + randRange(-6, 6) },
-      vel: { x: Math.cos(a) * v, y: Math.sin(a) * v },
-      life: 26, maxLife: 26,
-      color: Math.random() < 0.5 ? "#e879f9" : "#c026d3",
-      size: randRange(2.2, 4.2),
-      glow: true,
-      shape: "circle" as const,
-    };
-  });
+    p.pos.x = from.x + randRange(-6, 6); p.pos.y = from.y + randRange(-6, 6);
+    p.vel.x = Math.cos(a) * v; p.vel.y = Math.sin(a) * v;
+    p.life = 26; p.maxLife = 26;
+    p.color = Math.random() < 0.5 ? "#e879f9" : "#c026d3";
+    p.size = randRange(2.2, 4.2);
+    p.glow = true;
+    p.shape = "circle";
+    out.push(p);
+  }
+  return out;
 }
 
 // Purple shards when the Wraith's victim shatters.
 export function makeShards(pos: Vec2, count = 7): Particle[] {
-  const n = voidParticleBudget(count);
-  return Array.from({ length: n }, () => {
+  const n = particleCountFor(count, 1);
+  const out: Particle[] = [];
+  for (let i = 0; i < n; i++) {
+    const p = acquireParticle();
+    if (!p) break;
     const a = randRange(0, Math.PI * 2);
     const v = randRange(2, 6);
-    return {
-      id: uid(),
-      pos: { x: pos.x, y: pos.y },
-      vel: { x: Math.cos(a) * v, y: Math.sin(a) * v },
-      life: randRange(18, 34), maxLife: 34,
-      color: Math.random() < 0.6 ? "#e879f9" : "#a855f7",
-      size: randRange(1.8, 3.8),
-      glow: true,
-      shape: "square" as const,
-    };
-  });
+    p.pos.x = pos.x; p.pos.y = pos.y;
+    p.vel.x = Math.cos(a) * v; p.vel.y = Math.sin(a) * v;
+    p.life = randRange(18, 34); p.maxLife = 34;
+    p.color = Math.random() < 0.6 ? "#e879f9" : "#a855f7";
+    p.size = randRange(1.8, 3.8);
+    p.glow = true;
+    p.shape = "square";
+    out.push(p);
+  }
+  return out;
 }
 
 // One-shot ring used when the Wraith first materializes into the arena.
 export function makeMaterializeBurst(pos: Vec2): Particle[] {
-  const total = voidParticleBudget(26);
+  const total = particleCountFor(26);
   const out: Particle[] = [];
   for (let i = 0; i < total; i++) {
     const a = (i / total) * Math.PI * 2;
     const v = randRange(3, 7);
-    out.push({
-      id: uid(),
-      pos: { x: pos.x, y: pos.y },
-      vel: { x: Math.cos(a) * v, y: Math.sin(a) * v },
-      life: randRange(30, 55), maxLife: 55,
-      color: i % 2 === 0 ? "#e879f9" : "#7c3aed",
-      size: randRange(2, 5),
-      glow: true,
-      shape: i % 3 === 0 ? "ring" : "circle",
-    });
+    const p = acquireParticle();
+    if (!p) break;
+    p.pos.x = pos.x; p.pos.y = pos.y;
+    p.vel.x = Math.cos(a) * v; p.vel.y = Math.sin(a) * v;
+    p.life = randRange(30, 55); p.maxLife = 55;
+    p.color = i % 2 === 0 ? "#e879f9" : "#7c3aed";
+    p.size = randRange(2, 5);
+    p.glow = true;
+    p.shape = i % 3 === 0 ? "ring" : "circle";
+    out.push(p);
   }
   return out;
 }
@@ -268,7 +343,7 @@ export function devourSoul(
   const before = player.voidSouls;
   player.voidSouls = Math.min(VOID_SOUL_MAX, player.voidSouls + value);
   player.voidSoulIdleTimer = 0;
-  particles.push(...makeSuckParticles(e.pos, player.pos, e.isBoss ? 14 : 10));
+  particles.push(...makeSuckParticles(e.pos, player.pos, e.isBoss ? 12 : 8));
   const soulWord = value === 1 ? "ДУША" : (value >= 5 ? "ДУШ" : "ДУШИ");
   floatingTexts.push({
     id: uid(),
@@ -365,6 +440,7 @@ export interface StepInput {
 
 export function stepGame(obj: GameObjects, input: StepInput): void {
   runtimePerformanceTier = obj.performanceTier;
+  bindParticleFrame(obj.particles, obj.performanceTier);
   const { player, bullets, enemies, particles, xpOrbs, mines, lightnings, stars, floatingTexts, powerups } = obj;
   const { keys, wave, frame, timeSlow } = input;
   const timeScale = timeSlow ? 0.5 : 1;
@@ -1366,9 +1442,11 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
             obj.screenShake = Math.max(obj.screenShake, 4);
           }
 
+          // Лимит частиц смерти (§5): обычный ≤8, элитный ≤16, босс ≤40.
+          // Зрелищность — размером/яркостью частиц и кольцом взрыва, а не числом.
           const col = e.isBoss ? "#f43f5e" : (e.isElite ? "#fbbf24" : "#fb923c");
-          particles.push(...makeBurst(e.pos, col, e.isBoss ? 45 : (e.isElite ? 25 : 14), e.isBoss));
-          if (player.shipClass === "void_wraith") particles.push(...makeShards(e.pos, e.isBoss ? 16 : 7));
+          particles.push(...makeBurst(e.pos, col, e.isBoss ? 40 : (e.isElite ? 16 : 8), e.isBoss, 2));
+          if (player.shipClass === "void_wraith") particles.push(...makeShards(e.pos, e.isBoss ? 12 : 5));
           xpOrbs.push(makeXpOrb(e.pos, xpGained));
         }
 
@@ -1552,7 +1630,10 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     p.vel.x *= 0.93;
     p.vel.y *= 0.93;
     p.life--;
-    if (p.life <= 0) particles.splice(i, 1);
+    if (p.life <= 0) {
+      releaseParticle(p);
+      particles.splice(i, 1);
+    }
   }
 
   // ─── Explosions ────────────────────────────────────────────────────
@@ -1702,7 +1783,9 @@ function enforceObjectBudgets(obj: GameObjects) {
     obj.enemies.length = 0;
     obj.enemies.push(...bosses, ...regular);
   }
-  trimOldest(obj.particles, Math.ceil(OBJECT_BUDGETS.particles * qualityFactor));
+  // Частицы: жёсткий лимит уже действует в acquireParticle; страховочная
+  // обрезка возвращает старые объекты в пул, а не выбрасывает.
+  while (obj.particles.length > particleBudget) releaseParticle(obj.particles.shift()!);
   trimOldest(obj.xpOrbs, Math.ceil(OBJECT_BUDGETS.xpOrbs * Math.max(0.75, qualityFactor)));
   trimOldest(obj.floatingTexts, Math.ceil(OBJECT_BUDGETS.floatingTexts * qualityFactor));
   trimOldest(obj.lightnings, Math.ceil(OBJECT_BUDGETS.lightnings * Math.max(0.6, qualityFactor)));
@@ -1950,7 +2033,9 @@ function chainLightning(source: Enemy, enemies: Enemy[], lightnings: Lightning[]
   }
 }
 
-function explodeArea(pos: Vec2, radius: number, enemies: Enemy[], toRemove: Set<number>, particles: Particle[], explosions: { id: number; pos: Vec2; radius: number; progress: number }[], player: PlayerState, frame: number) {
+function explodeArea(pos: Vec2, radius: number, enemies: Enemy[], toRemove: Set<number>, particles: Particle[], explosions: { id: number; pos: Vec2; radius: number; progress: number }[], player: PlayerState, frame: number, visualScale = 0.5) {
+  // Урон взрыва — игровая логика: выполняется для ВСЕХ врагов в радиусе
+  // независимо от состояния визуальных лимитов.
   explosions.push({ id: uid(), pos: { ...pos }, radius, progress: 0 });
   for (const e of enemies) {
     const dx = e.pos.x - pos.x, dy = e.pos.y - pos.y;
@@ -1958,9 +2043,13 @@ function explodeArea(pos: Vec2, radius: number, enemies: Enemy[], toRemove: Set<
       const blastDamage = damageEnemy(e, player.bulletDamage * 3, frame, enemies);
       player.stats.damageDealt += blastDamage;
       if (e.hp <= 0) toRemove.add(e.id);
-      particles.push(...makeBurst(e.pos, "#f97316", 5));
     }
   }
+  // Визуал взрыва — ОДИН эффект (кольцо + искры в центре), а не по 5 частиц
+  // на каждого задетого врага: при 30 смертях × 40 врагов это давало до 6000
+  // частиц за кадр — тот самый квадратичный каскад из ТЗ. Смертельные взрывы
+  // — вторичная реакция, поэтому visualScale по умолчанию 0.5 (§11).
+  particles.push(...makeBurst(pos, "#f97316", Math.ceil(10 * visualScale), true, 1));
 }
 
 function takeDamage(player: PlayerState, amount: number, particles: Particle[], obj: GameObjects, onDeath: () => void) {

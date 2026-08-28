@@ -269,22 +269,40 @@ Merged PR #7 (`fix/loading-api-ready-timing`) into `main` first, then branched
 3. **Missions/achievements**: 24 missions tracking cumulative + per-run goals,
    with shard rewards claimed in the Hangar.
 4. **New in-app purchases** (`src/game/products.ts`): `premium_pass` (x2 shards
-   +1 reroll +50 start shards) and `starter_pack` (+1 banish, +25 shield, epic
-   choices). Catalog-parity preserved: products hidden from purchase UI when
+   +1 free reroll) and `starter_pack` (+1 banish, +25 starting shield).
+   Catalog-parity preserved: products hidden from purchase UI when
    absent from the console. The existing `void_wraith` ship purchase is
    unchanged.
 5. **«Торговец осколков»** event on the route screen (~50% chance, needs 30+
    shards): a meta-currency sink trading permanent shards for a temporary
    in-run buff (risk: currency spent even on a failed run).
-6. **Combo escalation juice**: banner at combo milestones 10/25/50.
-7. **Cloud save**: `yandex.loadData`/`saveData` added for arbitrary Player Data.
+6. **Combo escalation juice**: banner at combo milestones 10/25/50
+   («РАЗГОН!» / «ЯРОСТНЫЙ ШКВАЛ!» / «АПОКАЛИПСИС!»).
+7. **Cloud save**: `yandex.loadData`/`saveData` added for arbitrary Player Data
+   (flushed immediately — run results must survive an instant quit).
+
+### Run finalization semantics (review fixes on top of PR #8)
+- `applyRunResult(state, run)` in `src/game/meta.ts` folds a finished run into
+  the meta state (totals, shards, missions) **purely** — it never mutates its
+  input, which is what makes the revive rollback safe.
+- **Death screen** finalizes immediately for instant shard feedback, keeping a
+  pre-finalize snapshot. If the player then uses the rewarded-video revive
+  («ЭКСТРЕННЫЙ РЕМОНТ»), the death finalization is rolled back to the snapshot
+  and the run is re-opened — it is awarded once, in full, when it truly ends.
+  This also fixes the «Без передышки» mission, which previously completed on
+  runs that were later revived.
+- **Victory finalization is never rolled back**: endless mode continues on top
+  of the already-awarded victory, and dying in endless does not re-award.
+- **Quitting to the main menu from the pause screen** finalizes the run
+  (shards/totals/missions are kept — the time invested always pays out).
 
 ### Verification
-- `tsc --noEmit` clean. `npm run build` + `npm run package:yandex` clean; ZIP is
-  a single root `index.html`.
-- 10 Node logic tests (`test/meta.test.mts`, tsx) pass: economy scaling, meta
-  apply-to-player, shard multiplier, mission tracking + claim, save
-  normalization, evolution single-trigger.
+- `npm test` — 14 Node logic tests (`test/meta.test.mts` via the `tsx`
+  devDependency): economy scaling, meta apply-to-player, shard multiplier,
+  mission tracking + claim, save normalization, evolution single-trigger, run
+  finalization purity + revive-rollback equivalence.
+- `tsc --noEmit` clean (covers `src` **and** `test`). `npm run build` +
+  `npm run package:yandex` clean; ZIP is a single root `index.html`.
 
 ### Yandex console products to create (ids must match exactly)
 - `void_wraith` (existing), `premium_pass` (new), `starter_pack` (new).

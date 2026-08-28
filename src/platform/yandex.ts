@@ -273,22 +273,19 @@ class YandexPlatform {
     }
   }
 
-  /** Save arbitrary JSON under a key (best-effort, non-blocking UI). */
+  /** Save arbitrary JSON under a key (best-effort, non-blocking UI). Uses
+   *  flush=true: run results and purchased meta upgrades must reach the cloud
+   *  immediately — the player may quit right after the death screen. */
   async saveData(key: string, value: unknown): Promise<boolean> {
     await this.init();
     try {
       if (!this.player?.setData) return false;
-      await this.player.setData({ [key]: value }, false);
+      await this.player.setData({ [key]: value }, true);
       return true;
     } catch (err) {
       console.warn("[yandex] saveData failed", err);
       return false;
     }
-  }
-
-  /** Fetch catalog offer for one product (null when absent from the console). */
-  async fetchOffer(productId: string): Promise<StoreOffer | null> {
-    return this.getCatalogOffer(productId);
   }
 }
 

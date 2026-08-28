@@ -188,6 +188,32 @@ export function computeShardsEarned(run: RunResult, state: MetaState): number {
   return Math.max(min, Math.floor(base * shardMultiplier(state)));
 }
 
+/** Fold a finished run into the meta state: totals, shards, mission progress.
+ *  Pure — never mutates `state`, always returns a fresh object. Purity is what
+ *  lets App.tsx keep a pre-finalize snapshot and roll a premature finalization
+ *  back when the player uses an ad-revive (see handleRevive). */
+export function applyRunResult(state: MetaState, run: RunResult): { next: MetaState; earned: number; newlyCompleted: MissionDef[] } {
+  const next: MetaState = {
+    ...state,
+    missions: { ...state.missions },
+    claimedMissions: { ...state.claimedMissions },
+    totals: { ...state.totals },
+  };
+  next.totals.kills += run.kills;
+  next.totals.bossesKilled += run.bossesKilled;
+  next.totals.elitesKilled += run.elitesKilled;
+  next.totals.powerupsCollected += run.powerupsCollected;
+  next.totals.runs += 1;
+  next.totals.synergies += run.synergiesUnlocked;
+  next.totals.evolutions += run.evolutionsTriggered;
+  const earned = computeShardsEarned(run, next);
+  next.shards += earned;
+  next.totals.shardsEarned += earned;
+  const ctx: MissionContext = { run, totals: next.totals, unlockedProducts: next.unlockedProducts };
+  const newlyCompleted = updateMissions(ctx, next);
+  return { next, earned, newlyCompleted };
+}
+
 // ─── Missions ────────────────────────────────────────────────────────────────
 
 export const MISSIONS: MissionDef[] = [

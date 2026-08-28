@@ -18,9 +18,9 @@ import HUD from "./components/HUD";
 import Hangar, { type ProductStatus } from "./components/Hangar";
 import {
   META_KEY, META_UPGRADES, MISSIONS, defaultMetaState, normalizeMetaState,
-  buyMetaUpgrade, applyMetaToPlayer, metaBonusRerolls,
-  computeShardsEarned, updateMissions, claimMission,
-  type MetaState, type RunResult, type MissionContext,
+  buyMetaUpgrade, applyMetaToPlayer, metaBonusRerolls, applyRunResult,
+  claimMission, isMissionComplete,
+  type MetaState, type RunResult,
 } from "./game/meta";
 import { PRODUCTS } from "./game/products";
 import { checkEvolutions } from "./game/evolutions";
@@ -186,6 +186,16 @@ export default function App() {
   const runEvolutionsRef = useRef(0);
   const comboTierRef = useRef(0);
   const runFinalizedRef = useRef(false);
+  // v1.5.0 fix: the death screen finalizes the run immediately (instant shard
+  // feedback), but the player may still revive via a rewarded video. Keep the
+  // pre-finalize snapshot + finalize kind so handleRevive can roll a death
+  // finalization back and award the continued run once, in full, at its end.
+  const runFinalizeSnapshotRef = useRef<MetaState | null>(null);
+  const runFinalizeVictoryRef = useRef(false);
+  // Notice timers: cancel the previous timeout so a fast tier climb (10→25→50)
+  // can't clear the newer banner with the older timeout.
+  const comboNoticeTimerRef = useRef<number | null>(null);
+  const evolutionNoticeTimerRef = useRef<number | null>(null);
   const merchantRollRef = useRef<{ available: boolean; bought: Set<string> }>({ available: false, bought: new Set() });
   const [adminOpen, setAdminOpen] = useState(false);
   const [adminGod, setAdminGod] = useState(false);
@@ -213,37 +223,41 @@ export default function App() {
       // (void_wraith + the new premium_pass / starter_pack). Absent products are
       // hidden from purchase UI (Game Requirements §1.13).
       const productIds = PRODUCTS.map(p => p.id);
-      const [cloudScore, ownsPremiumShip, catalogOffer, ...ownershipChecks] = await Promise.all([
+      const [cloudScore, catalogOffer, ...ownershipChecks] = await Promise.all([
         yandex.loadHighScore(),
-        yandex.hasPermanentPurchase("void_wraith"),
         yandex.getCatalogOffer("void_wraith"),
         ...productIds.map(id => yandex.hasPermanentPurchase(id)),
       ]);
       if (cloudScore !== null) setHiscore(current => Math.max(current, cloudScore));
       // Outside the Yandex catalogue the ship is unlocked for development and QA.
-      setPremiumUnlocked(ownsPremiumShip || !yandex.isPlatformAvailable());
+      const ownsPremiumShip = Boolean(ownershipChecks[0]) || !yandex.isPlatformAvailable();
+      setPremiumUnlocked(ownsPremiumShip);
       // When the product is inactive in the console the purchase must be
       // absent from the game, so the offer stays null and the CTA never shows.
       setPremiumOffer(catalogOffer);
       setPremiumCatalogChecked(true);
       // Sync meta.unlockedProducts from real ownership, then fetch offers.
+      const devOwned = !yandex.isPlatformAvailable();
+      const ownedSet = new Set<string>();
+      productIds.forEach((id, i) => {
+        if (Boolean(ownershipChecks[i]) || devOwned) ownedSet.add(id);
+      });
       setMeta(prev => {
         const owned = new Set(prev.unlockedProducts);
-        productIds.forEach((id, i) => {
-          const owns = Boolean(ownershipChecks[i]) || !yandex.isPlatformAvailable();
-          if (owns) owned.add(id);
-        });
+        ownedSet.forEach(id => owned.add(id));
         if (owned.size === prev.unlockedProducts.length) return prev;
         return { ...prev, unlockedProducts: [...owned] };
       });
+      const offerList = await Promise.all(
+        productIds.map(id => (ownedSet.has(id) ? Promise.resolve(null) : yandex.getCatalogOffer(id))),
+      );
       const statuses: Record<string, ProductStatus> = {};
       const offers: Record<string, StoreOffer | null> = {};
-      for (const id of productIds) {
-        if (ownershipChecks[productIds.indexOf(id)] || !yandex.isPlatformAvailable()) { statuses[id] = { state: "owned" }; offers[id] = null; continue; }
-        const off = await yandex.getCatalogOffer(id);
-        offers[id] = off;
-        statuses[id] = { state: off ? "available" : "absent" };
-      }
+      productIds.forEach((id, i) => {
+        const owned = ownedSet.has(id);
+        offers[id] = owned ? null : offerList[i];
+        statuses[id] = owned ? { state: "owned" } : offerList[i] ? { state: "available" } : { state: "absent" };
+      });
       setProductStatuses(statuses);
       setProductOffers(offers);
     });
@@ -310,9 +324,10 @@ export default function App() {
     if (tier !== comboTierRef.current) {
       comboTierRef.current = tier;
       if (tier > 0) {
-        const labels = ["", "РАЗГОН!", "ЯРОВОЙ СВЯЗЬ!", "ПОРОГ ВОЙНЫ!"];
+        const labels = ["", "РАЗГОН!", "ЯРОСТНЫЙ ШКВАЛ!", "АПОКАЛИПСИС!"];
         setComboNotice(`${labels[tier]} x${combo}`);
-        setTimeout(() => setComboNotice(null), 2200);
+        if (comboNoticeTimerRef.current !== null) clearTimeout(comboNoticeTimerRef.current);
+        comboNoticeTimerRef.current = window.setTimeout(() => setComboNotice(null), 2200);
       }
     }
   }, []);
@@ -341,7 +356,10 @@ export default function App() {
 
   /** Compute the run result, award shards, update missions/totals, persist.
    *  Reads from metaRef.current (not the state updater) so it stays pure w.r.t.
-   *  React and is guarded against double-fire on death+later frames. */
+   *  React and is guarded against double-fire on death+later frames. The
+   *  pre-finalize snapshot is kept so an ad-revive can roll this back (see
+   *  handleRevive); a victory finalize is never rolled back because endless
+   *  mode may continue afterwards. */
   const finalizeRun = useCallback((victory: boolean) => {
     if (runFinalizedRef.current) return;
     runFinalizedRef.current = true;
@@ -367,26 +385,9 @@ export default function App() {
       shipClass: g.player.shipClass,
     };
     const prev = metaRef.current;
-    // Deep-ish clone of the mutable nested fields so updateMissions / totals
-    // edits do not mutate the previous state object in place.
-    const next: MetaState = {
-      ...prev,
-      missions: { ...prev.missions },
-      claimedMissions: { ...prev.claimedMissions },
-      totals: { ...prev.totals },
-    };
-    next.totals.kills += run.kills;
-    next.totals.bossesKilled += run.bossesKilled;
-    next.totals.elitesKilled += run.elitesKilled;
-    next.totals.powerupsCollected += run.powerupsCollected;
-    next.totals.runs += 1;
-    next.totals.synergies += run.synergiesUnlocked;
-    next.totals.evolutions += run.evolutionsTriggered;
-    const earned = computeShardsEarned(run, next);
-    next.shards += earned;
-    next.totals.shardsEarned += earned;
-    const ctx: MissionContext = { run, totals: next.totals, unlockedProducts: next.unlockedProducts };
-    updateMissions(ctx, next);
+    runFinalizeSnapshotRef.current = prev;
+    runFinalizeVictoryRef.current = victory;
+    const { next, earned } = applyRunResult(prev, run);
     setLastShardsEarned(earned);
     persistMeta(next);
     setMeta(next);
@@ -455,6 +456,9 @@ export default function App() {
     runSynergiesRef.current = 0;
     runEvolutionsRef.current = 0;
     runFinalizedRef.current = false;
+    runFinalizeSnapshotRef.current = null;
+    runFinalizeVictoryRef.current = false;
+    setLastShardsEarned(0);
     comboTierRef.current = 0;
     syncUI();
   }, [adminEnabled, premiumUnlocked, qualityMode, selectedClass, syncUI, applyRunBonuses]);
@@ -591,7 +595,8 @@ export default function App() {
     if (triggered.length > 0) {
       runEvolutionsRef.current += triggered.length;
       setEvolutionNotice(`${triggered[0].icon} ЭВОЛЮЦИЯ: ${triggered[0].name}`);
-      setTimeout(() => setEvolutionNotice(null), 3600);
+      if (evolutionNoticeTimerRef.current !== null) clearTimeout(evolutionNoticeTimerRef.current);
+      evolutionNoticeTimerRef.current = window.setTimeout(() => setEvolutionNotice(null), 3600);
     }
     pendingLevelUpsRef.current--;
     if (pendingLevelUpsRef.current > 0) {
@@ -811,6 +816,14 @@ export default function App() {
   const premiumOfferReady = premiumCatalogChecked && premiumOffer !== null;
   const shipSelectButtonDisabled = purchasePending || (premiumGate && !premiumOfferReady);
 
+  // v1.5.0: completed-but-unclaimed mission rewards — surfaced as a badge on
+  // the Hangar button and as a hint on the death/victory screens so the shard
+  // rewards actually get discovered and claimed.
+  const unclaimedMissionRewards = MISSIONS.reduce(
+    (count, def) => (isMissionComplete(def, meta) && !meta.claimedMissions[def.id] ? count + 1 : count),
+    0,
+  );
+
   const handleReturnToMenu = useCallback(() => {
     const finish = () => {
       phaseRef.current = "menu";
@@ -830,6 +843,18 @@ export default function App() {
     );
     setAdPending(false);
     if (!rewarded || !gameRef.current) return;
+    // The death screen already finalized this run (instant shard feedback).
+    // Reviving re-opens it: roll the premature DEATH finalization back to the
+    // snapshot so the continued run is awarded once, in full, when it truly
+    // ends — and the «Без передышки» mission no longer completes on a run that
+    // was, in fact, revived. A victory finalization is never rolled back
+    // (endless mode continues on top of the awarded victory).
+    if (runFinalizedRef.current && !runFinalizeVictoryRef.current && runFinalizeSnapshotRef.current) {
+      const snapshot = runFinalizeSnapshotRef.current;
+      persistMeta(snapshot);
+      setMeta(snapshot);
+      runFinalizedRef.current = false;
+    }
     const current = gameRef.current;
     current.player.hp = Math.max(1, current.player.maxHp * 0.5);
     current.player.invincTimer = 240;
@@ -840,7 +865,7 @@ export default function App() {
     phaseRef.current = "playing";
     setPhase("playing");
     audio.startAmbientBGM();
-  }, [adPending, reviveUsed]);
+  }, [adPending, reviveUsed, persistMeta]);
 
   // ─── Keyboard ─────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -1513,9 +1538,9 @@ export default function App() {
               <button onClick={() => setConfirmExit(true)} className="px-6 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-sm rounded-full transition-all cursor-pointer">ВЫЙТИ В ГЛАВНОЕ МЕНЮ</button>
             ) : (
               <div className="rounded-xl border border-red-800 bg-red-950/90 p-3 text-center">
-                <div className="mb-2 text-sm font-black text-red-200">Завершить забег? Прогресс будет потерян.</div>
+                <div className="mb-2 text-sm font-black text-red-200">Завершить забег? Осколки за текущий забег будут начислены.</div>
                 <div className="flex justify-center gap-2">
-                  <button onClick={() => { setConfirmExit(false); audio.stopAmbientBGM(); phaseRef.current = "menu"; setPhase("menu"); gameRef.current = null; }} className="rounded-lg bg-red-700 px-5 py-2 text-xs font-black text-white cursor-pointer">ДА, ВЫЙТИ</button>
+                  <button onClick={() => { setConfirmExit(false); audio.stopAmbientBGM(); yandex.setGameplay(false); finalizeRun(false); phaseRef.current = "menu"; setPhase("menu"); gameRef.current = null; }} className="rounded-lg bg-red-700 px-5 py-2 text-xs font-black text-white cursor-pointer">ДА, ВЫЙТИ</button>
                   <button onClick={() => setConfirmExit(false)} className="rounded-lg bg-slate-700 px-5 py-2 text-xs font-black text-white cursor-pointer">ОТМЕНА</button>
                 </div>
               </div>
@@ -1666,6 +1691,7 @@ export default function App() {
                 className="mt-3 w-full py-3 bg-gradient-to-r from-fuchsia-600 to-purple-700 hover:from-fuchsia-500 hover:to-purple-600 text-white font-black text-base rounded-full shadow-xl transition-all active:scale-95 cursor-pointer"
               >
                 🛰️ АНГАР {meta.shards > 0 && <span className="font-mono text-fuchsia-200">· ✨{meta.shards.toLocaleString()}</span>}
+                {unclaimedMissionRewards > 0 && <span className="ml-2 rounded-full bg-amber-500 px-2 py-0.5 font-mono text-xs text-black">🎖 {unclaimedMissionRewards}</span>}
               </button>
             </div>
           </div>
@@ -1691,6 +1717,15 @@ export default function App() {
               <div className="mb-2 text-6xl">🏆</div>
               <h2 className="text-4xl font-black text-amber-300">СИСТЕМА ОМЕГА УНИЧТОЖЕНА</h2>
               <p className="mb-5 font-mono text-sm text-cyan-300">ОСНОВНАЯ МИССИЯ ЗАВЕРШЕНА</p>
+              {lastShardsEarned > 0 && (
+                <div className="mb-5 rounded-xl border border-fuchsia-700 bg-fuchsia-950/50 px-4 py-2.5 text-center">
+                  <span className="font-mono text-xs text-fuchsia-300">ЗАРАБОТАНО</span>
+                  <div className="font-black text-2xl text-fuchsia-200">✨ +{lastShardsEarned} осколков</div>
+                  {unclaimedMissionRewards > 0 && (
+                    <span className="font-mono text-[10px] text-amber-300">🎖 Награды за задания ждут в Ангаре: {unclaimedMissionRewards}</span>
+                  )}
+                </div>
+              )}
               <div className="mb-5 grid grid-cols-4 gap-2 rounded-2xl border border-amber-700/60 bg-slate-950/90 p-4 font-mono">
                 <div><div className="text-[10px] text-slate-500">СЧЁТ</div><b className="text-white">{finalScore.toLocaleString()}</b></div>
                 <div><div className="text-[10px] text-slate-500">ВОЛНА</div><b className="text-white">{finalWave}</b></div>
@@ -1717,7 +1752,11 @@ export default function App() {
                 <div className="mb-4 rounded-xl border border-fuchsia-700 bg-fuchsia-950/50 px-4 py-2.5 text-center">
                   <span className="font-mono text-xs text-fuchsia-300">ЗАРАБОТАНО</span>
                   <div className="font-black text-2xl text-fuchsia-200">✨ +{lastShardsEarned} осколков</div>
-                  <span className="font-mono text-[10px] text-slate-400">Потратьте в Ангаре на постоянные улучшения</span>
+                  {unclaimedMissionRewards > 0 ? (
+                    <span className="font-mono text-[10px] text-amber-300">🎖 Награды за задания ждут в Ангаре: {unclaimedMissionRewards}</span>
+                  ) : (
+                    <span className="font-mono text-[10px] text-slate-400">Потратьте в Ангаре на постоянные улучшения</span>
+                  )}
                 </div>
               )}
 

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   META_UPGRADES, metaUpgradeCost, getMetaLevel, canBuyMetaUpgrade, buyMetaUpgrade,
   applyMetaToPlayer, metaBonusRerolls, shardMultiplier, computeShardsEarned,
+  applyRunResult,
   MISSIONS, missionProgress, isMissionComplete, updateMissions, claimMission,
   defaultMetaState, normalizeMetaState, type MetaState, type RunResult, type MissionContext,
 } from "../src/game/meta";
@@ -103,4 +104,56 @@ test("evolution triggers once when requirements owned", () => {
   const triggered = checkEvolutions(player);
   assert.ok(triggered.some(e => e.id === "annihilator"));
   assert.equal(checkEvolutions(player).length, 0);
+});
+
+test("applyRunResult is pure — enables the revive rollback", () => {
+  const start = defaultMetaState();
+  start.shards = 7;
+  const frozen = JSON.parse(JSON.stringify(start)) as MetaState;
+  const run = runResult({ score: 3000, wave: 6, kills: 120, bossesKilled: 1, powerupsCollected: 9 });
+  const { next, earned } = applyRunResult(start, run);
+  assert.ok(earned > 0);
+  assert.equal(next.shards, 7 + earned);
+  assert.equal(next.totals.kills, 120);
+  assert.equal(next.totals.runs, 1);
+  assert.equal(next.totals.bossesKilled, 1);
+  // The input state must be untouched: App.tsx keeps it as the pre-finalize
+  // snapshot and restores it when the player revives after the death screen.
+  assert.deepEqual(start, frozen);
+});
+
+test("revive rollback: restoring the snapshot re-awards the full run exactly once", () => {
+  const start = defaultMetaState();
+  // First death at wave 8 → premature finalize from the snapshot…
+  const first = applyRunResult(start, runResult({ score: 2000, wave: 8, kills: 60 }));
+  // …revive → App restores the snapshot, run continues, true end at wave 12.
+  const final = applyRunResult(start, runResult({ score: 5000, wave: 12, kills: 150 }));
+  const uninterrupted = applyRunResult(defaultMetaState(), runResult({ score: 5000, wave: 12, kills: 150 }));
+  assert.deepEqual(final.next, uninterrupted.next);
+  assert.ok(first.earned > 0);
+  // Double-finalizing WITHOUT a rollback must not silently equal a single one
+  // (guards the runFinalizedRef contract in App.tsx).
+  const doubleFinalize = applyRunResult(first.next, runResult({ score: 5000, wave: 12, kills: 150 }));
+  assert.notDeepEqual(doubleFinalize.next, uninterrupted.next);
+});
+
+test("applyRunResult completes and reports newly finished missions", () => {
+  const start = defaultMetaState();
+  const { next, newlyCompleted } = applyRunResult(start, runResult({ score: 6000, wave: 12, kills: 130 }));
+  const ids = newlyCompleted.map(m => m.id);
+  assert.ok(ids.includes("first_blood"));
+  assert.ok(ids.includes("kill_100"));
+  assert.ok(ids.includes("wave_10"));
+  assert.ok(ids.includes("rich"));
+  const rich = MISSIONS.find(m => m.id === "rich")!;
+  assert.equal(isMissionComplete(rich, next), true);
+  assert.equal(next.claimedMissions[rich.id], undefined);
+});
+
+test("no_revive mission only completes when the run was not revived", () => {
+  const s = defaultMetaState();
+  const clean = applyRunResult(s, runResult({ wave: 25 }));
+  assert.ok(clean.newlyCompleted.some(m => m.id === "no_revive"));
+  const revived = applyRunResult(s, runResult({ wave: 25, revived: true }));
+  assert.ok(!revived.newlyCompleted.some(m => m.id === "no_revive"));
 });

@@ -63,6 +63,7 @@ export function makeInitialPlayer(shipClass: ShipClassId = "interceptor"): Playe
     xp: 0, level: 1, xpToNext: 30,
     upgrades: [],
     synergies: [],
+    evolved: [],
     invincTimer: 0,
     magnetRange: 120,
     aura: false, auraDamage: 0.25, auraTimer: 0,

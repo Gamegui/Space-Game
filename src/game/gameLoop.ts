@@ -245,6 +245,8 @@ function releaseBullet(b: Bullet): void {
   // Ссылки на врагов обязаны обнуляться — иначе пул удерживает мёртвых врагов.
   b.target = undefined;
   b.hitList = undefined;
+  b.shardBorn = false;
+  b.voidJumps = undefined;
   if (bulletPool.length < BULLET_POOL_CAP) bulletPool.push(b);
 }
 
@@ -302,6 +304,15 @@ export function particleDebugStats(): { active: number; pooled: number; spawnedT
 const enemiesToRemove: Set<number> = new Set();
 const bulletsToRemove: Set<number> = new Set();
 const spawnedFromSplit: Enemy[] = [];
+/**
+ * Пули, порождённые ВНУТРИ цикла коллизий (сейчас — только «Фазовый разряд»).
+ * Пушить их в `bullets` во время for...of нельзя: цикл догоняет растущий конец
+ * массива и не завершается никогда. Наполняется в кадре, применяется после
+ * цикла (v1.8.1 — фикс OOM/фриза на Чёрном кортеже с level-300 билдом).
+ */
+const bulletsToSpawnAfterCollision: Bullet[] = [];
+/** Бюджет осколков «Фазового разряда» за кадр — страховка от любого разгона. */
+const MAX_DISCHARGE_SHARDS_PER_FRAME = 40;
 const collisionCandidates: Enemy[] = [];
 
 /** Плановое число частиц эффекта: тир качества × адаптивная доля × остатки
@@ -1693,6 +1704,8 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   // ─── Bullet collision with enemies ─────────────────────────────────────────
   bulletsToRemove.clear();
   spawnedFromSplit.length = 0;
+  bulletsToSpawnAfterCollision.length = 0;
+  let dischargeShardsThisFrame = 0;
 
   // Spatial grid avoids testing every player bullet against every enemy.
   // 128px cells plus adjacent cells cover the largest boss collision radius.
@@ -1939,13 +1952,22 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 
         emitBurst(particles, b.pos, "#fbbf24", 1, false, 1);
 
-        // Phase Discharge: every Nth hit spawns shard bullets
-        if (player.phaseDischarge && player.phaseDischargeCount > 0) {
+        // Phase Discharge: every Nth hit spawns shard bullets.
+        // v1.8.1: осколки помечаются shardBorn и больше НЕ порождают осколков —
+        // против неубиваемых целей (Чёрный кортеж) прежний код давал
+        // экспоненциальный цепной взрыв массива пуль внутри этого же for...of
+        // (миллионы пуль за кадр → OOM/фриз). Дополнительно: бюджет за кадр
+        // и отложенный пуш после завершения цикла.
+        if (player.phaseDischarge && player.phaseDischargeCount > 0
+          && !b.shardBorn && dischargeShardsThisFrame < MAX_DISCHARGE_SHARDS_PER_FRAME) {
           const shardInterval = Math.max(3, 8 - player.phaseDischargeCount);
           if (frame % shardInterval === 0) {
-            for (let si = 0; si < 4; si++) {
+            for (let si = 0; si < 4 && dischargeShardsThisFrame < MAX_DISCHARGE_SHARDS_PER_FRAME; si++) {
               const sa = (si / 4) * Math.PI * 2 + Math.random() * 0.5;
-              bullets.push(spawnPlayerSideBullet(player, { x: b.pos.x, y: b.pos.y }, { x: Math.cos(sa) * player.bulletSpeed * 0.7, y: Math.sin(sa) * player.bulletSpeed * 0.7 }, b.damage * 0.5, 2, "#c084fc"));
+              const shard = spawnPlayerSideBullet(player, { x: b.pos.x, y: b.pos.y }, { x: Math.cos(sa) * player.bulletSpeed * 0.7, y: Math.sin(sa) * player.bulletSpeed * 0.7 }, b.damage * 0.5, 2, "#c084fc");
+              shard.shardBorn = true;
+              dischargeShardsThisFrame++;
+              bulletsToSpawnAfterCollision.push(shard);
             }
           }
         }
@@ -1954,6 +1976,13 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         else (b as { pierce: number }).pierce--;
       }
     }
+  }
+
+  // v1.8.1: пули, порождённые внутри цикла коллизий, добавляются строго
+  // ПОСЛЕ него — for...of по `bullets` обязан завершаться.
+  if (bulletsToSpawnAfterCollision.length > 0) {
+    for (const extra of bulletsToSpawnAfterCollision) bullets.push(extra);
+    bulletsToSpawnAfterCollision.length = 0;
   }
 
   // Remove bullets/enemies and add splitters

@@ -382,7 +382,9 @@ export function getAdaptiveDifficulty(state: PlayerState, wave: number): { power
   return { power, scale: Math.min(12, Math.pow(powerRatio, 0.85)) };
 }
 
-const LIMIT_BREAK: UpgradeDef = {
+// Экспортирована для тестов max-билдов: limit_break не входит в ALL_UPGRADES
+// и попадает в выбор только как fallback пустого пула.
+export const LIMIT_BREAK: UpgradeDef = {
   id: "limit_break",
   name: "Прорыв предела",
   icon: "♾️",

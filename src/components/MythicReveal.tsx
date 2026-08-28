@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import type { UpgradeDef, PlayerState } from "../game/types";
 
 interface Props {
@@ -8,13 +8,6 @@ interface Props {
   onDecline: () => void;
 }
 
-/**
- * ✦ МИФИЧЕСКОЕ СОБЫТИЕ ✦ — специальная последовательность вместо обычных
- * карточек: остановка момента (затемнение) → вспышка энергии → заголовок →
- * карточка → выбор. Анимации — чистый CSS (ноль canvas-частиц, лимиты
- * перф-системы не затрагиваются). Для «Немезиды» добавляется фиолетовый
- * оттенок Бездны — чисто визуальное усиление (ТЗ §12).
- */
 export default function MythicReveal({ mythic, player, onAccept, onDecline }: Props) {
   const [stage, setStage] = useState(0); // 0 затемнение, 1 вспышка, 2 заголовок, 3 карточка
   const wraith = player.shipClass === "void_wraith";
@@ -25,6 +18,15 @@ export default function MythicReveal({ mythic, player, onAccept, onDecline }: Pr
     const t3 = setTimeout(() => setStage(3), 1900); // карточка
     return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
   }, []);
+
+  const particlePositions = useMemo(() => [
+    { left: '12%', top: '18%' },
+    { left: '30%', top: '12%' },
+    { left: '52%', top: '8%' },
+    { left: '72%', top: '22%' },
+    { left: '86%', top: '50%' },
+    { left: '40%', top: '70%' },
+  ], []);
 
   return (
     <div className={`absolute inset-0 z-50 flex flex-col items-center justify-center overflow-hidden ${stage === 0 ? "bg-black/92" : "bg-black/95"} backdrop-blur-md transition-all duration-300`}>
@@ -63,13 +65,13 @@ export default function MythicReveal({ mythic, player, onAccept, onDecline }: Pr
           <div className="absolute -inset-[3px] rounded-3xl animate-[mythicBorder_3s_ease-in-out_infinite]"
             style={{ background: "linear-gradient(120deg, #fde047, #ffffff, #f59e0b, #ffffff, #fde047)", backgroundSize: "300% 300%", filter: "drop-shadow(0 0 26px rgba(253,224,71,0.75))" }} />
           <div className="relative rounded-3xl border-2 border-amber-300/80 bg-gradient-to-b from-slate-900 to-black p-6 text-center">
-            <div className="mb-2 inline-block rounded-full bg-gradient-to-r from-amber-400 to-yellow-200 px-4 py-1 font-mono text-[11px] font-black tracking-[0.25em] text-black shadow-lg">✦ MYTHIC ✦</div>
+            <div className="mb-2 inline-block rounded-full bg-gradient-to-r from-amber-400 to-yellow-200 px-4 py-1 font-mono text-[11px] font-black tracking-[0.25em] text-black shadow-lg">✦ MYTHIC</div>
             <div className="mb-3 text-6xl drop-shadow-[0_0_20px_rgba(253,224,71,0.9)] animate-[mythicFloat_2.4s_ease-in-out_infinite]">{mythic.icon}</div>
             <div className="mb-3 text-xl font-black leading-tight text-amber-100">{mythic.name}</div>
             <p className="mb-5 text-xs leading-relaxed text-amber-200/85">{mythic.description}</p>
             <button
               onClick={onAccept}
-              className="w-full rounded-2xl bg-gradient-to-r from-amber-400 via-yellow-300 to-amber-400 py-4 text-base font-black text-black shadow-[0_0_30px_rgba(253,224,71,0.6)] transition-all hover:brightness-110 active:scale-95 cursor-pointer animate-[mythicBorder_3s_ease-in-out_infinite] bg-[length:300%_300%]"
+              className="w-full rounded-2xl bg-gradient-to-r from-amber-400 via-yellow-300 to-amber-400 py-4 text-base font-black text-black shadow-[0_0_30px_rgba(253,224,71,0.6)] transition-all hover:brightness-105"
             >
               ✦ ПРИНЯТЬ СИЛУ ✦
             </button>
@@ -80,19 +82,19 @@ export default function MythicReveal({ mythic, player, onAccept, onDecline }: Pr
         </div>
       )}
 
-      {/* CSS-«частицы» света вокруг (ограниченное число, без canvas) */}
+      {/* CSS-«частицы» света вокруг (уменьшено до 6) */}
       {stage >= 3 && (
         <div className="pointer-events-none absolute inset-0">
-          {Array.from({ length: 14 }, (_, i) => (
+          {particlePositions.map((p, i) => (
             <span
               key={i}
-              className="absolute h-1.5 w-1.5 rounded-full"
+              className="absolute h-1.5 w-1.5 rounded-full animate-[mythicSpark_3s_ease-in-out_infinite]"
               style={{
-                left: `${8 + (i * 67) % 84}%`,
-                top: `${12 + (i * 41) % 76}%`,
+                left: p.left,
+                top: p.top,
                 background: wraith && i % 3 === 0 ? "#e879f9" : "#fde047",
-                boxShadow: `0 0 10px ${wraith && i % 3 === 0 ? "#e879f9" : "#fde047"}`,
-                animation: `mythicSpark ${2 + (i % 5) * 0.5}s ease-in-out ${i * 0.17}s infinite`,
+                boxShadow: `0 0 8px ${wraith && i % 3 === 0 ? "#e879f9" : "#fde047"}`,
+                willChange: "transform, opacity",
               }}
             />
           ))}

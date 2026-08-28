@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import type { UpgradeDef } from "../game/types";
 import type { PlayerState } from "../game/types";
 import { ALL_UPGRADES, canUpgrade, getUpgradeLevel } from "../game/upgrades";
 import { SYNERGIES } from "../game/synergies";
 import { EVOLUTIONS } from "../game/evolutions";
 import { MYTHIC_IDS } from "../game/mythics";
+import ChoiceCard from "./ChoiceCard";
 
 interface Props {
   choices: UpgradeDef[];
@@ -45,7 +46,15 @@ export default function UpgradePanel({
   bonusChoiceUsed, onReroll, onAdReroll, onAdBonusChoice, onBanish,
 }: Props) {
   const [buildOpen, setBuildOpen] = useState(false);
-  const availablePool = Math.max(0, ALL_UPGRADES.filter(upgrade => canUpgrade(player, upgrade)).length - banishedCount);
+  const availablePool = useMemo(() => Math.max(0, ALL_UPGRADES.filter(upgrade => canUpgrade(player, upgrade)).length - banishedCount), [player, banishedCount]);
+
+  const choicesView = useMemo(() => choices.map(u => {
+    const currentLevel = getUpgradeLevel(player, u.id);
+    const relatedSynergies = SYNERGIES.filter(s => s.requires.includes(u.id));
+    const relatedEvolutions = EVOLUTIONS.filter(e => !player.evolved.includes(e.id) && e.requires.includes(u.id));
+    return { u, currentLevel, relatedSynergies, relatedEvolutions };
+  }), [choices, player]);
+
   return (
     <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/85 backdrop-blur-md z-20 rounded-2xl p-4">
       {/* Header */}
@@ -57,147 +66,33 @@ export default function UpgradePanel({
 
       {/* Cards */}
       <div className="flex gap-3 px-3 max-w-[940px] w-full justify-center">
-        {choices.map((u) => {
-          const c = rarityColors[u.rarity] || rarityColors.common;
-          const currentLevel = getUpgradeLevel(player, u.id);
-          const maxLevel = u.maxLevel;
-          const visiblePips = Math.min(maxLevel, 8);
-          const stars = Array.from({ length: visiblePips }, (_, i) => i < Math.min(currentLevel, visiblePips));
-          const relatedSynergies = SYNERGIES.filter(synergy => synergy.requires.includes(u.id));
-          // Индикатор прогресса эволюций: игрок видит, что строит билд
-          // («до эволюции осталось 1 улучшение»).
-          const relatedEvolutions = EVOLUTIONS.filter(evolution =>
-            !player.evolved.includes(evolution.id) && evolution.requires.includes(u.id));
-
-          return (
-            <button
-              key={u.id}
-              onClick={() => onChoose(u)}
-              className={`
-                flex-1 min-w-0 max-w-[250px] p-4 rounded-2xl border-2 ${c.border}
-                bg-gradient-to-b ${c.bg} ${c.text}
-                transition-all duration-200
-                hover:scale-105 hover:shadow-2xl hover:brightness-110
-                active:scale-95
-                text-left relative overflow-hidden
-                group cursor-pointer
-              `}
-            >
-              {/* Shimmer effect */}
-              <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent" />
-              </div>
-
-              {/* Rarity badge */}
-              <div className={`text-[10px] font-black px-2.5 py-0.5 rounded-full ${c.badge} inline-block mb-3 tracking-widest`}>
-                {rarityLabel[u.rarity]}
-              </div>
-
-              {/* Icon + Name */}
-              <div className="flex items-center gap-2.5 mb-2.5">
-                <span className="text-3xl">{u.icon}</span>
-                <div>
-                  <div className="font-black text-base leading-tight">{u.name}</div>
-                  <div className="text-xs opacity-60 font-mono">{categoryIcon[u.category]} {u.category}</div>
-                </div>
-              </div>
-
-              {/* Synergy hint: explain why this card matters before selection. */}
-              {relatedSynergies.length > 0 && (
-                <div className="mb-2 space-y-1">
-                  {relatedSynergies.map(synergy => {
-                    const found = synergy.requires.filter(id => getUpgradeLevel(player, id) > 0).length;
-                    const afterPick = Math.min(synergy.requires.length, found + (currentLevel === 0 ? 1 : 0));
-                    const active = player.synergies.includes(synergy.id);
-                    const completes = !active && afterPick === synergy.requires.length;
-                    const style = active
-                      ? "border-emerald-500/50 bg-emerald-950/70 text-emerald-200"
-                      : completes
-                        ? "border-amber-400 bg-amber-500/20 text-amber-200 animate-pulse"
-                        : "border-fuchsia-500/50 bg-fuchsia-950/70 text-fuchsia-200";
-                    return (
-                      <div key={synergy.id} className={`rounded-md border px-2 py-1 text-[9px] font-black leading-tight ${style}`}>
-                        {active ? "✓ АКТИВНА" : completes ? "✦ ЗАВЕРШАЕТ" : "🧬 ДЛЯ СИНЕРГИИ"}: {synergy.name} · {afterPick}/{synergy.requires.length}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-
-              {/* Evolution hint: super-synergy progress on this card. */}
-              {relatedEvolutions.length > 0 && (
-                <div className="mb-2 space-y-1">
-                  {relatedEvolutions.map(evolution => {
-                    const found = evolution.requires.filter(id => getUpgradeLevel(player, id) > 0).length;
-                    const afterPick = Math.min(evolution.requires.length, found + (currentLevel === 0 ? 1 : 0));
-                    const completes = afterPick === evolution.requires.length;
-                    return (
-                      <div key={evolution.id} className={`rounded-md border px-2 py-1 text-[9px] font-black leading-tight ${completes ? "border-orange-400 bg-orange-500/20 text-orange-200 animate-pulse" : "border-amber-600/50 bg-amber-950/60 text-amber-200"}`}>
-                        {completes ? "⚡ ЗАПУСКАЕТ ЭВОЛЮЦИЮ" : `🧬 ЭВОЛЮЦИЯ ${afterPick}/${evolution.requires.length}`}: {evolution.name}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-
-              {/* Description */}
-              <div className="text-xs opacity-85 leading-relaxed mb-4 min-h-[38px]">{u.description}</div>
-
-              {/* Level indicator */}
-              <div className="flex items-center gap-1.5 border-t border-white/10 pt-2.5">
-                <span className="text-[11px] opacity-60 font-mono">УРОВЕНЬ</span>
-                {stars.map((filled, i) => (
-                  <div
-                    key={i}
-                    className={`w-4 h-1.5 rounded-full transition-all ${
-                      filled ? "bg-current opacity-100" : "bg-white opacity-20"
-                    }`}
-                  />
-                ))}
-                <span className="text-xs opacity-70 font-mono ml-auto">
-                  {currentLevel}/{maxLevel}
-                </span>
-              </div>
-
-              {/* Corner decoration */}
-              <div className="absolute top-2 right-2 opacity-10 text-4xl font-black">
-                {currentLevel > 0 ? `+${currentLevel}` : ""}
-              </div>
-            </button>
-          );
-        })}
+        {choicesView.map(({ u, currentLevel, relatedSynergies, relatedEvolutions }) => (
+          <ChoiceCard key={u.id} u={u} currentLevel={currentLevel} relatedSynergies={relatedSynergies} relatedEvolutions={relatedEvolutions} onChoose={onChoose} />
+        ))}
       </div>
 
       {/* Choice controls */}
       <div className="mt-3 flex items-center justify-center gap-2 font-mono text-xs">
         {rerollsLeft > 0 ? (
-          <button onClick={onReroll} disabled={adPending} className="rounded-lg border border-cyan-500 bg-cyan-950/90 px-4 py-2 font-black text-cyan-100 hover:bg-cyan-800 disabled:opacity-50 cursor-pointer">
-            🔄 ПЕРЕВЫБОР · {rerollsLeft} БЕСПЛАТНО
-          </button>
+          <button onClick={onReroll} disabled={adPending} className="rounded-lg border border-cyan-500 bg-cyan-950/90 px-4 py-2 font-black text-cyan-100 hover:bg-cyan-800 disabled:opacity-50 cursor-pointer">🔄 ПЕРЕВЫБОР · {rerollsLeft} БЕСПЛАТНО</button>
         ) : adAvailable ? (
-          <button onClick={onAdReroll} disabled={adPending} className="rounded-lg border border-cyan-500 bg-cyan-950/90 px-4 py-2 font-black text-cyan-100 hover:bg-cyan-800 disabled:opacity-50 cursor-pointer">
-            🎬 {adPending ? "ЗАГРУЗКА…" : "ПЕРЕВЫБОР ЗА РЕКЛАМУ"}
-          </button>
+          <button onClick={onAdReroll} disabled={adPending} className="rounded-lg border border-cyan-500 bg-cyan-950/90 px-4 py-2 font-black text-cyan-100 hover:bg-cyan-800 disabled:opacity-50 cursor-pointer">🎬 {adPending ? "ЗАГРУЗКА…" : "ПЕРЕВЫБОР ЗА РЕКЛАМУ"}</button>
         ) : null}
         {adAvailable && !bonusChoiceUsed && level >= 7 && choices.length < 4 && (
-          <button onClick={onAdBonusChoice} disabled={adPending} className="rounded-lg border border-amber-500 bg-amber-950/90 px-4 py-2 font-black text-amber-100 hover:bg-amber-800 disabled:opacity-50 cursor-pointer">
-            🎬 +4-Й ЭПИЧЕСКИЙ ИЛИ ЛЕГЕНДАРНЫЙ
-          </button>
+          <button onClick={onAdBonusChoice} disabled={adPending} className="rounded-lg border border-amber-500 bg-amber-950/90 px-4 py-2 font-black text-amber-100 hover:bg-amber-800 disabled:opacity-50 cursor-pointer">🎬 +4-Й ЭПИЧЕСКИЙ ИЛИ ЛЕГЕНДАРНЫЙ</button>
         )}
         {banishesLeft > 0 && (
           <div className="flex items-center gap-1 rounded-lg border border-rose-800 bg-rose-950/80 px-2 py-1 text-rose-200">
             <span className="font-black">ИЗГНАТЬ:</span>
             {choices.filter(choice => choice.id !== "limit_break").map((choice, index) => (
-              <button key={choice.id} onClick={() => onBanish(choice)} title={`Убрать «${choice.name}» до конца забега`} className="rounded bg-rose-800 px-2 py-1 font-black hover:bg-rose-600 cursor-pointer">{index + 1}</button>
+              <button key={choice.id} onClick={() => onBanish(choice)} title={`Убрать «${choice.name}» до конца забега`} className="rounded bg-rose-800 px-2 py-1 font-black text-rose-100">{choice.name}</button>
             ))}
           </div>
         )}
       </div>
 
-      {/* Build details stay collapsed by default to keep mobile choice focused. */}
-      <button onClick={() => setBuildOpen(open => !open)} className="mt-2 rounded-full border border-fuchsia-800 bg-fuchsia-950/70 px-4 py-1.5 text-[10px] font-black text-fuchsia-200 cursor-pointer">
-        🧬 БИЛД · {player.upgrades.length} · ПУЛ: {availablePool}/{ALL_UPGRADES.length} {buildOpen ? "▲" : "▼"}
-      </button>
+      {/* Build details */}
+      <button onClick={() => setBuildOpen(open => !open)} className="mt-2 rounded-full border border-fuchsia-800 bg-fuchsia-950/70 px-4 py-1.5 text-[10px] font-black text-fuchsia-200 cursor-pointer">🧬 БИЛД · {player.upgrades.length} · ПУЛ: {availablePool}/{ALL_UPGRADES.length} {buildOpen ? "▲" : "▼"}</button>
       {buildOpen && (
         <div className="mt-2 grid w-full max-w-4xl grid-cols-2 gap-3 text-left">
           <div className="rounded-xl border border-fuchsia-900/70 bg-slate-950/80 p-2.5">
@@ -206,9 +101,7 @@ export default function UpgradePanel({
               {SYNERGIES.map(synergy => {
                 const found = synergy.requires.filter(id => getUpgradeLevel(player, id) > 0).length;
                 const active = player.synergies.includes(synergy.id);
-                return <div key={synergy.id} className={`rounded px-2 py-1 text-[10px] font-bold ${active ? "bg-fuchsia-800 text-white" : "bg-slate-900 text-slate-400"}`}>
-                  {synergy.icon} {synergy.name} · {active ? "ГОТОВО" : `${found}/${synergy.requires.length}`}
-                </div>;
+                return <div key={synergy.id} className={`rounded px-2 py-1 text-[10px] font-bold ${active ? "bg-fuchsia-800 text-white" : "bg-slate-900 text-slate-400"}`}>{synergy.icon} {synergy.name} · {active ? "ГОТОВО" : `${found}/${synergy.requires.length}`}</div>;
               })}
             </div>
           </div>

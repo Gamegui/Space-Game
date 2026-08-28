@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import {
   META_UPGRADES, MISSIONS, metaUpgradeCost, getMetaLevel, canBuyMetaUpgrade,
   isMissionComplete,
@@ -6,6 +6,7 @@ import {
 } from "../game/meta";
 import { PRODUCTS } from "../game/products";
 import type { StoreOffer } from "../platform/yandex";
+import UpgradeCard from "./UpgradeCard";
 
 interface Props {
   meta: MetaState;
@@ -25,6 +26,14 @@ type Tab = "upgrades" | "missions" | "shop";
 export default function Hangar({ meta, productStatuses, offers, purchasePendingId, onBuyUpgrade, onClaimMission, onBuyProduct, onBack }: Props) {
   const [tab, setTab] = useState<Tab>("upgrades");
 
+  const upgradesView = useMemo(() => META_UPGRADES.map(def => {
+    const lvl = getMetaLevel(meta, def.id);
+    const maxed = lvl >= def.maxLevel;
+    const cost = metaUpgradeCost(def, lvl);
+    const affordable = canBuyMetaUpgrade(meta, def);
+    return { def, lvl, maxed, cost, affordable };
+  }), [meta]);
+
   return (
     <div className="absolute inset-0 z-30 flex flex-col items-center bg-black/90 backdrop-blur-md p-4 overflow-y-auto">
       <div className="w-full max-w-3xl">
@@ -38,37 +47,17 @@ export default function Hangar({ meta, productStatuses, offers, purchasePendingI
 
         <div className="flex gap-2 mb-4">
           {([["upgrades","Улучшения"],["missions","Задания"],["shop","Магазин"]] as const).map(([k,label]) => (
-            <button key={k} onClick={() => setTab(k)} className={`px-4 py-2 rounded-full text-sm font-black cursor-pointer transition ${tab===k?"bg-cyan-600 text-white":"bg-slate-800 text-slate-400 hover:text-white"}`}>{label}</button>
+            <button key={k} onClick={() => setTab(k)} className={`px-4 py-2 rounded-full text-sm font-black cursor-pointer transition ${tab===k?"bg-cyan-600 text-white":"bg-slate-800 text-slate-400"}`}>
+              {label}
+            </button>
           ))}
         </div>
 
         {tab === "upgrades" && (
           <div className="grid sm:grid-cols-2 gap-3">
-            {META_UPGRADES.map(def => {
-              const lvl = getMetaLevel(meta, def.id);
-              const maxed = lvl >= def.maxLevel;
-              const cost = metaUpgradeCost(def, lvl);
-              const affordable = canBuyMetaUpgrade(meta, def);
-              return (
-                <div key={def.id} className={`rounded-2xl border p-4 ${maxed?"border-emerald-700 bg-emerald-950/40":"border-slate-700 bg-slate-900/70"}`}>
-                  <div className="flex items-start justify-between mb-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-2xl">{def.icon}</span>
-                      <span className="font-black text-white text-sm">{def.name}</span>
-                    </div>
-                    <span className="font-mono text-[10px] text-cyan-400">{lvl}/{def.maxLevel}</span>
-                  </div>
-                  <p className="text-xs text-slate-400 mb-3 min-h-8">{def.description}</p>
-                  {maxed ? (
-                    <div className="text-center text-emerald-400 font-black text-sm py-2">МАКС. УРОВЕНЬ</div>
-                  ) : (
-                    <button onClick={() => onBuyUpgrade(def.id)} disabled={!affordable} className={`w-full py-2 rounded-full text-sm font-black cursor-pointer transition ${affordable?"bg-fuchsia-600 hover:bg-fuchsia-500 text-white":"bg-slate-800 text-slate-600 cursor-not-allowed"}`}>
-                      ✨ {cost} осколков
-                    </button>
-                  )}
-                </div>
-              );
-            })}
+            {upgradesView.map(u => (
+              <UpgradeCard key={u.def.id} def={u.def} lvl={u.lvl} maxed={u.maxed} cost={u.cost} affordable={u.affordable} onBuy={onBuyUpgrade} />
+            ))}
           </div>
         )}
 
@@ -119,7 +108,7 @@ export default function Hangar({ meta, productStatuses, offers, purchasePendingI
                   {owned ? (
                     <div className="text-center text-emerald-400 font-black text-sm py-2">✓ КУПЛЕНО</div>
                   ) : available && offer ? (
-                    <button onClick={() => onBuyProduct(p.id)} disabled={pending} className="w-full py-2 rounded-full bg-fuchsia-600 hover:bg-fuchsia-500 disabled:opacity-50 text-white font-black text-sm cursor-pointer">
+                    <button onClick={() => onBuyProduct(p.id)} disabled={pending} className="w-full py-2 rounded-full bg-fuchsia-600 hover:bg-fuchsia-500 disabled:opacity-50 text-white font-black">
                       {pending ? "ОБРАБОТКА…" : `Купить · ${offer.price || offer.currencyCode}`}
                     </button>
                   ) : absent ? (

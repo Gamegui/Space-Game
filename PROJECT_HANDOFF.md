@@ -256,9 +256,13 @@ Merged PR #7 (`fix/loading-api-ready-timing`) into `main` first, then branched
 ### New systems (all cloud-saved via Yandex Player Data, key `meta_v1`)
 
 1. **Meta-progression — «Осколки ядра» + Ангар.** Every run earns permanent
-   shards (formula: `floor(score/120 + wave*4 + kills*1.5 + victory?80:0)`,
-   doubled by the `premium_pass` product, +10%/level from the `shard_magnet`
-   meta upgrade). Spent in the Hangar (`src/game/meta.ts`) on 9 permanent
+   shards (formula: `min(500, floor(score/1000 + wave*3 + kills*0.1 +
+   victory?60:0))`, doubled by the `premium_pass` product, +10%/level from the
+   `shard_magnet` meta upgrade). Balance targets: early death ≈ 7–15 shards,
+   wave 10–15 run ≈ 50–90, wave 30 run ≈ 150–250, wave-50 victory ≈ 350–450 —
+   the full Hangar max-out costs ~4.6k shards, so the whole curve takes many
+   runs (regression-tested in `test/meta.test.mts`). Spent in the Hangar
+   (`src/game/meta.ts`) on 9 permanent
    upgrades (HP, shield, magnet, free rerolls, damage, homing, starting
    upgrade, shard bonus, nuke charges). State is cloud-saved + localStorage
    fallback; corrupted saves normalize to defaults.

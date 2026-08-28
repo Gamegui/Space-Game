@@ -183,7 +183,17 @@ export function shardMultiplier(state: MetaState): number {
 }
 
 export function computeShardsEarned(run: RunResult, state: MetaState): number {
-  const base = Math.floor(run.score / 120 + run.wave * 4 + run.kills * 1.5 + (run.victory ? 80 : 0));
+  // v1.5.0 balance: the full Hangar max-out costs ~4.6k shards, so a typical
+  // run must pay tens of shards and even a perfect victory run only a few
+  // hundred (~10% of the curve) — otherwise the whole meta-progression
+  // collapses in a single long run (kills grow superlinearly, hence the tiny
+  // per-kill coefficient and the pre-multiplier cap as a safety valve).
+  // Reference payouts: early death ≈ 7–15, wave 10–15 run ≈ 50–90,
+  // wave 30 run ≈ 150–250, wave-50 victory ≈ 350–450.
+  const base = Math.min(
+    500,
+    Math.floor(run.score / 1000 + run.wave * 3 + run.kills * 0.1 + (run.victory ? 60 : 0)),
+  );
   const min = run.victory ? 15 : 5;
   return Math.max(min, Math.floor(base * shardMultiplier(state)));
 }

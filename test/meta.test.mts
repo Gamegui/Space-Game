@@ -50,8 +50,33 @@ test("field_logistics rerolls + premium_pass doubles shards", () => {
   const s = { ...defaultMetaState(), upgrades: { field_logistics: 2 }, unlockedProducts: ["premium_pass"] };
   assert.equal(metaBonusRerolls(s), 2);
   const run = runResult({ score: 1200, wave: 10, kills: 40 });
-  // base = floor(1200/120 + 40 + 60) = 110; x2 pass = 220
-  assert.equal(computeShardsEarned(run, s), 220);
+  // base = floor(1200/1000 + 30 + 4) = 35; x2 pass = 70
+  assert.equal(computeShardsEarned(run, s), 70);
+});
+
+test("shard economy: one run can never buy out the Hangar", () => {
+  const fullCost = META_UPGRADES.reduce((sum, def) => {
+    let cost = 0;
+    for (let level = 0; level < def.maxLevel; level++) cost += metaUpgradeCost(def, level);
+    return sum + cost;
+  }, 0);
+  assert.ok(fullCost > 4000, `fullCost=${fullCost}`);
+  // A strong victory run (wave 50, 60k score, 1500 kills).
+  const victoryEarned = computeShardsEarned(
+    runResult({ score: 60_000, wave: 50, kills: 1500, victory: true }),
+    defaultMetaState(),
+  );
+  // Even the best run pays a few hundred shards — a small fraction of the
+  // full curve, so maxing everything takes many runs, not one.
+  assert.ok(victoryEarned >= 350 && victoryEarned <= 450, `victoryEarned=${victoryEarned}`);
+  assert.ok(victoryEarned < fullCost / 8, `victoryEarned=${victoryEarned}, fullCost=${fullCost}`);
+  // A typical mid run (wave 12, 8k score, 300 kills) pays tens of shards.
+  const midEarned = computeShardsEarned(runResult({ score: 8_000, wave: 12, kills: 300 }), defaultMetaState());
+  assert.ok(midEarned >= 50 && midEarned <= 100, `midEarned=${midEarned}`);
+  // Score/kills inflation is capped: an absurd 500k-score, 8k-kill run pays
+  // the same as the cap allows, never thousands.
+  const absurdEarned = computeShardsEarned(runResult({ score: 500_000, wave: 80, kills: 8_000, victory: true }), defaultMetaState());
+  assert.ok(absurdEarned <= 500, `absurdEarned=${absurdEarned}`);
 });
 
 test("shard_magnet stacks with premium_pass", () => {

@@ -211,7 +211,7 @@ export function drawPlayer(ctx: CanvasRenderingContext2D, state: PlayerState, fr
   }
 
   // Shield bubble
-  if (shield && shield.active && shield.hp > 0) {
+  if (shield && shield.hp > 0) {
     const alpha = 0.35 + 0.2 * Math.sin(frame * 0.1);
     const pct = shield.hp / shield.maxHp;
     ctx.strokeStyle = `rgba(100,180,255,${alpha})`;

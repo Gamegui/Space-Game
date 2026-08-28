@@ -9,7 +9,10 @@ export const H = 720;
 
 let renderPerformanceTier: 0 | 1 | 2 = 2;
 export function setRenderPerformanceTier(tier: 0 | 1 | 2) {
-  if (tier !== renderPerformanceTier) bulletSprites.clear(); // glow strength differs per tier
+  // No cache invalidation here: the tier is part of every sprite key, so a
+  // tier switch simply bakes the new tier's sprites once. Clearing the cache
+  // on every switch re-baked ~100+ glow sprites in a single frame and read
+  // as a hard freeze while the auto quality controller oscillated.
   renderPerformanceTier = tier;
 }
 
@@ -23,12 +26,15 @@ export function setRenderPerformanceTier(tier: 0 | 1 | 2) {
 // the per-frame cost. Sprites are supersampled 2× so rotated blits stay crisp.
 
 const SPRITE_SCALE = 2;
-const SPRITE_CACHE_LIMIT = 128;
+const SPRITE_CACHE_LIMIT = 512;
 
 function makeSprite(w: number, h: number): [HTMLCanvasElement, CanvasRenderingContext2D] {
+  // Guard against pathological dimensions: a 0-sized canvas makes drawImage
+  // throw InvalidStateError and kill the whole requestAnimationFrame loop.
+  const safe = (v: number) => (Number.isFinite(v) ? Math.min(2048, Math.max(1, Math.ceil(v * SPRITE_SCALE))) : 16);
   const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.ceil(w * SPRITE_SCALE));
-  canvas.height = Math.max(1, Math.ceil(h * SPRITE_SCALE));
+  canvas.width = safe(w);
+  canvas.height = safe(h);
   const sctx = canvas.getContext("2d")!;
   sctx.scale(SPRITE_SCALE, SPRITE_SCALE);
   return [canvas, sctx];
@@ -39,11 +45,26 @@ function blitSprite(ctx: CanvasRenderingContext2D, sprite: HTMLCanvasElement, w:
 }
 
 function cacheSprite(cache: Map<string, HTMLCanvasElement>, key: string, w: number, h: number, paint: (sctx: CanvasRenderingContext2D) => void): HTMLCanvasElement {
-  if (cache.size >= SPRITE_CACHE_LIMIT) cache.clear();
+  if (cache.size >= SPRITE_CACHE_LIMIT) {
+    // Evict the oldest quarter only (Map iterates in insertion order). A full
+    // clear() here re-baked every sprite in the next frame — with ~120 enemy
+    // bullet variants (16 colors × 7 sizes, per quality tier) that turned
+    // into a permanent bake-every-frame storm that froze the game.
+    let toDrop = SPRITE_CACHE_LIMIT >> 2;
+    for (const stale of cache.keys()) {
+      if (toDrop-- <= 0) break;
+      cache.delete(stale);
+    }
+  }
   const [canvas, sctx] = makeSprite(w, h);
   paint(sctx);
   cache.set(key, canvas);
   return canvas;
+}
+
+/** Test hook: total baked sprite count (bounded by SPRITE_CACHE_LIMIT). */
+export function spriteCacheSize(): number {
+  return bulletSprites.size + wraithBodySprites.size + wraithCoreSprites.size;
 }
 
 // ─── Void Guard omen ──────────────────────────────────────────────────────────
@@ -900,12 +921,15 @@ function drawBossOmega(ctx: CanvasRenderingContext2D, fill: string, stroke: stri
 const bulletSprites = new Map<string, HTMLCanvasElement>();
 
 function getPlayerBulletSprite(color: string, size: number): HTMLCanvasElement {
-  const key = `p|${renderPerformanceTier}|${color}|${size.toFixed(1)}`;
+  // Clamp: a non-finite size would create a NaN gradient (a throwing op in
+  // real browsers) — fall back to a normal bullet instead of killing rAF.
+  const s = Number.isFinite(size) ? Math.min(64, Math.max(0.5, size)) : 3;
+  const key = `p|${renderPerformanceTier}|${color}|${s.toFixed(1)}`;
   const cached = bulletSprites.get(key);
   if (cached) return cached;
-  const len = size * (renderPerformanceTier === 0 ? 2.2 : 3.5);
+  const len = s * (renderPerformanceTier === 0 ? 2.2 : 3.5);
   const pad = renderPerformanceTier === 2 ? 16 : renderPerformanceTier === 1 ? 8 : 2;
-  const w = size * 2 + pad * 2;
+  const w = s * 2 + pad * 2;
   const h = len * 2 + pad * 2;
   return cacheSprite(bulletSprites, key, w, h, sctx => {
     sctx.translate(w / 2, h / 2);
@@ -921,17 +945,18 @@ function getPlayerBulletSprite(color: string, size: number): HTMLCanvasElement {
       sctx.fillStyle = g;
     }
     sctx.beginPath();
-    sctx.ellipse(0, 0, size, len, 0, 0, Math.PI * 2);
+    sctx.ellipse(0, 0, s, len, 0, 0, Math.PI * 2);
     sctx.fill();
   });
 }
 
 function getEnemyBulletSprite(color: string, size: number): HTMLCanvasElement {
-  const key = `e|${renderPerformanceTier}|${color}|${size.toFixed(1)}`;
+  const s = Number.isFinite(size) ? Math.min(64, Math.max(0.5, size)) : 3;
+  const key = `e|${renderPerformanceTier}|${color}|${s.toFixed(1)}`;
   const cached = bulletSprites.get(key);
   if (cached) return cached;
   const pad = renderPerformanceTier === 2 ? 12 : renderPerformanceTier === 1 ? 6 : 2;
-  const w = size * 2 + pad * 2;
+  const w = s * 2 + pad * 2;
   return cacheSprite(bulletSprites, key, w, w, sctx => {
     sctx.translate(w / 2, w / 2);
     if (renderPerformanceTier > 0) {
@@ -940,12 +965,12 @@ function getEnemyBulletSprite(color: string, size: number): HTMLCanvasElement {
     }
     sctx.fillStyle = color;
     sctx.beginPath();
-    sctx.arc(0, 0, size, 0, Math.PI * 2);
+    sctx.arc(0, 0, s, 0, Math.PI * 2);
     sctx.fill();
     sctx.fillStyle = "#fff";
     sctx.globalAlpha = 0.6;
     sctx.beginPath();
-    sctx.arc(0, 0, size * 0.4, 0, Math.PI * 2);
+    sctx.arc(0, 0, s * 0.4, 0, Math.PI * 2);
     sctx.fill();
   });
 }

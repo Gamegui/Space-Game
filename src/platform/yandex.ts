@@ -72,6 +72,21 @@ class YandexPlatform {
   private playing = false;
   private lastInterstitial = 0;
   private language = "ru";
+  // The React canvas/game-loop calls markReady() before this.sdk is necessarily
+  // initialised (init() is async). Queue the call and flush it once the SDK is
+  // ready, so LoadingAPI.ready() fires as soon as the game can be played and
+  // Yandex hides its loading splash (Game Requirements §1.23.2). readySent
+  // guards against duplicate calls when the game-loop effect re-runs.
+  private readyRequested = false;
+  private readySent = false;
+
+  private flushReady() {
+    if (!this.readyRequested || this.readySent || !this.sdk) return;
+    try {
+      this.sdk.features?.LoadingAPI?.ready();
+      this.readySent = true;
+    } catch { /* older SDK */ }
+  }
 
   init(): Promise<void> {
     if (this.initPromise) return this.initPromise;
@@ -89,6 +104,9 @@ class YandexPlatform {
         if (this.playing) {
           try { this.sdk.features?.GameplayAPI?.start(); } catch { /* older SDK */ }
         }
+        // The game canvas/loop may have signalled readiness before the SDK
+        // finished initialising — fire it now, in order.
+        this.flushReady();
       } catch (error) {
         console.warn("Yandex Games SDK is unavailable:", error);
       }
@@ -96,9 +114,12 @@ class YandexPlatform {
     return this.initPromise;
   }
 
-  /** Call once the game canvas and loop are fully initialised. */
+  /** Call once the game canvas and loop are fully initialised. Safe to call
+   *  before the SDK has finished initialising — the call is queued and
+   *  flushed as soon as init() resolves (Game Requirements §1.23.2). */
   markReady() {
-    try { this.sdk?.features?.LoadingAPI?.ready(); } catch { /* older SDK */ }
+    this.readyRequested = true;
+    this.flushReady();
   }
 
   isAvailable() {

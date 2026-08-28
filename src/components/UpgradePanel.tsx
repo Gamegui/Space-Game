@@ -3,6 +3,8 @@ import type { UpgradeDef } from "../game/types";
 import type { PlayerState } from "../game/types";
 import { ALL_UPGRADES, canUpgrade, getUpgradeLevel } from "../game/upgrades";
 import { SYNERGIES } from "../game/synergies";
+import { EVOLUTIONS } from "../game/evolutions";
+import { MYTHIC_IDS } from "../game/mythics";
 
 interface Props {
   choices: UpgradeDef[];
@@ -22,6 +24,7 @@ interface Props {
 }
 
 const rarityColors: Record<string, { bg: string; border: string; text: string; badge: string }> = {
+  mythic:    { bg: "from-amber-950 to-slate-900",  border: "border-amber-300", text: "text-amber-100", badge: "bg-gradient-to-r from-amber-400 to-yellow-200 text-black" },
   common:    { bg: "from-slate-800 to-slate-900", border: "border-slate-500", text: "text-slate-200", badge: "bg-slate-600 text-slate-200" },
   rare:      { bg: "from-blue-900 to-slate-900",  border: "border-blue-500",  text: "text-blue-100",  badge: "bg-blue-600 text-blue-100"  },
   epic:      { bg: "from-purple-900 to-slate-900",border: "border-purple-500",text: "text-purple-100",badge: "bg-purple-600 text-purple-100"},
@@ -29,7 +32,7 @@ const rarityColors: Record<string, { bg: string; border: string; text: string; b
 };
 
 const rarityLabel: Record<string, string> = {
-  common: "ОБЫЧНОЕ", rare: "РЕДКОЕ", epic: "ЭПИЧЕСКОЕ", legendary: "ЛЕГЕНДАРНОЕ",
+  common: "ОБЫЧНОЕ", rare: "РЕДКОЕ", epic: "ЭПИЧЕСКОЕ", legendary: "ЛЕГЕНДАРНОЕ", mythic: "✦ МИФИЧЕСКОЕ ✦",
 };
 
 const categoryIcon: Record<string, string> = {
@@ -61,6 +64,10 @@ export default function UpgradePanel({
           const visiblePips = Math.min(maxLevel, 8);
           const stars = Array.from({ length: visiblePips }, (_, i) => i < Math.min(currentLevel, visiblePips));
           const relatedSynergies = SYNERGIES.filter(synergy => synergy.requires.includes(u.id));
+          // Индикатор прогресса эволюций: игрок видит, что строит билд
+          // («до эволюции осталось 1 улучшение»).
+          const relatedEvolutions = EVOLUTIONS.filter(evolution =>
+            !player.evolved.includes(evolution.id) && evolution.requires.includes(u.id));
 
           return (
             <button
@@ -111,6 +118,22 @@ export default function UpgradePanel({
                     return (
                       <div key={synergy.id} className={`rounded-md border px-2 py-1 text-[9px] font-black leading-tight ${style}`}>
                         {active ? "✓ АКТИВНА" : completes ? "✦ ЗАВЕРШАЕТ" : "🧬 ДЛЯ СИНЕРГИИ"}: {synergy.name} · {afterPick}/{synergy.requires.length}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Evolution hint: super-synergy progress on this card. */}
+              {relatedEvolutions.length > 0 && (
+                <div className="mb-2 space-y-1">
+                  {relatedEvolutions.map(evolution => {
+                    const found = evolution.requires.filter(id => getUpgradeLevel(player, id) > 0).length;
+                    const afterPick = Math.min(evolution.requires.length, found + (currentLevel === 0 ? 1 : 0));
+                    const completes = afterPick === evolution.requires.length;
+                    return (
+                      <div key={evolution.id} className={`rounded-md border px-2 py-1 text-[9px] font-black leading-tight ${completes ? "border-orange-400 bg-orange-500/20 text-orange-200 animate-pulse" : "border-amber-600/50 bg-amber-950/60 text-amber-200"}`}>
+                        {completes ? "⚡ ЗАПУСКАЕТ ЭВОЛЮЦИЮ" : `🧬 ЭВОЛЮЦИЯ ${afterPick}/${evolution.requires.length}`}: {evolution.name}
                       </div>
                     );
                   })}
@@ -190,6 +213,18 @@ export default function UpgradePanel({
             </div>
           </div>
           <div className="rounded-xl border border-slate-800 bg-slate-950/80 p-2.5">
+            {(() => {
+              const mythics = player.upgrades.filter(u => (MYTHIC_IDS as readonly string[]).includes(u.id));
+              return mythics.length > 0 ? (
+                <div className="mb-1.5 rounded-lg border border-amber-500/60 bg-amber-950/40 p-1.5">
+                  <div className="text-[10px] font-black tracking-widest text-amber-300">МИФИЧЕСКИЕ СИЛЫ · {mythics.length}</div>
+                  {mythics.map(m => {
+                    const def = ALL_UPGRADES.find(u => u.id === m.id);
+                    return <div key={m.id} className="text-[10px] font-bold text-amber-200">✦ {def?.icon} {def?.name ?? m.id}</div>;
+                  })}
+                </div>
+              ) : null;
+            })()}
             <div className="mb-1.5 text-[10px] font-black tracking-widest text-slate-400">МОДИФИКАЦИИ · {player.upgrades.length}</div>
             <div className="max-h-14 overflow-y-auto pr-1 text-[10px] leading-5 text-sky-300">
               {player.upgrades.length === 0 ? "Пока не установлены" : player.upgrades.map(upgrade => `${upgrade.id.replace(/_/g, " ")} ×${upgrade.level}`).join(" · ")}

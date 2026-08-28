@@ -15,8 +15,14 @@ export const ALL_UPGRADES: UpgradeDef[] = [
   },
   {
     id: "spread_shot", name: "Широкий сектор", icon: "🌊", rarity: "common", category: "атака", maxLevel: 4,
-    description: "Увеличивает угол веерной стрельбы и +1 снаряд",
-    apply: (s, l) => { s.spreadAngle += 10; if (l % 2 === 1) s.multishot += 1; },
+    description: "+1 снаряд и шире веер (макс. 85°); чётные уровни на 10% сужают разброс крайних снарядов",
+    apply: (s, l) => {
+      // Кап разброса: крайние снаряды не должны улетать мимо зоны боя.
+      s.spreadAngle = Math.min(s.spreadAngle + 10, 85);
+      if (l % 2 === 1) s.multishot += 1;
+      // Чётные уровни (2 и 4) подтягивают крайние снаряды к центру веера.
+      s.spreadTighten = Math.min(0.2, 0.1 * Math.floor(l / 2));
+    },
   },
   {
     id: "rapid_fire", name: "Скорострельность", icon: "🔥", rarity: "common", category: "атака", maxLevel: 5,
@@ -25,8 +31,8 @@ export const ALL_UPGRADES: UpgradeDef[] = [
   },
   {
     id: "damage_up", name: "Силовое ядро", icon: "💠", rarity: "common", category: "атака", maxLevel: 8,
-    description: "Урон снарядов +20%",
-    apply: (s, _l) => { s.bulletDamage *= 1.2; },
+    description: "Урон снарядов +18% (уровни 1–4), далее +12%",
+    apply: (s, l) => { s.bulletDamage *= l <= 4 ? 1.18 : 1.12; },
   },
   {
     id: "big_bullets", name: "Тяжёлый калибр", icon: "🔵", rarity: "common", category: "атака", maxLevel: 4,
@@ -35,8 +41,12 @@ export const ALL_UPGRADES: UpgradeDef[] = [
   },
   {
     id: "bullet_speed", name: "Ускоритель плазмы", icon: "💨", rarity: "common", category: "атака", maxLevel: 4,
-    description: "Скорость снарядов +20% и +5% к наведению",
-    apply: (s, _l) => { s.bulletSpeed *= 1.2; s.homingStrength = Math.min(0.15, s.homingStrength + 0.005); },
+    description: "Скорость снарядов +20%, дальность полёта +10% и +5% к наведению",
+    apply: (s, _l) => {
+      s.bulletSpeed *= 1.2;
+      s.homingStrength = Math.min(0.15, s.homingStrength + 0.005);
+      s.bulletRangeBonus += 0.1;
+    },
   },
   {
     id: "piercing", name: "Бронебойные снаряды", icon: "🗡️", rarity: "rare", category: "атака", maxLevel: 4,
@@ -157,8 +167,13 @@ export const ALL_UPGRADES: UpgradeDef[] = [
   },
   {
     id: "shield_regen", name: "Конденсатор щита", icon: "⚡🛡️", rarity: "common", category: "защита", maxLevel: 3,
-    description: "Щит перезаряжается на 35% быстрее и мгновенно +25 HP щита",
-    apply: (s, _l) => { if (s.shield) { s.shield.hp = Math.min(s.shield.maxHp, s.shield.hp + 25); } },
+    description: "Мгновенно +25 HP щита и +25% к скорости восстановления щита",
+    apply: (s, _l) => {
+      // Отдельная характеристика (а не чтение уровня в gameLoop): мгновенный
+      // ремонт + постоянное ускорение регена, как в описании предмета.
+      s.shieldRegenMultiplier += 0.25;
+      if (s.shield) s.shield.hp = Math.min(s.shield.maxHp, s.shield.hp + 25);
+    },
   },
   {
     id: "max_hp", name: "Бронелисты корпуса", icon: "❤️", rarity: "common", category: "защита", maxLevel: 6,
@@ -182,8 +197,8 @@ export const ALL_UPGRADES: UpgradeDef[] = [
   },
   {
     id: "magnet", name: "Магнитный гравизахват", icon: "🧲", rarity: "common", category: "утилиты", maxLevel: 4,
-    description: "Мгновенно собирает весь опыт и ускоряет притяжение",
-    apply: (s, _l) => { s.magnetRange += 60; },
+    description: "+70 к радиусу притяжения опыта и +10% к скорости притяжения",
+    apply: (s, _l) => { s.magnetRange += 70; s.magnetPullBonus += 0.1; },
   },
   {
     id: "ghost", name: "Фазовый сдвиг", icon: "👻", rarity: "epic", category: "защита", maxLevel: 2,
@@ -259,7 +274,13 @@ export const ALL_UPGRADES: UpgradeDef[] = [
   { id: "neutron_star", name: "Нейтронная звезда", icon: "⭐", rarity: "legendary", category: "особое", maxLevel: 1, description: "Мощнейшая постоянная аура уничтожения", apply: (s, _l) => { s.aura = true; s.auraDamage += 2; } },
   { id: "orbital_strike", name: "Орбитальный удар", icon: "🌠", rarity: "legendary", category: "спутники", maxLevel: 2, description: "Добавляет две ударные орбитальные платформы", apply: (s, l) => { for (let i = 0; i < 2 && s.satellites.length < 8; i++) s.satellites.push({ angle: Math.random() * Math.PI * 2, radius: 60 + i * 20, speed: 0.05, level: l + 2, shootTimer: 0 }); } },
   { id: "vortex", name: "Гравитационный вихрь", icon: "🌪️", rarity: "legendary", category: "особое", maxLevel: 1, description: "Усиленное наведение и увеличенные снаряды", apply: (s, _l) => { s.homing = true; s.homingStrength = 0.15; s.bulletSize *= 1.5; } },
-  { id: "turbo_engine", name: "Турбодвигатель", icon: "⚙️", rarity: "rare", category: "защита", maxLevel: 3, description: "+30% к скорости движения", apply: (s, _l) => { s.speed *= 1.3; } },
+  {
+    id: "turbo_engine", name: "Турбодвигатель", icon: "⚙️", rarity: "rare", category: "защита", maxLevel: 3,
+    description: "+25% к скорости; при непрерывном движении (1 с) ещё +10%",
+    // Роль разведена с «Форсажными двигателями» (+15%, стабильный бонус):
+    // Турбодвигатель — редкая версия для тех, кто постоянно в движении.
+    apply: (s, _l) => { s.speed *= 1.25; },
+  },
   { id: "battle_magnet", name: "Магнит боя", icon: "🔰", rarity: "rare", category: "утилиты", maxLevel: 3, description: "Убитые враги с шансом роняют бонус-дроп", apply: (s, _l) => { s.battleMagnet = true; s.battleMagnetChance += 0.12; } },
   { id: "overload", name: "Перегрузка", icon: "♻️", rarity: "common", category: "особое", maxLevel: 4, description: "Каждые 5 секунд корабль выпускает волну урона вокруг себя", apply: (s, _l) => { s.overload = true; s.overloadDamage += 0.6; } },
   { id: "quantum_tunnel", name: "Квантовый туннель", icon: "🌌", rarity: "legendary", category: "особое", maxLevel: 1, description: "+10 пробитых целей для каждого снаряда", apply: (s, _l) => { s.piercing += 10; } },
@@ -290,10 +311,43 @@ export const ALL_UPGRADES: UpgradeDef[] = [
     description: "Абсолютная мощь: +100% ко всему наносимому урону",
     apply: (s, _l) => { s.bulletDamage *= 2; s.auraDamage *= 2; },
   },
+  // ═══ МИФИЧЕСКИЙ ТИР (rarity: mythic) ═══
+  // Выпадают только через rollMythicDrop (шанс ~0.5% после 8-го уровня,
+  // максимум 2 за забег) и никогда не входят в обычный пул выбора.
+  {
+    id: "mythic_nova", name: "Звёздный Пожиратель «Сердце Сверхновой»", icon: "☀️", rarity: "mythic", category: "миф", maxLevel: 1,
+    description: "Убийства заряжают Звёздное Ядро (0/100). На полном заряде — СВЕРХНОВАЯ: волна стирает слабых, элиты и мини-боссы получают огромный урон, боссы — до 6% макс. HP.",
+    apply: (s, _l) => { s.novaCore = 0; s.novaFuseTimer = 0; },
+  },
+  {
+    id: "mythic_singularity", name: "Сингулярность «Пожиратель Звёзд»", icon: "🌌", rarity: "mythic", category: "миф", maxLevel: 1,
+    description: "Убийства копят Коллапс (0/50). На полном заряде рождается сингулярность: стягивает врагов, поглощает ваши снаряды — и схлопывается чудовищным взрывом.",
+    apply: (s, _l) => { s.collapseCharge = 0; },
+  },
+  {
+    id: "mythic_judgement", name: "Бог Грома «Судный Разряд»", icon: "⚡", rarity: "mythic", category: "миф", maxLevel: 1,
+    description: "Криты заряжают Гнев Бури (0/10). Десятый крит высвобождает СУДНЫЙ РАЗРЯД: усиляющуюся молнию, ищущую до 16 целей и растущую на 5% за каждое уничтожение.",
+    apply: (s, _l) => { s.wrath = 0; },
+  },
+  {
+    id: "mythic_overdrive", name: "Абсолютный Реактор «Перегрузка»", icon: "🔥", rarity: "mythic", category: "миф", maxLevel: 1,
+    description: "Непрерывная стрельба копит Перегрузку (0–100%). На 100% — 5 секунд ABSOLUTE OVERDRIVE: шквал огня; убийства продлевают режим (до 10 с), затем реактор остывает.",
+    apply: (s, _l) => { s.overdriveCharge = 0; s.overdriveTimer = 0; s.overdriveCooldown = 0; s.lastShotFrame = -9999; },
+  },
+  {
+    id: "mythic_fleet", name: "Армада «Последний Флот»", icon: "🛰️", rarity: "mythic", category: "миф", maxLevel: 1,
+    description: "FLEET LINK: спутники и дроны бьют по общей приоритетной цели, их атаки копят командный канал (0/100). Залп FINAL FLEET SALVO — синхронный удар всей армады.",
+    apply: (s, _l) => { s.fleetCharge = 0; s.fleetSalvoTimer = 0; s.fleetStacks = 0; },
+  },
+  {
+    id: "mythic_void", name: "Абсолютная Пустота «Конец Материи»", icon: "👁️", rarity: "mythic", category: "миф", maxLevel: 1,
+    description: "Бой копит Энтропию (0/100). На полном заряде — 4 c КОНЦА МАТЕРИИ: враги замедлены и уязвимы, снаряды пробивают и наводятся, а убитые оставляют разрывы-порталы для ваших снарядов.",
+    apply: (s, _l) => { s.entropy = 0; s.voidTimer = 0; },
+  },
 ];
 
 export function calculatePlayerPower(state: PlayerState): number {
-  const rarityPoints = { common: 1, rare: 2.5, epic: 5, legendary: 9 } as const;
+  const rarityPoints = { common: 1, rare: 2.5, epic: 5, legendary: 9, mythic: 18 } as const;
   let upgradePoints = 0;
   for (const owned of state.upgrades) {
     const definition = ALL_UPGRADES.find(upgrade => upgrade.id === owned.id);
@@ -349,7 +403,7 @@ export function getUpgradeLevel(state: PlayerState, id: string): number {
 
 export function canUpgrade(state: PlayerState, def: UpgradeDef): boolean {
   const lvl = getUpgradeLevel(state, def.id);
-  const rarityLevelGate = { common: 1, rare: 3, epic: 7, legendary: 12 } as const;
+  const rarityLevelGate = { common: 1, rare: 3, epic: 7, legendary: 12, mythic: 9999 } as const;
   return lvl < def.maxLevel && state.level >= rarityLevelGate[def.rarity];
 }
 
@@ -362,7 +416,14 @@ const VOID_UPGRADES = new Set([
 
 export function rollUpgrades(state: PlayerState, count = 3, excludeIds: string[] = []): UpgradeDef[] {
   const excluded = new Set(excludeIds);
-  const available = ALL_UPGRADES.filter(u => canUpgrade(state, u) && !excluded.has(u.id));
+  const available = ALL_UPGRADES.filter(u =>
+    u.rarity !== "mythic" // мифики выпадают только через rollMythicDrop
+    && canUpgrade(state, u)
+    && !excluded.has(u.id)
+    // «Конденсатор щита» не имеет смысла без щита (сам «Энергетический щит»
+    // и создающие щит предметы остаются в пуле).
+    && !(u.id === "shield_regen" && !state.shield)
+  );
   // A maxed-out build must still resolve queued level-ups. Without a fallback,
   // two simultaneous levels could leave the player trapped in an empty panel.
   if (available.length === 0) return [LIMIT_BREAK];
@@ -432,7 +493,7 @@ export function rollPremiumUpgradeChoices(state: PlayerState, count = 3, exclude
     bonus = pickPremiumHighRarity(state, excluded);
   }
   if (!bonus) return picked;
-  const order = { common: 0, rare: 1, epic: 2, legendary: 3 } as const;
+  const order = { common: 0, rare: 1, epic: 2, legendary: 3, mythic: 4 } as const;
   let worst = 0;
   for (let i = 1; i < picked.length; i++) {
     if (order[picked[i].rarity] < order[picked[worst].rarity]) worst = i;
@@ -471,7 +532,10 @@ export function applyUpgrade(state: PlayerState, def: UpgradeDef): PlayerState {
   state.auraDamage = Math.min(state.auraDamage, 12);
   state.explosionRadius = Math.min(state.explosionRadius, 220);
   state.goldMultiplier = Math.min(state.goldMultiplier, 8);
-  state.speed = Math.min(state.speed, 8.5);
+  // 10.5: полный стек мобильности (Форсаж ×4 + Турбо ×3) должен работать,
+  // а не упираться в старый потолок 8.5.
+  state.speed = Math.min(state.speed, 10.5);
+  state.homingStrength = Math.min(state.homingStrength, 0.15);
   state.critChance = Math.min(state.critChance, 0.65);
   state.critMultiplier = Math.min(state.critMultiplier, 6);
   state.burnChance = Math.min(state.burnChance, 0.65);

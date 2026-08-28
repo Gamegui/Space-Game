@@ -45,7 +45,14 @@ export interface Bullet {
   color: string;
   pierce: number;
   homing: boolean;
-  homingTarget?: number;
+  /** Удержанная цель самонаведения (до смерти/выхода за дистанцию). */
+  target?: Enemy;
+  /** Уже поражённые этим снарядом цели (не даёт пробитию бить одну цель повторно). */
+  hitList?: Enemy[];
+  /** Оставшиеся кадры полёта (undefined = без ограничения). */
+  life?: number;
+  /** Разрывы Пустоты: сколько раз снаряд телепортировался (макс. 2). */
+  voidJumps?: number;
 }
 
 export interface Enemy {
@@ -147,7 +154,7 @@ export interface UpgradeDef {
   name: string;
   description: string;
   icon: string;
-  rarity: "common" | "rare" | "epic" | "legendary";
+  rarity: "common" | "rare" | "epic" | "legendary" | "mythic";
   category: string;
   maxLevel: number;
   apply: (state: PlayerState, level: number) => void;
@@ -171,18 +178,30 @@ export interface PlayerState {
   piercing: number;
   multishot: number;
   spreadAngle: number;
+  /** «Широкий сектор»: доля сужения разброса крайних снарядов (0..0.2). */
+  spreadTighten: number;
   homing: boolean;
   homingStrength: number;
   satellites: Satellite[];
   drones: Drone[];
   shield: Shield | null;
+  /** «Конденсатор щита»: множитель скорости восстановления щита. */
+  shieldRegenMultiplier: number;
   xp: number;
   level: number;
   xpToNext: number;
   upgrades: PlayerUpgrade[];
   synergies: string[];
+  /** Evolutions triggered this run (ids from evolutions.ts). */
+  evolved: string[];
   invincTimer: number;
   magnetRange: number;
+  /** «Магнитный гравизахват»: бонус к скорости притяжения опыта. */
+  magnetPullBonus: number;
+  /** «Ускоритель плазмы»: бонус к дальности полёта снарядов. */
+  bulletRangeBonus: number;
+  /** «Турбодвигатель»: кадры непрерывного движения (для бонуса разгона). */
+  turboStreak: number;
   aura: boolean;
   auraDamage: number;
   auraTimer: number;
@@ -216,6 +235,37 @@ export interface PlayerState {
   voidSoulIdleTimer: number;
   voidEchoTimer: number;
   voidEchoPos: Vec2;
+  /** «ГОЛОД БЕЗДНЫ» (синергия Немезиды): убийства лечат и кормят души. */
+  voidHunger: boolean;
+  /** «ПРИЗРАЧНЫЙ АРСЕНАЛ» (синергия Немезиды): усиление снарядов в фазе. */
+  ghostArsenal: boolean;
+  // ─── МИФИЧЕСКИЕ УЛУЧШЕНИЯ (mythic tier) ────────────────────────────────────
+  /** ☀️ Сердце Сверхновой: заряд звёздного ядра 0..100 (счётчик, без частиц). */
+  novaCore: number;
+  /** Задержка перед взрывом сверхновой (кадры). */
+  novaFuseTimer: number;
+  /** 🌌 Пожиратель Звёзд: заряд гравитационного коллапса 0..50. */
+  collapseCharge: number;
+  /** ⚡ Судный Разряд: гнев бури 0..10 (крит-заряды). */
+  wrath: number;
+  /** 🔥 Абсолютный Реактор: перегрузка 0..100 (%). */
+  overdriveCharge: number;
+  /** Кадры активного режима ABSOLUTE OVERDRIVE. */
+  overdriveTimer: number;
+  /** Кадры восстановления реактора (заряд не копится). */
+  overdriveCooldown: number;
+  /** Кадр последнего выстрела — для непрерывности стрельбы. */
+  lastShotFrame: number;
+  /** 🛰️ Последний Флот: заряд армадного канала 0..100. */
+  fleetCharge: number;
+  /** Кадры синхронного залпа FINAL FLEET SALVO. */
+  fleetSalvoTimer: number;
+  /** Накопления эффективности залпа (0..10). */
+  fleetStacks: number;
+  /** 👁️ Конец Материи: энтропия пустоты 0..100. */
+  entropy: number;
+  /** Кадры действия КОНЦА МАТЕРИИ. */
+  voidTimer: number;
   blackHole: boolean;
   blackHoleTimer: number;
   blackHoleCooldown: number;
@@ -274,4 +324,4 @@ export interface Mine {
   radius: number;
 }
 
-export type GamePhase = "menu" | "ship_select" | "tutorial" | "playing" | "upgrade" | "route" | "boss_intro" | "paused" | "dead" | "victory";
+export type GamePhase = "menu" | "ship_select" | "tutorial" | "playing" | "upgrade" | "route" | "boss_intro" | "paused" | "dead" | "victory" | "hangar";

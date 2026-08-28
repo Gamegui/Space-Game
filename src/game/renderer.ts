@@ -9,7 +9,62 @@ export const H = 720;
 
 let renderPerformanceTier: 0 | 1 | 2 = 2;
 export function setRenderPerformanceTier(tier: 0 | 1 | 2) {
+  // No cache invalidation here: the tier is part of every sprite key, so a
+  // tier switch simply bakes the new tier's sprites once. Clearing the cache
+  // on every switch re-baked ~100+ glow sprites in a single frame and read
+  // as a hard freeze while the auto quality controller oscillated.
   renderPerformanceTier = tier;
+}
+
+// ─── Sprite cache (render hot-path optimization) ─────────────────────────────
+// shadowBlur is by far the most expensive Canvas2D operation. The premium
+// Wraith used to pay for it up to ~40× per frame (echo clone + double-exposure
+// ghosts + main body, each with several glowing fills/strokes) and then again
+// for every homing bolt (per-bullet gradient + shadowBlur, and the Wraith
+// fields roughly twice the bullets for twice as long). These helpers bake the
+// glow into an offscreen canvas once and blit it — same visuals, a fraction of
+// the per-frame cost. Sprites are supersampled 2× so rotated blits stay crisp.
+
+const SPRITE_SCALE = 2;
+const SPRITE_CACHE_LIMIT = 512;
+
+function makeSprite(w: number, h: number): [HTMLCanvasElement, CanvasRenderingContext2D] {
+  // Guard against pathological dimensions: a 0-sized canvas makes drawImage
+  // throw InvalidStateError and kill the whole requestAnimationFrame loop.
+  const safe = (v: number) => (Number.isFinite(v) ? Math.min(2048, Math.max(1, Math.ceil(v * SPRITE_SCALE))) : 16);
+  const canvas = document.createElement("canvas");
+  canvas.width = safe(w);
+  canvas.height = safe(h);
+  const sctx = canvas.getContext("2d")!;
+  sctx.scale(SPRITE_SCALE, SPRITE_SCALE);
+  return [canvas, sctx];
+}
+
+function blitSprite(ctx: CanvasRenderingContext2D, sprite: HTMLCanvasElement, w: number, h: number) {
+  ctx.drawImage(sprite, -w / 2, -h / 2, w, h);
+}
+
+function cacheSprite(cache: Map<string, HTMLCanvasElement>, key: string, w: number, h: number, paint: (sctx: CanvasRenderingContext2D) => void): HTMLCanvasElement {
+  if (cache.size >= SPRITE_CACHE_LIMIT) {
+    // Evict the oldest quarter only (Map iterates in insertion order). A full
+    // clear() here re-baked every sprite in the next frame — with ~120 enemy
+    // bullet variants (16 colors × 7 sizes, per quality tier) that turned
+    // into a permanent bake-every-frame storm that froze the game.
+    let toDrop = SPRITE_CACHE_LIMIT >> 2;
+    for (const stale of cache.keys()) {
+      if (toDrop-- <= 0) break;
+      cache.delete(stale);
+    }
+  }
+  const [canvas, sctx] = makeSprite(w, h);
+  paint(sctx);
+  cache.set(key, canvas);
+  return canvas;
+}
+
+/** Test hook: total baked sprite count (bounded by SPRITE_CACHE_LIMIT). */
+export function spriteCacheSize(): number {
+  return bulletSprites.size + wraithBodySprites.size + wraithCoreSprites.size;
 }
 
 // ─── Void Guard omen ──────────────────────────────────────────────────────────
@@ -61,34 +116,80 @@ export function drawStars(ctx: CanvasRenderingContext2D, stars: Star[]) {
 }
 
 // ─── Background ───────────────────────────────────────────────────────────────
+// Туманность запекается один раз в offscreen-канвас: раньше каждый кадр
+// создавал 3 полноэкранных градиента и делал 3 полноэкранные заливки —
+// постоянные ~1-3 мс даже на пустом экране. Лёгкое покачивание имитируем
+// смещением блита (визуально неотличимо от прежнего sin-дрейфа).
+let nebulaSprite: HTMLCanvasElement | null = null;
+
 export function drawBackground(ctx: CanvasRenderingContext2D, frame: number) {
+  if (!nebulaSprite) {
+    const [canvas, sctx] = makeSprite(W + 80, H);
+    const colors = [
+      ["rgba(60,20,100,0.14)", W * 0.3, H * 0.4, 360],
+      ["rgba(10,40,120,0.12)",  W * 0.7, H * 0.6, 300],
+      ["rgba(100,10,60,0.10)", W * 0.5, H * 0.2, 260],
+    ] as const;
+    for (const [color, cx, cy, r] of colors) {
+      const grd = sctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+      grd.addColorStop(0, color);
+      grd.addColorStop(1, "rgba(0,0,0,0)");
+      sctx.fillStyle = grd;
+      sctx.fillRect(0, 0, W + 80, H);
+    }
+    nebulaSprite = canvas;
+  }
   ctx.fillStyle = "#03050d";
   ctx.fillRect(0, 0, W, H);
-
-  // Deep Space Nebula Glow
-  const t = frame * 0.002;
-  const colors = [
-    ["rgba(60,20,100,0.14)", W * 0.3, H * 0.4, 360],
-    ["rgba(10,40,120,0.12)",  W * 0.7, H * 0.6, 300],
-    ["rgba(100,10,60,0.10)", W * 0.5, H * 0.2, 260],
-  ] as const;
-  for (const [color, cx, cy, r] of colors) {
-    const grd = ctx.createRadialGradient(cx + Math.sin(t) * 20, cy, 0, cx, cy, r);
-    grd.addColorStop(0, color);
-    grd.addColorStop(1, "rgba(0,0,0,0)");
-    ctx.fillStyle = grd;
-    ctx.fillRect(0, 0, W, H);
-  }
+  const drift = Math.sin(frame * 0.002) * 20 - 20;
+  ctx.drawImage(nebulaSprite, drift, 0, W + 80, H);
 }
 
 // ─── Player ───────────────────────────────────────────────────────────────────
 // The Wraith's signature silhouette: a slim void dagger with membrane wings
 // and a pulsing core. Distinct from the shared fighter hull of the other ships.
-function drawWraithBody(ctx: CanvasRenderingContext2D, frame: number, phased: boolean) {
-  const main = phased ? "#f0abfc" : "#e879f9";
+// The static glowing geometry (wings/hull/cockpit) is baked into offscreen
+// sprites per variant — the ship renders up to 4 body copies per frame (echo
+// clone + phased double-exposure ghosts + main hull), which with live
+// shadowBlur was the Wraith's single biggest frame cost.
+type WraithBodyVariant = "idle" | "phased" | "echo";
+
+const WRAITH_SPRITE_SIZE = 120; // body spans +/-34 px plus shadowBlur bleed
+const wraithBodySprites = new Map<string, HTMLCanvasElement>();
+const wraithCoreSprites = new Map<string, HTMLCanvasElement>();
+
+function getWraithBodySprite(variant: WraithBodyVariant): HTMLCanvasElement {
+  const cached = wraithBodySprites.get(variant);
+  if (cached) return cached;
+  return cacheSprite(wraithBodySprites, variant, WRAITH_SPRITE_SIZE, WRAITH_SPRITE_SIZE, sctx => {
+    sctx.translate(WRAITH_SPRITE_SIZE / 2, WRAITH_SPRITE_SIZE / 2);
+    drawWraithBodyShapes(sctx, variant);
+  });
+}
+
+function getWraithCoreSprite(variant: WraithBodyVariant): HTMLCanvasElement {
+  const cached = wraithCoreSprites.get(variant);
+  if (cached) return cached;
+  const size = 24;
+  return cacheSprite(wraithCoreSprites, variant, size, size, sctx => {
+    sctx.translate(size / 2, size / 2);
+    const coreColor = variant === "echo" ? "#a5f3fc" : variant === "phased" ? "#ffffff" : "#f0abfc";
+    const g = sctx.createRadialGradient(0, 0, 0, 0, 0, size / 2);
+    g.addColorStop(0, "#ffffff");
+    g.addColorStop(0.3, coreColor);
+    g.addColorStop(1, variant === "echo" ? "rgba(165,243,252,0)" : "rgba(240,171,252,0)");
+    sctx.fillStyle = g;
+    sctx.beginPath();
+    sctx.arc(0, 0, size / 2, 0, Math.PI * 2);
+    sctx.fill();
+  });
+}
+
+function drawWraithBodyShapes(ctx: CanvasRenderingContext2D, variant: WraithBodyVariant) {
+  const main = variant === "phased" ? "#f0abfc" : variant === "echo" ? "#67e8f9" : "#e879f9";
 
   // Membrane wings
-  ctx.shadowBlur = phased ? 16 : 10;
+  ctx.shadowBlur = variant === "idle" ? 10 : 16;
   ctx.shadowColor = main;
   ctx.fillStyle = "rgba(232,121,249,0.22)";
   ctx.strokeStyle = main;
@@ -107,7 +208,7 @@ function drawWraithBody(ctx: CanvasRenderingContext2D, frame: number, phased: bo
   ctx.fill(); ctx.stroke();
 
   // Blade hull
-  ctx.shadowBlur = phased ? 18 : 12;
+  ctx.shadowBlur = variant === "idle" ? 12 : 18;
   ctx.shadowColor = main;
   ctx.fillStyle = "#150a1e";
   ctx.strokeStyle = main;
@@ -126,8 +227,7 @@ function drawWraithBody(ctx: CanvasRenderingContext2D, frame: number, phased: bo
   ctx.lineTo(-9, 2);
   ctx.lineTo(-6.5, -20);
   ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
+  ctx.fill(); ctx.stroke();
 
   // Cockpit
   ctx.shadowBlur = 8;
@@ -135,29 +235,55 @@ function drawWraithBody(ctx: CanvasRenderingContext2D, frame: number, phased: bo
   ctx.beginPath();
   ctx.ellipse(0, -11, 4, 9.5, 0, 0, Math.PI * 2);
   ctx.fill();
-
-  // Pulsing void core
-  const coreR = 3 + Math.sin(frame * 0.3) * 1.3;
-  ctx.shadowBlur = 12;
-  ctx.fillStyle = phased ? "#ffffff" : "#f0abfc";
-  ctx.beginPath();
-  ctx.arc(0, 6, Math.max(1.5, coreR), 0, Math.PI * 2);
-  ctx.fill();
+  ctx.shadowBlur = 0;
 }
 
-// Arena-wide void tint while the Wraith's phase window is open.
+function drawWraithBody(ctx: CanvasRenderingContext2D, frame: number, variant: WraithBodyVariant) {
+  blitSprite(ctx, getWraithBodySprite(variant), WRAITH_SPRITE_SIZE, WRAITH_SPRITE_SIZE);
+  // Pulsing void core — a cached glow sprite scaled by the pulse instead of a
+  // live shadowBlur'd circle. Насыщенность Бездны усиливает свечение ядра.
+  const soulsFrac = ctxSoulsFraction;
+  const coreR = (3 + Math.sin(frame * 0.3) * 1.3) * (1 + soulsFrac * 0.5);
+  const glow = (8 + Math.max(1.5, coreR) * 3) * (1 + soulsFrac * 0.6);
+  ctx.drawImage(getWraithCoreSprite(variant), -glow / 2, 6 - glow / 2, glow, glow);
+}
+
+// Доля насыщения души (0..1) для визуальной эскалации корпуса «Немезиды».
+// Устанавливается drawPlayer перед отрисовкой (25/50/75/100% → рост свечения,
+// длины следа и яркости крыльев).
+let ctxSoulsFraction = 0;
+
+// Arena-wide void tint while the Wraith's phase window is open. The gradient
+// is baked once at the maximum possible alpha and blitted with a scaled
+// globalAlpha — compositing is linear in source alpha, so the result is
+// identical to the old per-frame full-screen gradient at a fraction of the cost.
+const VOID_VIGNETTE_MAX_ALPHA = 0.12; // max of (0.07 + 0.05·sin) × min(1, intensity+0.45)
+let vignetteSprite: HTMLCanvasElement | null = null;
+
 export function drawVoidPhaseVignette(ctx: CanvasRenderingContext2D, frame: number, intensity: number) {
-  if (renderPerformanceTier === 0) return; // per-frame gradient: too dear for low-end
+  if (renderPerformanceTier === 0) return; // full-screen tint: too dear for low-end
+  if (!vignetteSprite) {
+    vignetteSprite = document.createElement("canvas");
+    vignetteSprite.width = W;
+    vignetteSprite.height = H;
+    const sctx = vignetteSprite.getContext("2d")!;
+    const g = sctx.createRadialGradient(W / 2, H / 2, H * 0.3, W / 2, H / 2, H * 0.72);
+    g.addColorStop(0, "rgba(168,85,247,0)");
+    g.addColorStop(1, `rgba(192,38,211,${VOID_VIGNETTE_MAX_ALPHA})`);
+    sctx.fillStyle = g;
+    sctx.fillRect(0, 0, W, H);
+  }
   const a = (0.07 + 0.05 * Math.sin(frame * 0.35)) * Math.min(1, intensity + 0.45);
-  const g = ctx.createRadialGradient(W / 2, H / 2, H * 0.3, W / 2, H / 2, H * 0.72);
-  g.addColorStop(0, "rgba(168,85,247,0)");
-  g.addColorStop(1, `rgba(192,38,211,${a.toFixed(3)})`);
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, W, H);
+  ctx.globalAlpha = a / VOID_VIGNETTE_MAX_ALPHA;
+  ctx.drawImage(vignetteSprite, 0, 0);
+  ctx.globalAlpha = 1;
 }
 
 export function drawPlayer(ctx: CanvasRenderingContext2D, state: PlayerState, frame: number) {
   const { pos, invincTimer, shield, satellites, drones, aura, shipClass, rapidBoostTimer } = state;
+  // Насыщенность Бездны (0..1) — визуальная эскалация премиальной механики:
+  // свечение ядра, длина следа и яркость крыльев растут на 25/50/75/100%.
+  ctxSoulsFraction = shipClass === "void_wraith" ? Math.min(1, state.voidSouls / 20) : 0;
 
   // Phase echo: the Wraith's fading clone left behind by the blink. Drawn
   // before the damage-blink early return so it survives the ship's flash.
@@ -169,16 +295,16 @@ export function drawPlayer(ctx: CanvasRenderingContext2D, state: PlayerState, fr
     ctx.translate(state.voidEchoPos.x, state.voidEchoPos.y);
     if (renderPerformanceTier === 0) {
       const eg = ctx.createRadialGradient(0, 0, 2, 0, 0, 26);
-      eg.addColorStop(0, "rgba(232,121,249,0.5)");
-      eg.addColorStop(1, "rgba(232,121,249,0)");
+      eg.addColorStop(0, "rgba(103,232,249,0.5)");
+      eg.addColorStop(1, "rgba(103,232,249,0)");
       ctx.fillStyle = eg;
       ctx.beginPath();
       ctx.arc(0, 0, 26, 0, Math.PI * 2);
       ctx.fill();
     } else {
-      ctx.shadowBlur = renderPerformanceTier === 1 ? 10 : 14;
-      ctx.shadowColor = "#e879f9";
-      drawWraithBody(ctx, frame, false);
+      // Эхо визуально отличается от самого корабля: бледно-циановый силуэт
+      // призрачного двойника (корабль остаётся фиолетовым).
+      drawWraithBody(ctx, frame, "echo");
     }
     ctx.restore();
   }
@@ -238,13 +364,18 @@ export function drawPlayer(ctx: CanvasRenderingContext2D, state: PlayerState, fr
   eg.addColorStop(0.5, "rgba(99,102,241,0.5)");
   eg.addColorStop(1, "rgba(0,0,0,0)");
   ctx.fillStyle = eg;
-  const trailH = 22 + Math.sin(frame * 0.3) * 8;
+  // След растёт в Фазе Бездны и от накопленных душ — сила «читается» глазами.
+  const phasedNow = shipClass === "void_wraith" && state.ghostTimer > 0;
+  const trailBoost = (phasedNow ? 1.6 : 1) * (1 + ctxSoulsFraction * 0.5);
+  const trailH = (22 + Math.sin(frame * 0.3) * 8) * trailBoost;
+  ctx.globalAlpha = phasedNow ? 0.95 : 1;
   ctx.beginPath();
   ctx.moveTo(-8, 14);
   ctx.lineTo(0, 14 + trailH);
   ctx.lineTo(8, 14);
   ctx.closePath();
   ctx.fill();
+  ctx.globalAlpha = 1;
 
   // The Wraith drags two side plasma wisps behind its blade hull.
   if (shipClass === "void_wraith" && renderPerformanceTier >= 1) {
@@ -294,25 +425,31 @@ export function drawPlayer(ctx: CanvasRenderingContext2D, state: PlayerState, fr
         ctx.fill();
       }
     }
-    ctx.globalAlpha = phased ? 1 : 0.82 + 0.18 * Math.sin(frame * 0.22);
+    // Переход в фазу: на первые ~12 кадров корпус почти исчезает и быстро
+    // «проявляется» обратно — ощущение смены состояния, а не просто свечения.
+    const phaseFade = phased && state.ghostTimer > 108
+      ? 0.15 + (120 - state.ghostTimer) / 12 * 0.85
+      : 1;
+    // globalAlpha > 1 молча игнорируется canvas API — обязательно клампим.
+    ctx.globalAlpha = Math.min(1, (phased ? phaseFade : 0.82 + 0.18 * Math.sin(frame * 0.22)) * (1 + ctxSoulsFraction * 0.18));
     if (phased && renderPerformanceTier === 2) {
       // Double-exposure ghosting while phased (high tier only).
       for (const gx of [3, -3]) {
         ctx.save();
-        ctx.globalAlpha = 0.28;
+        ctx.globalAlpha = 0.28 * phaseFade;
         ctx.translate(gx, -2);
-        drawWraithBody(ctx, frame, true);
+        drawWraithBody(ctx, frame, "phased");
         ctx.restore();
       }
     }
     if (phased && renderPerformanceTier === 1) {
       ctx.save();
-      ctx.globalAlpha = 0.28;
+      ctx.globalAlpha = 0.28 * phaseFade;
       ctx.translate(3, -2);
-      drawWraithBody(ctx, frame, true);
+      drawWraithBody(ctx, frame, "phased");
       ctx.restore();
     }
-    drawWraithBody(ctx, frame, phased);
+    drawWraithBody(ctx, frame, phased ? "phased" : "idle");
     ctx.globalAlpha = 1;
   } else {
     ctx.shadowBlur = 15;
@@ -486,7 +623,11 @@ export function drawEnemy(ctx: CanvasRenderingContext2D, e: Enemy, frame: number
     ctx.fill();
   }
 
-  ctx.shadowBlur = e.isBoss ? 25 : (e.isElite ? 18 : 12);
+  // Стоимость shadowBlur растёт квадратично от радиуса: 25/18/12 на каждом
+  // из 60-80 врагов валили кадр. Понижено и огейчено по тирам качества.
+  ctx.shadowBlur = renderPerformanceTier === 0 ? 0
+    : renderPerformanceTier === 1 ? (e.isBoss ? 5 : e.isElite ? 4 : 2)
+    : (e.isBoss ? 14 : e.isElite ? 10 : 6);
   ctx.shadowColor = e.isElite ? "#fbbf24" : stroke;
 
   const speedFactor = e.frozen > 0 ? 0 : 1;
@@ -807,81 +948,220 @@ function drawBossOmega(ctx: CanvasRenderingContext2D, fill: string, stroke: stri
 }
 
 // ─── Bullets ──────────────────────────────────────────────────────────────────
+// Player bullets used to pay a live createLinearGradient + shadowBlur(12) each,
+// every frame. The Wraith's twin homing stream fields roughly twice the bullets
+// for twice as long, so each bullet is now a cached glow sprite (keyed by
+// color/size/tier, supersampled 2× and rotated on blit).
+const bulletSprites = new Map<string, HTMLCanvasElement>();
+
+function getPlayerBulletSprite(color: string, size: number): HTMLCanvasElement {
+  // Clamp: a non-finite size would create a NaN gradient (a throwing op in
+  // real browsers) — fall back to a normal bullet instead of killing rAF.
+  const s = Number.isFinite(size) ? Math.min(64, Math.max(0.5, size)) : 3;
+  const key = `p|${renderPerformanceTier}|${color}|${s.toFixed(1)}`;
+  const cached = bulletSprites.get(key);
+  if (cached) return cached;
+  const len = s * (renderPerformanceTier === 0 ? 2.2 : 3.5);
+  const pad = renderPerformanceTier === 2 ? 16 : renderPerformanceTier === 1 ? 8 : 2;
+  const w = s * 2 + pad * 2;
+  const h = len * 2 + pad * 2;
+  return cacheSprite(bulletSprites, key, w, h, sctx => {
+    sctx.translate(w / 2, h / 2);
+    if (renderPerformanceTier === 0) {
+      sctx.fillStyle = color;
+    } else {
+      sctx.shadowBlur = renderPerformanceTier === 1 ? 4 : 12;
+      sctx.shadowColor = color;
+      const g = sctx.createLinearGradient(0, -len, 0, len * 0.5);
+      g.addColorStop(0, "#fff");
+      g.addColorStop(0.3, color);
+      g.addColorStop(1, "rgba(0,0,0,0)");
+      sctx.fillStyle = g;
+    }
+    sctx.beginPath();
+    sctx.ellipse(0, 0, s, len, 0, 0, Math.PI * 2);
+    sctx.fill();
+  });
+}
+
+function getEnemyBulletSprite(color: string, size: number): HTMLCanvasElement {
+  const s = Number.isFinite(size) ? Math.min(64, Math.max(0.5, size)) : 3;
+  const key = `e|${renderPerformanceTier}|${color}|${s.toFixed(1)}`;
+  const cached = bulletSprites.get(key);
+  if (cached) return cached;
+  const pad = renderPerformanceTier === 2 ? 12 : renderPerformanceTier === 1 ? 6 : 2;
+  const w = s * 2 + pad * 2;
+  return cacheSprite(bulletSprites, key, w, w, sctx => {
+    sctx.translate(w / 2, w / 2);
+    if (renderPerformanceTier > 0) {
+      sctx.shadowBlur = renderPerformanceTier === 1 ? 4 : 8;
+      sctx.shadowColor = color;
+    }
+    sctx.fillStyle = color;
+    sctx.beginPath();
+    sctx.arc(0, 0, s, 0, Math.PI * 2);
+    sctx.fill();
+    sctx.fillStyle = "#fff";
+    sctx.globalAlpha = 0.6;
+    sctx.beginPath();
+    sctx.arc(0, 0, s * 0.4, 0, Math.PI * 2);
+    sctx.fill();
+  });
+}
+
 export function drawBullet(ctx: CanvasRenderingContext2D, b: Bullet) {
   ctx.save();
   ctx.translate(b.pos.x, b.pos.y);
-  ctx.shadowBlur = renderPerformanceTier === 0 ? 0 : renderPerformanceTier === 1 ? 4 : (b.fromPlayer ? 12 : 8);
-  ctx.shadowColor = b.color;
-
   if (b.fromPlayer) {
-    const len = b.size * (renderPerformanceTier === 0 ? 2.2 : 3.5);
     const angle = Math.atan2(b.vel.y, b.vel.x);
     ctx.rotate(angle + Math.PI / 2);
-    if (renderPerformanceTier === 0) {
-      ctx.fillStyle = b.color;
-    } else {
-      const g = ctx.createLinearGradient(0, -len, 0, len * 0.5);
-      g.addColorStop(0, "#fff");
-      g.addColorStop(0.3, b.color);
-      g.addColorStop(1, "rgba(0,0,0,0)");
-      ctx.fillStyle = g;
-    }
-    ctx.beginPath();
-    ctx.ellipse(0, 0, b.size, len, 0, 0, Math.PI * 2);
-    ctx.fill();
+    const sprite = getPlayerBulletSprite(b.color, b.size);
+    blitSprite(ctx, sprite, sprite.width / SPRITE_SCALE, sprite.height / SPRITE_SCALE);
   } else {
-    ctx.fillStyle = b.color;
-    ctx.beginPath();
-    ctx.arc(0, 0, b.size, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = "#fff";
-    ctx.globalAlpha = 0.6;
-    ctx.beginPath();
-    ctx.arc(0, 0, b.size * 0.4, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.globalAlpha = 1;
+    const sprite = getEnemyBulletSprite(b.color, b.size);
+    blitSprite(ctx, sprite, sprite.width / SPRITE_SCALE, sprite.height / SPRITE_SCALE);
   }
   ctx.restore();
+}
+
+// ─── Мифические сущности (векторная отрисовка, без частиц) ───────────────────
+/** 🌌 Сингулярность «Пожиратель Звёзд»: тёмное ядро с вращающимися дугами. */
+export function drawSingularity(ctx: CanvasRenderingContext2D, pos: { x: number; y: number }, frame: number, progress: number) {
+  ctx.save();
+  ctx.translate(pos.x, pos.y);
+  const r = 26 + progress * 14;
+  // Гравитационная воронка.
+  const g = ctx.createRadialGradient(0, 0, 2, 0, 0, 90);
+  g.addColorStop(0, "rgba(0,0,0,0.9)");
+  g.addColorStop(0.5, "rgba(88,28,135,0.35)");
+  g.addColorStop(1, "rgba(88,28,135,0)");
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(0, 0, 90, 0, Math.PI * 2); ctx.fill();
+  // Вращающиеся дуги захвата.
+  ctx.strokeStyle = `rgba(196,132,252,${0.5 + progress * 0.4})`;
+  ctx.lineWidth = 2;
+  for (let i = 0; i < 3; i++) {
+    ctx.beginPath();
+    ctx.arc(0, 0, r + i * 10, frame * 0.04 + i * 2.1, frame * 0.04 + i * 2.1 + 1.9);
+    ctx.stroke();
+  }
+  // Ядро.
+  ctx.fillStyle = "#000";
+  ctx.beginPath(); ctx.arc(0, 0, r * 0.55, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = "#c084fc";
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** 👁 Разрывы Пустоты: пульсирующие кольца-порталы. */
+export function drawVoidFractures(ctx: CanvasRenderingContext2D, fractures: { pos: { x: number; y: number }; life: number }[], frame: number) {
+  for (const f of fractures) {
+    const alpha = Math.min(1, f.life / 60);
+    const pulse = 1 + Math.sin(frame * 0.2 + f.pos.x) * 0.15;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = "#e879f9";
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(f.pos.x, f.pos.y, 16 * pulse, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = "rgba(232,121,249,0.4)";
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(f.pos.x, f.pos.y, 24 * pulse, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+/** ☀️/🔥 Свечение мификов на корпусе: ядро сверхновой и режим перегрузки. */
+export function drawMythicAuras(ctx: CanvasRenderingContext2D, state: PlayerState, frame: number) {
+  // Ядро сверхновой: эскалация свечения по заряду (25/50/75/100%).
+  if (state.novaCore > 0) {
+    const frac = state.novaCore / 100;
+    const flicker = state.novaCore >= 100 ? 1 + Math.sin(frame * 0.5) * 0.25 : 1;
+    const r = (20 + frac * 46) * flicker;
+    const g = ctx.createRadialGradient(0, 0, 4, 0, 0, r);
+    g.addColorStop(0, `rgba(253,224,71,${0.16 + frac * 0.34})`);
+    g.addColorStop(1, "rgba(253,224,71,0)");
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
+  }
+  // ABSOLUTE OVERDRIVE: оранжевое пламя реактора.
+  if (state.overdriveTimer > 0) {
+    const r = 60 + Math.sin(frame * 0.6) * 8;
+    const g = ctx.createRadialGradient(0, 0, 6, 0, 0, r);
+    g.addColorStop(0, "rgba(251,146,60,0.4)");
+    g.addColorStop(1, "rgba(251,146,60,0)");
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
+  }
 }
 
 // ─── Particles ────────────────────────────────────────────────────────────────
+// Живой shadowBlur на каждую частицу (до 1000 за кадр) и был вторым источником
+// фриза после массовых взрывов: свечение теперь запечено в спрайт по цвету и
+// блитится одним drawImage с масштабом и альфой. Визуально — то же свечение.
+const particleSprites = new Map<string, HTMLCanvasElement>();
+const PARTICLE_SPRITE_SIZE = 32;
+
+function getParticleSprite(color: string): HTMLCanvasElement {
+  const cached = particleSprites.get(color);
+  if (cached) return cached;
+  return cacheSprite(particleSprites, color, PARTICLE_SPRITE_SIZE, PARTICLE_SPRITE_SIZE, sctx => {
+    sctx.translate(PARTICLE_SPRITE_SIZE / 2, PARTICLE_SPRITE_SIZE / 2);
+    const g = sctx.createRadialGradient(0, 0, 0, 0, 0, PARTICLE_SPRITE_SIZE / 2);
+    g.addColorStop(0, "#ffffff");
+    g.addColorStop(0.35, color);
+    g.addColorStop(1, "rgba(0,0,0,0)");
+    sctx.fillStyle = g;
+    sctx.beginPath();
+    sctx.arc(0, 0, PARTICLE_SPRITE_SIZE / 2, 0, Math.PI * 2);
+    sctx.fill();
+  });
+}
+
 export function drawParticle(ctx: CanvasRenderingContext2D, p: Particle) {
   const alpha = (p.life / p.maxLife);
-  ctx.save();
+  const r = p.size * alpha;
   ctx.globalAlpha = alpha;
-  if (p.glow && renderPerformanceTier > 0) { ctx.shadowBlur = renderPerformanceTier === 1 ? 3 : 8; ctx.shadowColor = p.color; }
+  if (renderPerformanceTier > 0 && p.glow) {
+    // Спрайт свечения: диаметр ≈ 4× радиуса частицы (эффект blur 8).
+    const glow = r * 4;
+    ctx.drawImage(getParticleSprite(p.color), p.pos.x - glow / 2, p.pos.y - glow / 2, glow, glow);
+  }
   ctx.fillStyle = p.color;
-  ctx.beginPath();
   if (p.shape === "square") {
-    const s = p.size * alpha;
-    ctx.fillRect(p.pos.x - s / 2, p.pos.y - s / 2, s, s);
+    ctx.fillRect(p.pos.x - r, p.pos.y - r, r * 2, r * 2);
   } else {
-    ctx.arc(p.pos.x, p.pos.y, p.size * alpha, 0, Math.PI * 2);
+    ctx.beginPath();
+    ctx.arc(p.pos.x, p.pos.y, r, 0, Math.PI * 2);
     ctx.fill();
   }
-  ctx.restore();
+  ctx.globalAlpha = 1;
 }
 
 // ─── XP Orbs ──────────────────────────────────────────────────────────────────
+// До 220 сфер рисовали живой градиент + shadowBlur КАЖДЫЙ кадр — на массовых
+// убийствах это второй по тяжести рендер-путь. Одна запечённая сфера +
+// масштабирование пульса: визуально то же самое, стоимость — один drawImage.
+const xpOrbSprite: HTMLCanvasElement = (() => {
+  const size = 28;
+  const [canvas, sctx] = makeSprite(size, size);
+  sctx.translate(size / 2, size / 2);
+  const g = sctx.createRadialGradient(0, 0, 0, 0, 0, size / 2);
+  g.addColorStop(0, "#ffffff");
+  g.addColorStop(0.25, "#a78bfa");
+  g.addColorStop(0.6, "#7c3aed");
+  g.addColorStop(1, "rgba(124,58,237,0)");
+  sctx.fillStyle = g;
+  sctx.beginPath();
+  sctx.arc(0, 0, size / 2, 0, Math.PI * 2);
+  sctx.fill();
+  return canvas;
+})();
+
 export function drawXpOrb(ctx: CanvasRenderingContext2D, orb: XpOrb, frame: number) {
   const pulse = Math.sin(frame * 0.1 + orb.id * 0.5) * 2;
-  ctx.save();
-  ctx.translate(orb.pos.x, orb.pos.y);
-  ctx.shadowBlur = renderPerformanceTier === 0 ? 0 : renderPerformanceTier === 1 ? 3 : 8;
-  ctx.shadowColor = "#a78bfa";
-  if (renderPerformanceTier === 0) {
-    ctx.fillStyle = "#a78bfa";
-  } else {
-    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 6 + pulse);
-    g.addColorStop(0, "#fff");
-    g.addColorStop(0.4, "#a78bfa");
-    g.addColorStop(1, "#7c3aed");
-    ctx.fillStyle = g;
-  }
-  ctx.beginPath();
-  ctx.arc(0, 0, 5 + pulse, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
+  const d = (10 + pulse * 2) * 1.6; // видимая сфера + запечённое свечение
+  ctx.drawImage(xpOrbSprite, orb.pos.x - d / 2, orb.pos.y - d / 2, d, d);
 }
 
 // ─── Floating Text ────────────────────────────────────────────────────────────
@@ -891,7 +1171,8 @@ export function drawFloatingText(ctx: CanvasRenderingContext2D, ft: FloatingText
   ctx.globalAlpha = alpha;
   ctx.font = ft.isCrit ? `bold ${ft.size}px monospace` : `bold ${ft.size}px monospace`;
   ctx.fillStyle = ft.color;
-  ctx.shadowBlur = renderPerformanceTier === 0 ? 0 : ft.isCrit ? 10 : 4;
+  // Обычные числа урона — без тени (их сотни за кадр), криты — с лёгкой.
+  ctx.shadowBlur = renderPerformanceTier === 2 && ft.isCrit ? 6 : 0;
   ctx.shadowColor = ft.color;
   ctx.textAlign = "center";
   ctx.fillText(ft.text, ft.pos.x, ft.pos.y);
@@ -905,7 +1186,7 @@ export function drawPowerup(ctx: CanvasRenderingContext2D, p: PowerupItem, frame
   ctx.translate(p.pos.x, p.pos.y);
 
   // Outer glowing ring
-  ctx.shadowBlur = 12;
+  ctx.shadowBlur = renderPerformanceTier === 2 ? 6 : 0;
   ctx.shadowColor = "#38bdf8";
   ctx.strokeStyle = "#38bdf8";
   ctx.lineWidth = 2;
@@ -944,7 +1225,7 @@ export function drawMine(ctx: CanvasRenderingContext2D, mine: Mine, frame: numbe
   ctx.arc(0, 0, mine.radius, 0, Math.PI * 2);
   ctx.stroke();
   ctx.setLineDash([]);
-  ctx.shadowBlur = 10;
+  ctx.shadowBlur = renderPerformanceTier === 2 ? 5 : 0;
   ctx.shadowColor = "#f59e0b";
   ctx.fillStyle = "#fbbf24";
   ctx.beginPath();
@@ -963,7 +1244,7 @@ export function drawLightning(ctx: CanvasRenderingContext2D, l: Lightning) {
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.strokeStyle = "#fde047";
-  ctx.shadowBlur = 12;
+  ctx.shadowBlur = renderPerformanceTier === 2 ? 6 : 0;
   ctx.shadowColor = "#fde047";
   ctx.lineWidth = 2;
   ctx.beginPath();
@@ -1008,8 +1289,6 @@ export function drawExplosion(ctx: CanvasRenderingContext2D, pos: { x: number; y
   const alpha = 1 - progress;
   ctx.save();
   ctx.globalAlpha = alpha;
-  ctx.shadowBlur = 30;
-  ctx.shadowColor = "#f97316";
   const g = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, radius * progress);
   g.addColorStop(0, "#fff");
   g.addColorStop(0.3, "#fbbf24");

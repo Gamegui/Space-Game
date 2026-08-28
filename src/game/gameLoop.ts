@@ -8,6 +8,7 @@ import type { EnemyType } from "./types";
 import { getUpgradeLevel } from "./upgrades";
 import { audio } from "./audio";
 import { applyShipClassStats } from "./shipClasses";
+import { hasMythic } from "./mythics";
 
 export const W = 960;
 export const H = 720;
@@ -55,16 +56,22 @@ export function makeInitialPlayer(shipClass: ShipClassId = "interceptor"): Playe
     piercing: 0,
     multishot: 0,
     spreadAngle: 0,
+    spreadTighten: 0,
     homing: false,
     homingStrength: 0.06,
     satellites: [],
     drones: [],
     shield: { hp: 20, maxHp: 20, regenTimer: 0 },
+    shieldRegenMultiplier: 1,
     xp: 0, level: 1, xpToNext: 30,
     upgrades: [],
     synergies: [],
+    evolved: [],
     invincTimer: 0,
     magnetRange: 120,
+    magnetPullBonus: 0,
+    bulletRangeBonus: 0,
+    turboStreak: 0,
     aura: false, auraDamage: 0.25, auraTimer: 0,
     lasers: 0, laserTimer: 0,
     rearShot: false,
@@ -83,6 +90,14 @@ export function makeInitialPlayer(shipClass: ShipClassId = "interceptor"): Playe
     ghostMode: false, ghostTimer: 0,
     voidSouls: 0, voidSoulIdleTimer: 0,
     voidEchoTimer: 0, voidEchoPos: { x: W / 2, y: H - 100 },
+    voidHunger: false, ghostArsenal: false,
+    // МИФИКИ
+    novaCore: 0, novaFuseTimer: 0,
+    collapseCharge: 0,
+    wrath: 0,
+    overdriveCharge: 0, overdriveTimer: 0, overdriveCooldown: 0, lastShotFrame: -9999,
+    fleetCharge: 0, fleetSalvoTimer: 0, fleetStacks: 0,
+    entropy: 0, voidTimer: 0,
     blackHole: false, blackHoleTimer: 0, blackHoleCooldown: 0,
     nukeCharges: 1,
     nukeCooldown: 0,
@@ -116,27 +131,29 @@ export function makeInitialPlayer(shipClass: ShipClassId = "interceptor"): Playe
 }
 
 export function makeXpOrb(pos: Vec2, value: number): XpOrb {
-  return {
-    id: uid(),
-    pos: { x: pos.x + randRange(-10, 10), y: pos.y + randRange(-10, 10) },
-    vel: { x: randRange(-1.5, 1.5), y: randRange(-2, 0.5) },
-    value,
-    attracted: true,
-  };
+  const orb = xpOrbPool.pop() ?? { id: uid(), pos: { x: 0, y: 0 }, vel: { x: 0, y: 0 }, value: 0, attracted: true };
+  orb.pos.x = pos.x + randRange(-10, 10);
+  orb.pos.y = pos.y + randRange(-10, 10);
+  orb.vel.x = randRange(-1.5, 1.5);
+  orb.vel.y = randRange(-2, 0.5);
+  orb.value = value;
+  orb.attracted = true;
+  return orb;
 }
 
 export function makeFloatingText(pos: Vec2, text: string, color: string, isCrit = false): FloatingText {
-  return {
-    id: uid(),
-    pos: { x: pos.x + randRange(-8, 8), y: pos.y + randRange(-6, 6) },
-    vel: { x: randRange(-0.8, 0.8), y: -1.8 },
-    text,
-    color,
-    size: isCrit ? 18 : 13,
-    life: isCrit ? 45 : 35,
-    maxLife: isCrit ? 45 : 35,
-    isCrit,
-  };
+  const ft = floatingTextPool.pop() ?? { id: uid(), pos: { x: 0, y: 0 }, vel: { x: 0, y: 0 }, text: "", color: "", size: 13, life: 35, maxLife: 35, isCrit: false };
+  ft.pos.x = pos.x + randRange(-8, 8);
+  ft.pos.y = pos.y + randRange(-6, 6);
+  ft.vel.x = randRange(-0.8, 0.8);
+  ft.vel.y = -1.8;
+  ft.text = text;
+  ft.color = color;
+  ft.size = isCrit ? 18 : 13;
+  ft.life = isCrit ? 45 : 35;
+  ft.maxLife = ft.life;
+  ft.isCrit = isCrit;
+  return ft;
 }
 
 export function makePowerup(pos: Vec2, type: PowerupType): PowerupItem {
@@ -149,88 +166,263 @@ export function makePowerup(pos: Vec2, type: PowerupType): PowerupItem {
   };
 }
 
-function makeBurst(pos: Vec2, color: string, count: number, big = false): Particle[] {
-  const qualityMultiplier = runtimePerformanceTier === 0 ? 0.34 : runtimePerformanceTier === 1 ? 0.65 : 1;
-  const adjustedCount = Math.max(big ? 4 : 1, Math.ceil(count * qualityMultiplier));
-  return Array.from({ length: adjustedCount }, () => ({
-    id: uid(),
-    pos: { x: pos.x, y: pos.y },
-    vel: { x: randRange(-5, 5) * (big ? 1.5 : 1), y: randRange(-5, 5) * (big ? 1.5 : 1) },
-    life: randRange(20, big ? 60 : 40),
-    maxLife: big ? 60 : 40,
-    color,
-    size: randRange(big ? 4 : 2, big ? 10 : 6),
-    glow: true,
-    shape: "circle" as const,
-  }));
+// ─── Particle system: пул + жёсткие лимиты (критическая оптимизация) ────────
+// Правила: при достижении лимита новые ДЕКОРАТИВНЫЕ частицы не создаются,
+// но игровая логика (смерть, опыт, души, урон взрывов) работает как обычно.
+// Смерть частицы = возврат в пул (particle.active = false-эквивалент), а не
+// мусор для сборщика. Значения лимитов вынесены в константы для балансировки.
+export const PARTICLE_LIMITS = { low: 300, medium: 600, high: 1000 } as const;
+// Защита от массовой гибели: один кадр не может породить тысячи объектов.
+const MAX_PARTICLE_SPAWN_PER_FRAME = 80;
+const PARTICLE_POOL_CAP = 1000;
+
+const particlePool: Particle[] = [];
+let particlesSpawnedThisFrame = 0;
+let particleBudget: number = PARTICLE_LIMITS.high;
+let boundParticles: Particle[] | null = null;
+
+/** Привязка живого массива частиц и лимита к кадру (вызывается из stepGame
+ *  и при старте забега). Публично — для App.tsx и тестов. */
+export function bindParticleFrame(particles: Particle[], tier: 0 | 1 | 2): void {
+  boundParticles = particles;
+  particlesSpawnedThisFrame = 0;
+  particleBudget = tier === 0 ? PARTICLE_LIMITS.low : tier === 1 ? PARTICLE_LIMITS.medium : PARTICLE_LIMITS.high;
 }
 
-// Quality-tier particle budget, same curve as makeBurst so the premium FX
-// never overflow low-end hardware.
-function voidParticleBudget(count: number): number {
-  const qualityMultiplier = runtimePerformanceTier === 0 ? 0.34 : runtimePerformanceTier === 1 ? 0.65 : 1;
-  return Math.max(2, Math.ceil(count * qualityMultiplier));
+/** Адаптивная доля новых частиц от нагрузки (§9): до 30% лимита — 100%,
+ *  30–60% — 75%, 60–85% — 50%, 85–100% — 25%, на лимите — 0. */
+function particleLoadFactor(): number {
+  const load = (boundParticles?.length ?? 0) / particleBudget;
+  if (load >= 1) return 0;
+  if (load >= 0.85) return 0.25;
+  if (load >= 0.6) return 0.5;
+  if (load >= 0.3) return 0.75;
+  return 1;
+}
+
+function acquireParticle(): Particle | null {
+  // Жёсткий глобальный лимит и лимит кадра — только для декоратива.
+  if ((boundParticles?.length ?? 0) >= particleBudget) return null;
+  if (particlesSpawnedThisFrame >= MAX_PARTICLE_SPAWN_PER_FRAME) return null;
+  particlesSpawnedThisFrame++;
+  if (particlePool.length > 0) return particlePool.pop()!;
+  return { id: uid(), pos: { x: 0, y: 0 }, vel: { x: 0, y: 0 }, life: 1, maxLife: 1, color: "#ffffff", size: 2, glow: true, shape: "circle" };
+}
+
+function releaseParticle(p: Particle): void {
+  if (particlePool.length < PARTICLE_POOL_CAP) particlePool.push(p);
+}
+
+function makeLightning(from: Vec2, to: Vec2, life: number): Lightning {
+  const l = lightningPool.pop() ?? { id: uid(), from: { x: 0, y: 0 }, to: { x: 0, y: 0 }, life: 8 };
+  l.from.x = from.x; l.from.y = from.y;
+  l.to.x = to.x; l.to.y = to.y;
+  l.life = life;
+  return l;
+}
+
+// ─── Пулы игровых объектов (анти-GC) ─────────────────────────────────────────
+// Перф-лог показал: колбэк игры стоит 1-2 мс, а фризы приходят из сборщика
+// мусора ПОСЛЕ массовых боёв (LONGTASK 3.6 с). Пули/тексты/сферы/молнии живут
+// секундами и попадают в старое поколение — их churn и вызывал major GC.
+// Теперь объекты переиспользуются: смерть = возврат в пул.
+const bulletPool: Bullet[] = [];
+const BULLET_POOL_CAP = 800;
+const floatingTextPool: FloatingText[] = [];
+const xpOrbPool: XpOrb[] = [];
+const lightningPool: Lightning[] = [];
+const FX_POOL_CAP = 300;
+
+function acquireBullet(): Bullet {
+  const b = bulletPool.pop() ?? { id: uid(), pos: { x: 0, y: 0 }, vel: { x: 0, y: 0 }, fromPlayer: false, damage: 0, size: 3, color: "#ffffff", pierce: 0, homing: false };
+  b.target = undefined;
+  b.hitList = undefined;
+  b.life = undefined;
+  return b;
+}
+
+function releaseBullet(b: Bullet): void {
+  // Ссылки на врагов обязаны обнуляться — иначе пул удерживает мёртвых врагов.
+  b.target = undefined;
+  b.hitList = undefined;
+  if (bulletPool.length < BULLET_POOL_CAP) bulletPool.push(b);
+}
+
+/** Пул-версия player-пули с произвольным уроном (спутники, дроны, осколки).
+ *  Дальность — как у обычных снарядов игрока. */
+function spawnPlayerSideBullet(player: PlayerState, pos: Vec2, vel: Vec2, damage: number, size: number, color: string): Bullet {
+  const b = acquireBullet();
+  b.fromPlayer = true;
+  b.pos.x = pos.x; b.pos.y = pos.y;
+  b.vel.x = vel.x; b.vel.y = vel.y;
+  b.damage = damage; b.size = size; b.color = color;
+  b.pierce = 0; b.homing = false;
+  b.life = Math.round(160 * (1 + player.bulletRangeBonus));
+  return b;
+}
+
+/** Пул-версия создания вражеской пули: поля копируются в переиспользуемый объект. */
+function spawnEnemyBullet(pos: Vec2, vel: Vec2, damage: number, size: number, color: string, pierce = 0, homing = false): Bullet {
+  const b = acquireBullet();
+  b.fromPlayer = false;
+  b.pos.x = pos.x; b.pos.y = pos.y;
+  b.vel.x = vel.x; b.vel.y = vel.y;
+  b.damage = damage; b.size = size; b.color = color;
+  b.pierce = pierce; b.homing = homing;
+  return b;
+}
+
+function releaseFloatingText(ft: FloatingText): void {
+  if (floatingTextPool.length < FX_POOL_CAP) floatingTextPool.push(ft);
+}
+function releaseXpOrb(orb: XpOrb): void {
+  if (xpOrbPool.length < FX_POOL_CAP) xpOrbPool.push(orb);
+}
+function releaseLightning(l: Lightning): void {
+  if (lightningPool.length < FX_POOL_CAP) lightningPool.push(l);
+}
+
+/** Размеры пулов объектов (анти-GC) — видны в перф-логе. */
+export function objectPoolStats(): { bullets: number; texts: number; orbs: number; lightnings: number } {
+  return { bullets: bulletPool.length, texts: floatingTextPool.length, orbs: xpOrbPool.length, lightnings: lightningPool.length };
+}
+
+/** Отладочные счётчики (§15.12): активные/в пуле/создано за кадр/лимит. */
+export function particleDebugStats(): { active: number; pooled: number; spawnedThisFrame: number; budget: number } {
+  return {
+    active: boundParticles?.length ?? 0,
+    pooled: particlePool.length,
+    spawnedThisFrame: particlesSpawnedThisFrame,
+    budget: particleBudget,
+  };
+}
+
+// Посуда-кадровые контейнеры: создаются один раз, очищаются каждый кадр
+// (два new Set + два new Array на каждый stepGame давали ~330 байт/кадр churn).
+const enemiesToRemove: Set<number> = new Set();
+const bulletsToRemove: Set<number> = new Set();
+const spawnedFromSplit: Enemy[] = [];
+const collisionCandidates: Enemy[] = [];
+
+/** Плановое число частиц эффекта: тир качества × адаптивная доля × остатки
+ *  жёстких лимитов. minKeep — гарантированный минимум эффекта смерти (§9):
+ *  враг не исчезает совсем, пока есть свободный лимит. */
+function particleCountFor(count: number, minKeep = 0): number {
+  const tierMult = runtimePerformanceTier === 0 ? 0.34 : runtimePerformanceTier === 1 ? 0.65 : 1;
+  let n = Math.ceil(count * tierMult * particleLoadFactor());
+  const hardCap = Math.min(
+    particleBudget - (boundParticles?.length ?? 0),
+    MAX_PARTICLE_SPAWN_PER_FRAME - particlesSpawnedThisFrame,
+  );
+  if (hardCap <= 0) return 0;
+  n = Math.min(n, hardCap);
+  return Math.max(Math.min(minKeep, hardCap), n);
+}
+
+/** Прямая запись в целевой массив: без промежуточного массива и spread —
+ *  главная точка churn'а на попаданиях/убийствах (аллокация ~20 КБ/убийство
+ *  через push(...makeBurst()) и была причиной GC-фризов). */
+function emitBurst(target: Particle[], pos: Vec2, color: string, count: number, big = false, minKeep = 0): void {
+  const n = particleCountFor(count, minKeep);
+  for (let i = 0; i < n; i++) {
+    const p = acquireParticle();
+    if (!p) break;
+    p.pos.x = pos.x; p.pos.y = pos.y;
+    p.vel.x = randRange(-5, 5) * (big ? 1.5 : 1);
+    p.vel.y = randRange(-5, 5) * (big ? 1.5 : 1);
+    p.life = randRange(20, big ? 60 : 40);
+    p.maxLife = big ? 60 : 40;
+    p.color = color;
+    p.size = randRange(big ? 4 : 2, big ? 10 : 6);
+    p.glow = true;
+    p.shape = "circle";
+    target.push(p);
+  }
 }
 
 // Particles flying from a slain enemy towards the Wraith (soul devouring).
+// Премиальный эффект — с гарантированным минимумом (minKeep 1): души всегда
+// заметны, но не создают неограниченных массивов.
 export function makeSuckParticles(from: Vec2, to: Vec2, count = 6): Particle[] {
   const dx = to.x - from.x, dy = to.y - from.y;
   const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
   const baseAngle = Math.atan2(dy, dx);
   const speed = 6.5 + (150 / (dist + 40)) * 4;
-  const n = voidParticleBudget(count);
-  return Array.from({ length: n }, () => {
+  const n = particleCountFor(count, 1);
+  const out: Particle[] = [];
+  for (let i = 0; i < n; i++) {
+    const p = acquireParticle();
+    if (!p) break;
     const a = baseAngle + randRange(-0.55, 0.55);
     const v = speed * randRange(0.7, 1.25);
-    return {
-      id: uid(),
-      pos: { x: from.x + randRange(-6, 6), y: from.y + randRange(-6, 6) },
-      vel: { x: Math.cos(a) * v, y: Math.sin(a) * v },
-      life: 26, maxLife: 26,
-      color: Math.random() < 0.5 ? "#e879f9" : "#c026d3",
-      size: randRange(2.2, 4.2),
-      glow: true,
-      shape: "circle" as const,
-    };
-  });
+    p.pos.x = from.x + randRange(-6, 6); p.pos.y = from.y + randRange(-6, 6);
+    p.vel.x = Math.cos(a) * v; p.vel.y = Math.sin(a) * v;
+    p.life = 26; p.maxLife = 26;
+    p.color = Math.random() < 0.5 ? "#e879f9" : "#c026d3";
+    p.size = randRange(2.2, 4.2);
+    p.glow = true;
+    p.shape = "circle";
+    out.push(p);
+  }
+  return out;
 }
 
 // Purple shards when the Wraith's victim shatters.
-export function makeShards(pos: Vec2, count = 7): Particle[] {
-  const n = voidParticleBudget(count);
-  return Array.from({ length: n }, () => {
+function emitShards(target: Particle[], pos: Vec2, count = 7): void {
+  const n = particleCountFor(count, 1);
+  for (let i = 0; i < n; i++) {
+    const p = acquireParticle();
+    if (!p) break;
     const a = randRange(0, Math.PI * 2);
     const v = randRange(2, 6);
-    return {
-      id: uid(),
-      pos: { x: pos.x, y: pos.y },
-      vel: { x: Math.cos(a) * v, y: Math.sin(a) * v },
-      life: randRange(18, 34), maxLife: 34,
-      color: Math.random() < 0.6 ? "#e879f9" : "#a855f7",
-      size: randRange(1.8, 3.8),
-      glow: true,
-      shape: "square" as const,
-    };
-  });
+    p.pos.x = pos.x; p.pos.y = pos.y;
+    p.vel.x = Math.cos(a) * v; p.vel.y = Math.sin(a) * v;
+    p.life = randRange(18, 34); p.maxLife = 34;
+    p.color = Math.random() < 0.6 ? "#e879f9" : "#a855f7";
+    p.size = randRange(1.8, 3.8);
+    p.glow = true;
+    p.shape = "square";
+    target.push(p);
+  }
+}
+
+export function makeShards(pos: Vec2, count = 7): Particle[] {
+  const n = particleCountFor(count, 1);
+  const out: Particle[] = [];
+  for (let i = 0; i < n; i++) {
+    const p = acquireParticle();
+    if (!p) break;
+    const a = randRange(0, Math.PI * 2);
+    const v = randRange(2, 6);
+    p.pos.x = pos.x; p.pos.y = pos.y;
+    p.vel.x = Math.cos(a) * v; p.vel.y = Math.sin(a) * v;
+    p.life = randRange(18, 34); p.maxLife = 34;
+    p.color = Math.random() < 0.6 ? "#e879f9" : "#a855f7";
+    p.size = randRange(1.8, 3.8);
+    p.glow = true;
+    p.shape = "square";
+    out.push(p);
+  }
+  return out;
 }
 
 // One-shot ring used when the Wraith first materializes into the arena.
 export function makeMaterializeBurst(pos: Vec2): Particle[] {
-  const total = voidParticleBudget(26);
+  const total = particleCountFor(26);
   const out: Particle[] = [];
   for (let i = 0; i < total; i++) {
     const a = (i / total) * Math.PI * 2;
     const v = randRange(3, 7);
-    out.push({
-      id: uid(),
-      pos: { x: pos.x, y: pos.y },
-      vel: { x: Math.cos(a) * v, y: Math.sin(a) * v },
-      life: randRange(30, 55), maxLife: 55,
-      color: i % 2 === 0 ? "#e879f9" : "#7c3aed",
-      size: randRange(2, 5),
-      glow: true,
-      shape: i % 3 === 0 ? "ring" : "circle",
-    });
+    const p = acquireParticle();
+    if (!p) break;
+    p.pos.x = pos.x; p.pos.y = pos.y;
+    p.vel.x = Math.cos(a) * v; p.vel.y = Math.sin(a) * v;
+    p.life = randRange(30, 55); p.maxLife = 55;
+    p.color = i % 2 === 0 ? "#e879f9" : "#7c3aed";
+    p.size = randRange(2, 5);
+    p.glow = true;
+    p.shape = i % 3 === 0 ? "ring" : "circle";
+    out.push(p);
   }
   return out;
 }
@@ -249,14 +441,20 @@ export function devourSoul(
   floatingTexts: FloatingText[],
 ): number {
   if (player.shipClass !== "void_wraith") return 0;
+  // Фаза Бездны расширяет зону пожирания — фаза → активное уничтожение →
+  // ускоренный сбор душ (взаимодействие существующих механик).
+  const inPhase = player.ghostTimer > 0;
+  const radius = VOID_SOUL_RADIUS * (inPhase ? 1.5 : 1);
   const dx = e.pos.x - player.pos.x, dy = e.pos.y - player.pos.y;
-  if (dx * dx + dy * dy > VOID_SOUL_RADIUS * VOID_SOUL_RADIUS) return 0;
+  if (dx * dx + dy * dy > radius * radius) return 0;
   if (player.voidSouls >= VOID_SOUL_MAX) return 0;
-  const value = e.isBoss ? 5 : (e.isElite ? 2 : 1);
+  let value = e.isBoss ? 5 : (e.isElite ? 2 : 1);
+  if (inPhase && Math.random() < 0.4) value += 1;
+  const before = player.voidSouls;
   player.voidSouls = Math.min(VOID_SOUL_MAX, player.voidSouls + value);
   player.voidSoulIdleTimer = 0;
-  particles.push(...makeSuckParticles(e.pos, player.pos, e.isBoss ? 14 : 10));
-  const soulWord = value === 1 ? "ДУША" : (value === 5 ? "ДУШ" : "ДУШИ");
+  particles.push(...makeSuckParticles(e.pos, player.pos, e.isBoss ? 12 : 8));
+  const soulWord = value === 1 ? "ДУША" : (value >= 5 ? "ДУШ" : "ДУШИ");
   floatingTexts.push({
     id: uid(),
     pos: { x: e.pos.x, y: e.pos.y - 14 },
@@ -266,6 +464,25 @@ export function devourSoul(
     size: e.isBoss ? 18 : 13,
     life: 50, maxLife: 50,
   });
+  // Пороговая обратная связь: рост силы должен быть заметен, а не скрыт
+  // в переменной. 25% / 50% / 75% → «УРОН УВЕЛИЧЕН», максимум → насыщение.
+  const after = player.voidSouls;
+  const feedText = (text: string, size: number) => floatingTexts.push({
+    id: uid(),
+    pos: { x: player.pos.x, y: player.pos.y - 46 },
+    vel: { x: 0, y: -0.7 },
+    text,
+    color: "#f0abfc",
+    size,
+    life: 60, maxLife: 60,
+  });
+  if (before < VOID_SOUL_MAX && after >= VOID_SOUL_MAX) {
+    feedText("БЕЗДНА НАСЫЩЕНА", 17);
+  } else {
+    for (const threshold of [VOID_SOUL_MAX * 0.25, VOID_SOUL_MAX * 0.5, VOID_SOUL_MAX * 0.75]) {
+      if (before < threshold && after >= threshold) { feedText("УРОН УВЕЛИЧЕН", 14); break; }
+    }
+  }
   return value;
 }
 
@@ -279,9 +496,138 @@ function soulDamageMult(player: PlayerState): number {
 function startVoidPhase(player: PlayerState, particles: Particle[]) {
   const origin = { x: player.pos.x, y: player.pos.y };
   player.voidEchoPos = { x: origin.x, y: Math.min(H - 40, origin.y + 34) };
-  particles.push(...makeBurst(origin, "#e879f9", 14));
+  emitBurst(particles, origin, "#e879f9", 14);
   player.voidEchoTimer = 120;
   audio.playVoidBlink();
+}
+
+// ─── Механики мификов ─────────────────────────────────────────────────────────
+const NOVA_MAX = 100;
+const NOVA_FUSE = 45;          // задержка на полном заряде (0.75 c)
+const NOVA_RADIUS = 340;
+const COLLAPSE_MAX = 50;
+const SINGULARITY_DURATION = 240; // 4 c
+const SINGULARITY_RADIUS = 190;
+const WRATH_MAX = 10;
+const JUDGEMENT_TARGETS = 16;
+const JUDGEMENT_RADIUS = 320;
+const OVERDRIVE_ACTIVE = 300;  // 5 c
+const OVERDRIVE_MAX = 600;     // 10 c абсолютный потолок
+const OVERDRIVE_COOLDOWN = 300;
+const OVERDRIVE_CHARGE_RATE = 0.4;   // за кадр активной стрельбы
+const OVERDRIVE_DECAY_RATE = 0.55;   // за кадр простоя
+const FLEET_CHARGE_MAX = 100;
+const FLEET_SALVO_DURATION = 90;    // 1.5 c
+const ENTROPY_MAX = 100;
+const VOID_DURATION = 240;    // 4 c
+const VOID_FRACTURE_MAX = 8;
+const VOID_FRACTURE_LIFE = 180;  // 3 c
+const VOID_TELEPORT_MAX = 2;
+
+/** Заряды мификов от убийства (счётчики, без физических частиц — ТЗ §11/§17). */
+function onMythicKill(obj: GameObjects, e: Enemy): void {
+  const { player, floatingTexts } = obj;
+  // ☀️ Звёздное ядро: обычный +1, элита +5, гвардия/мини-босс +10, босс +25.
+  chargeNova(player, e.isBoss ? 25 : (e.guardRole ? 10 : (e.isElite ? 5 : 1)));
+  // 🌌 Гравитационный коллапс: каждый враг +1; на 50 — сингулярность в центре
+  // скопления врагов (максимум одна активная).
+  if (hasMythic(player, "mythic_singularity") && !obj.singularity) {
+    player.collapseCharge = Math.min(COLLAPSE_MAX, player.collapseCharge + 1);
+    if (player.collapseCharge >= COLLAPSE_MAX) {
+      player.collapseCharge = 0;
+      let cx = 0, cy = 0, count = 0;
+      for (const enemy of obj.enemies) {
+        if (enemy.hp <= 0 || enemy.isBoss) continue;
+        cx += enemy.pos.x; cy += enemy.pos.y; count++;
+      }
+      if (count > 0) {
+        obj.singularity = { pos: { x: cx / count, y: cy / count }, timer: SINGULARITY_DURATION, maxTimer: SINGULARITY_DURATION, absorbed: player.bulletDamage * 12 };
+        floatingTexts.push(makeFloatingText(obj.singularity.pos, "✦ ПОЖИРАТЕЛЬ ЗВЁЗД ✦", "#a78bfa", true));
+        audio.playTimeSlow();
+      }
+    }
+  }
+  // 👁️ Энтропия: убийство +2; во время Пустоты погибшие оставляют разрыв.
+  if (hasMythic(player, "mythic_void")) {
+    player.entropy = Math.min(ENTROPY_MAX, player.entropy + 2);
+    if (player.voidTimer > 0 && obj.voidFractures.length < VOID_FRACTURE_MAX) {
+      obj.voidFractures.push({ pos: { x: e.pos.x, y: e.pos.y }, life: VOID_FRACTURE_LIFE });
+    }
+  }
+  // 🔥 Перегрузка: убийства продлевают режим (+0.15 c, потолок 10 c).
+  if (player.overdriveTimer > 0) {
+    player.overdriveTimer = Math.min(OVERDRIVE_MAX, player.overdriveTimer + 9);
+  }
+  // 🛰️ Накопления эффективности залпа (макс. 10), сбрасываются после залпа.
+  if (player.fleetSalvoTimer > 0) {
+    player.fleetStacks = Math.min(10, player.fleetStacks + 1);
+  }
+}
+
+/** ☀️ МИФИК «Сердце Сверхновой»: заряд от убийств (счётчик, без частиц). */
+function chargeNova(player: PlayerState, value: number): void {
+  if (!hasMythic(player, "mythic_nova") || player.novaCore >= NOVA_MAX) return;
+  player.novaCore = Math.min(NOVA_MAX, player.novaCore + value);
+  if (player.novaCore >= NOVA_MAX) player.novaFuseTimer = NOVA_FUSE;
+}
+
+/** Взрыв сверхновой: ОДИН большой эффект, урон по типам целей, без цепочек. */
+function triggerSupernova(obj: GameObjects): void {
+  const { player, enemies, particles, floatingTexts, explosions } = obj;
+  // Урон: слабые обычные умирают, элиты/мини-боссы — огромный, боссы — % макс. HP.
+  for (const e of enemies) {
+    if (e.hp <= 0) continue;
+    const dx = e.pos.x - player.pos.x, dy = e.pos.y - player.pos.y;
+    if (dx * dx + dy * dy > NOVA_RADIUS * NOVA_RADIUS) continue;
+    let dmg: number;
+    if (e.isBoss) dmg = e.maxHp * 0.06;
+    else if (e.guardRole) dmg = player.bulletDamage * 40;
+    else if (e.isElite) dmg = player.bulletDamage * 25;
+    else dmg = player.bulletDamage * 25; // обычные слабые умирают от масштаба
+    damageEnemy(e, dmg, 0, enemies);
+    player.stats.damageDealt += dmg;
+  }
+  // Визуал: одно большое кольцо + бюджетный залп частиц (лимиты соблюдаются).
+  explosions.push({ id: uid(), pos: { ...player.pos }, radius: NOVA_RADIUS, progress: 0 });
+  emitBurst(particles, player.pos, "#fde047", 26, true, 3);
+  emitBurst(particles, player.pos, "#ffffff", 14, true, 2);
+  floatingTexts.push(makeFloatingText(player.pos, "✦ СВЕРХНОВАЯ ✦", "#fde047", true));
+  obj.screenShake = Math.max(obj.screenShake, 14);
+  audio.playNuke();
+  player.novaCore = 0;
+  player.novaFuseTimer = 0;
+}
+
+/** ⚡ МИФИК «Судный Разряд»: усиляющаяся цепь молний без повторов целей. */
+function triggerJudgement(obj: GameObjects, source: Enemy, baseDamage: number): void {
+  const { player, enemies, lightnings } = obj;
+  const struck = new Set<number>([source.id]);
+  let current: Enemy | null = source;
+  let damage = baseDamage * 1.5;
+  let jumps = 0;
+  while (current && jumps < JUDGEMENT_TARGETS) {
+    let nearest: Enemy | null = null;
+    let nearDist = Infinity;
+    const cx = current.pos.x, cy = current.pos.y;
+    for (const e of enemies) {
+      if (struck.has(e.id) || e.hp <= 0) continue;
+      const dx = e.pos.x - cx, dy = e.pos.y - cy;
+      const d = dx * dx + dy * dy;
+      if (d < nearDist && d < JUDGEMENT_RADIUS * JUDGEMENT_RADIUS) { nearDist = d; nearest = e; }
+    }
+    if (!nearest) break;
+    lightnings.push(makeLightning(current.pos, nearest.pos, 14));
+    const applied = damageEnemy(nearest, damage, 0, enemies);
+    player.stats.damageDealt += applied;
+    struck.add(nearest.id);
+    // Эскалация: +5% за каждое уничтожение в цепи (до +50%).
+    if (nearest.hp <= 0) damage = Math.min(damage * 1.05, baseDamage * 1.5 * 1.5);
+    current = nearest;
+    jumps++;
+  }
+  obj.floatingTexts.push(makeFloatingText(source.pos, "✦ СУДНЫЙ РАЗРЯД ✦", "#fde047", true));
+  obj.screenShake = Math.max(obj.screenShake, 8);
+  audio.playNuke();
 }
 
 // ─── Main step function ───────────────────────────────────────────────────────
@@ -317,6 +663,10 @@ export interface GameObjects {
   guardSpawnedThisWave: boolean;
   fastClearStreak: number;
   guardEventActive: boolean;
+  /** 🌌 МИФИК «Пожиратель Звёзд»: активная сингулярность (макс. одна). */
+  singularity: { pos: Vec2; timer: number; maxTimer: number; absorbed: number } | null;
+  /** 👁️ МИФИК «Конец Материи»: разрывы пространства (макс. 8, живут 3 c). */
+  voidFractures: { pos: Vec2; life: number }[];
 }
 
 export interface StepInput {
@@ -333,6 +683,7 @@ export interface StepInput {
 
 export function stepGame(obj: GameObjects, input: StepInput): void {
   runtimePerformanceTier = obj.performanceTier;
+  bindParticleFrame(obj.particles, obj.performanceTier);
   const { player, bullets, enemies, particles, xpOrbs, mines, lightnings, stars, floatingTexts, powerups } = obj;
   const { keys, wave, frame, timeSlow } = input;
   const timeScale = timeSlow ? 0.5 : 1;
@@ -373,14 +724,14 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     player.dashTimer = 24;
     player.invincTimer = Math.max(player.invincTimer, 30);
     audio.playDash();
-    particles.push(...makeBurst(player.pos, "#38bdf8", 18));
+    emitBurst(particles, player.pos, "#38bdf8", 18);
 
     // Dash now has a tactical purpose: clear nearby hostile projectiles and
     // damage enemies crossed at close range.
     for (let i = bullets.length - 1; i >= 0; i--) {
       const bullet = bullets[i];
       const dx = bullet.pos.x - player.pos.x, dy = bullet.pos.y - player.pos.y;
-      if (!bullet.fromPlayer && dx * dx + dy * dy < 120 * 120) bullets.splice(i, 1);
+      if (!bullet.fromPlayer && dx * dx + dy * dy < 120 * 120) { releaseBullet(bullet); bullets.splice(i, 1); }
     }
     for (const enemy of enemies) {
       const dx = enemy.pos.x - player.pos.x, dy = enemy.pos.y - player.pos.y;
@@ -392,11 +743,20 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   // Physical KeyW/A/S/D codes make movement independent from keyboard layout.
   // The chrono ability slows the world, not the player's own ship.
   // Devoured souls give the Wraith a small but visible edge in mobility.
-  const spd = player.speed * dashSpeedMult * (1 + player.voidSouls * 0.004);
-  if ((keys.has("ArrowLeft")  || keys.has("KeyA")) && player.pos.x > 25) player.pos.x -= spd;
-  if ((keys.has("ArrowRight") || keys.has("KeyD")) && player.pos.x < W - 25) player.pos.x += spd;
-  if ((keys.has("ArrowUp")    || keys.has("KeyW")) && player.pos.y > 60) player.pos.y -= spd;
-  if ((keys.has("ArrowDown")  || keys.has("KeyS")) && player.pos.y < H - 32) player.pos.y += spd;
+  const movingLeft  = keys.has("ArrowLeft")  || keys.has("KeyA");
+  const movingRight = keys.has("ArrowRight") || keys.has("KeyD");
+  const movingUp    = keys.has("ArrowUp")    || keys.has("KeyW");
+  const movingDown  = keys.has("ArrowDown")  || keys.has("KeyS");
+  const isMoving = movingLeft || movingRight || movingUp || movingDown;
+  // «Турбодвигатель»: 1 секунда непрерывного движения = ещё +10% скорости;
+  // полная остановка сбрасывает разгон.
+  player.turboStreak = isMoving ? player.turboStreak + 1 : 0;
+  const turboSurge = getUpgradeLevel(player, "turbo_engine") > 0 && player.turboStreak >= 60 ? 1.1 : 1;
+  const spd = player.speed * dashSpeedMult * turboSurge * (1 + player.voidSouls * 0.004);
+  if (movingLeft  && player.pos.x > 25) player.pos.x -= spd;
+  if (movingRight && player.pos.x < W - 25) player.pos.x += spd;
+  if (movingUp    && player.pos.y > 60) player.pos.y -= spd;
+  if (movingDown  && player.pos.y < H - 32) player.pos.y += spd;
 
   player.pos.x = Math.max(25, Math.min(W - 25, player.pos.x));
   player.pos.y = Math.max(60, Math.min(H - 32, player.pos.y));
@@ -439,8 +799,9 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 
   // ─── Shield regen ──────────────────────────────────────────────────────────
   if (player.shield) {
-    const shieldRegenBonus = getUpgradeLevel(player, "shield_regen") * 0.35;
-    let regenRate = 1 + shieldRegenBonus;
+    // «Конденсатор щита» поднимает отдельную характеристику-множитель —
+    // реализация соответствует описанию предмета.
+    let regenRate = player.shieldRegenMultiplier;
     // The Wraith's Void Shield recharges noticeably faster than standard ones.
     if (player.shipClass === "void_wraith") regenRate *= 1.8;
     if (player.shield.hp < player.shield.maxHp) {
@@ -461,10 +822,105 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   player.laserTimer = Math.max(0, player.laserTimer - 1);
   player.waveShotTimer = Math.max(0, player.waveShotTimer - 1);
 
+  // 🔥 МИФИК «Абсолютный Реактор»: заряд от непрерывной стрельбы.
+  const overdriveActive = player.overdriveTimer > 0;
+  if (overdriveActive) {
+    player.overdriveTimer--;
+    if (player.overdriveTimer === 0) player.overdriveCooldown = OVERDRIVE_COOLDOWN;
+  } else if (player.overdriveCooldown > 0) {
+    player.overdriveCooldown--;
+  } else if (hasMythic(player, "mythic_overdrive")) {
+    const firingRecently = frame - player.lastShotFrame < 45;
+    if (firingRecently) {
+      player.overdriveCharge = Math.min(100, player.overdriveCharge + OVERDRIVE_CHARGE_RATE * timeScale);
+      if (player.overdriveCharge >= 100) {
+        player.overdriveTimer = OVERDRIVE_ACTIVE;
+        player.overdriveCharge = 0;
+        floatingTexts.push(makeFloatingText(player.pos, "✦ ABSOLUTE OVERDRIVE ✦", "#fb923c", true));
+        audio.playPowerup();
+      }
+    } else if (player.overdriveCharge > 0) {
+      player.overdriveCharge = Math.max(0, player.overdriveCharge - OVERDRIVE_DECAY_RATE * timeScale);
+    }
+  }
+
+  // ─── Мифики: покадровые механики ──────────────────────────────────────────
+  // ☀️ Сверхновая: фитиль на полном заряде → взрыв.
+  if (player.novaFuseTimer > 0) {
+    player.novaFuseTimer--;
+    if (player.novaFuseTimer === 0) triggerSupernova(obj);
+  }
+
+  // 🌌 Сингулярность: притяжение (нарастающее), поглощение снарядов, коллапс.
+  if (obj.singularity) {
+    const sg = obj.singularity;
+    sg.timer--;
+    const progress = 1 - sg.timer / sg.maxTimer;      // 0 → 1
+    const pullStrength = (0.55 + progress * 0.85) * timeScale;
+    for (const e of enemies) {
+      if (e.hp <= 0) continue;
+      const dx = sg.pos.x - e.pos.x, dy = sg.pos.y - e.pos.y;
+      const distSq = dx * dx + dy * dy;
+      if (distSq > (SINGULARITY_RADIUS + 120) * (SINGULARITY_RADIUS + 120) || distSq < 100) continue;
+      const dist = Math.sqrt(distSq);
+      // Боссы почти не сдвигаются, элиты — вполовину (ТЗ §13).
+      const resist = e.isBoss ? 0.25 : (e.guardRole ? 0.3 : (e.isElite ? 0.5 : 1));
+      e.pos.x += (dx / dist) * pullStrength * resist;
+      e.pos.y += (dy / dist) * pullStrength * resist;
+    }
+    // Поглощение снарядов игрока → накопленный урон коллапса (с потолком).
+    for (let i = bullets.length - 1; i >= 0; i--) {
+      const b = bullets[i];
+      if (!b.fromPlayer) continue;
+      const dx = b.pos.x - sg.pos.x, dy = b.pos.y - sg.pos.y;
+      if (dx * dx + dy * dy < SINGULARITY_RADIUS * SINGULARITY_RADIUS) {
+        sg.absorbed = Math.min(sg.absorbed + b.damage * 0.6, player.bulletDamage * 120);
+        releaseBullet(b);
+        bullets.splice(i, 1);
+      }
+    }
+    if (sg.timer <= 0) {
+      // COLLAPSE: огромный урон всем внутри; боссам — потолок 8% макс. HP.
+      for (const e of enemies) {
+        if (e.hp <= 0) continue;
+        const dx = e.pos.x - sg.pos.x, dy = e.pos.y - sg.pos.y;
+        if (dx * dx + dy * dy > SINGULARITY_RADIUS * SINGULARITY_RADIUS) continue;
+        const dmg = e.isBoss ? Math.min(sg.absorbed, e.maxHp * 0.08) : sg.absorbed;
+        const applied = damageEnemy(e, dmg, frame, enemies);
+        player.stats.damageDealt += applied;
+      }
+      obj.explosions.push({ id: uid(), pos: { ...sg.pos }, radius: SINGULARITY_RADIUS, progress: 0 });
+      emitBurst(particles, sg.pos, "#a78bfa", 24, true, 3);
+      floatingTexts.push(makeFloatingText(sg.pos, "✦ COLLAPSE ✦", "#c084fc", true));
+      obj.screenShake = Math.max(obj.screenShake, 12);
+      audio.playNuke();
+      obj.singularity = null;
+    }
+  }
+
+  // 🛰️ Флот: таймер залпа.
+  if (player.fleetSalvoTimer > 0) player.fleetSalvoTimer--;
+
+  // 👁️ Пустота: таймер + разрывы (не больше 8, живут 3 c).
+  if (player.voidTimer > 0) player.voidTimer--;
+  else if (hasMythic(player, "mythic_void") && player.entropy >= ENTROPY_MAX) {
+    player.entropy = 0;
+    player.voidTimer = VOID_DURATION;
+    floatingTexts.push(makeFloatingText(player.pos, "✦ КОНЕЦ МАТЕРИИ ✦", "#c084fc", true));
+    audio.playTimeSlow();
+  }
+  for (let i = obj.voidFractures.length - 1; i >= 0; i--) {
+    obj.voidFractures[i].life--;
+    if (obj.voidFractures[i].life <= 0) obj.voidFractures.splice(i, 1);
+  }
+
   // Berserker & rapid boost
   const berserker = getUpgradeLevel(player, "berserker") > 0;
   const hpPct = player.hp / player.maxHp;
   let baseRate = berserker ? player.fireRate * (0.5 + hpPct * 0.5) : player.fireRate;
+  // 🔥 ABSOLUTE OVERDRIVE: значительно повышенная скорострельность
+  // (защитный минимум интервала 2 кадра сохраняется).
+  if (player.overdriveTimer > 0) baseRate = Math.max(2, baseRate * 0.55);
   if (player.rapidBoostTimer > 0) baseRate *= 0.45;
   if (obj.routeEffect === "interference") baseRate *= 1.22;
 
@@ -473,6 +929,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   // Auto-fire continuous shooting with soft sound
   if (frame % effectiveFireRate === 0) {
     firePlayerBullets(bullets, player, enemies, frame);
+    player.lastShotFrame = frame;
     audio.playShoot(player.snipeMode);
   }
 
@@ -491,7 +948,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       echoBullet.color = "#d946ef";
       bullets.push(echoBullet);
     }
-    if (player.voidEchoTimer === 0) particles.push(...makeBurst(player.voidEchoPos, "#a855f7", 10));
+    if (player.voidEchoTimer === 0) emitBurst(particles, player.voidEchoPos, "#a855f7", 10);
   }
 
   // Side lasers are a real weapon system, not a dead stat upgrade.
@@ -531,31 +988,62 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   }
 
   // ─── Satellites ────────────────────────────────────────────────────────────
+  // 🛰️ МИФИК «Последний Флот» (FLEET LINK): все помощники бьют по общей
+  // приоритетной цели — самой опасной (босс/элита ближе всего к кораблю),
+  // а их атаки копят командный канал. Залп ускоряет огонь всей армады.
+  const fleetLinked = hasMythic(player, "mythic_fleet");
+  let fleetTarget: Enemy | null = null;
+  if (fleetLinked && frame % 15 === 0) {
+    let bestScore = -Infinity;
+    for (const e of enemies) {
+      if (e.hp <= 0) continue;
+      const dx = e.pos.x - player.pos.x, dy = e.pos.y - player.pos.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const score = (e.isBoss ? 400 : e.guardRole ? 350 : e.isElite ? 200 : 0) - dist;
+      if (score > bestScore) { bestScore = score; fleetTarget = e; }
+    }
+    (player as PlayerState & { __fleetTarget?: Enemy | null }).__fleetTarget = fleetTarget;
+  } else if (fleetLinked) {
+    fleetTarget = (player as PlayerState & { __fleetTarget?: Enemy | null }).__fleetTarget ?? null;
+    if (fleetTarget && fleetTarget.hp <= 0) fleetTarget = null;
+  }
+  const fleetSalvo = player.fleetSalvoTimer > 0;
+  const fleetDamageMult = 1 + player.fleetStacks * 0.05 + (fleetSalvo ? 0.5 : 0);
+  const chargeFleet = (amount: number) => {
+    if (!fleetLinked || fleetSalvo) return;
+    player.fleetCharge = Math.min(FLEET_CHARGE_MAX, player.fleetCharge + amount);
+    if (player.fleetCharge >= FLEET_CHARGE_MAX) {
+      player.fleetCharge = 0;
+      player.fleetSalvoTimer = FLEET_SALVO_DURATION;
+      floatingTexts.push(makeFloatingText(player.pos, "✦ FINAL FLEET SALVO ✦", "#fbbf24", true));
+      audio.playPowerup();
+    }
+  };
+
   for (const sat of player.satellites) {
     sat.angle += sat.speed * timeScale;
     sat.shootTimer--;
-    const satFireRate = Math.max(20, 55 - sat.level * 5);
+    let satFireRate = Math.max(20, 55 - sat.level * 5);
+    if (fleetSalvo) satFireRate = Math.max(4, Math.floor(satFireRate * 0.15));
     if (sat.shootTimer <= 0) {
       sat.shootTimer = satFireRate;
       const sx = player.pos.x + Math.cos(sat.angle) * sat.radius;
       const sy = player.pos.y + Math.sin(sat.angle) * sat.radius;
-      let nearest: Enemy | null = null;
-      let nearDist = 9999;
-      for (const e of enemies) {
-        const dx = e.pos.x - sx, dy = e.pos.y - sy;
-        const d = Math.sqrt(dx * dx + dy * dy);
-        if (d < nearDist) { nearDist = d; nearest = e; }
+      let nearest: Enemy | null = fleetTarget;
+      if (!nearest) {
+        let nearDist = 9999;
+        for (const e of enemies) {
+          const dx = e.pos.x - sx, dy = e.pos.y - sy;
+          const d = Math.sqrt(dx * dx + dy * dy);
+          if (d < nearDist) { nearDist = d; nearest = e; }
+        }
       }
       if (nearest) {
         const dx = nearest.pos.x - sx, dy = nearest.pos.y - sy;
         const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
-        const dmg = player.bulletDamage * (0.55 + sat.level * 0.35);
-        bullets.push({
-          id: uid(), pos: { x: sx, y: sy },
-          vel: { x: (dx / dist) * 11, y: (dy / dist) * 11 },
-          fromPlayer: true, damage: dmg, size: 3.5, color: "#fbbf24",
-          pierce: 0, homing: false,
-        });
+        const dmg = player.bulletDamage * (0.55 + sat.level * 0.35) * fleetDamageMult;
+        bullets.push(spawnPlayerSideBullet(player, { x: sx, y: sy }, { x: (dx / dist) * 11, y: (dy / dist) * 11 }, dmg, 3.5, fleetSalvo ? "#fde047" : "#fbbf24"));
+        chargeFleet(2);
       }
     }
   }
@@ -569,27 +1057,31 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     drone.pos.y += (targetY - drone.pos.y) * 0.08;
     drone.angle = drone.orbitAngle;
     drone.shootTimer--;
+    let droneFireRate = Math.max(16, 45 - drone.level * 4);
+    if (fleetSalvo) droneFireRate = Math.max(3, Math.floor(droneFireRate * 0.15));
     if (drone.shootTimer <= 0) {
-      drone.shootTimer = Math.max(16, 45 - drone.level * 4);
-      let nearest: Enemy | null = null;
-      let nearDist = 9999;
-      for (const e of enemies) {
-        const dx = e.pos.x - drone.pos.x, dy = e.pos.y - drone.pos.y;
-        const d = Math.sqrt(dx * dx + dy * dy);
-        if (d < nearDist) { nearDist = d; nearest = e; }
+      drone.shootTimer = droneFireRate;
+      let nearest: Enemy | null = fleetTarget;
+      if (!nearest) {
+        let nearDist = 9999;
+        for (const e of enemies) {
+          const dx = e.pos.x - drone.pos.x, dy = e.pos.y - drone.pos.y;
+          const d = Math.sqrt(dx * dx + dy * dy);
+          if (d < nearDist) { nearDist = d; nearest = e; }
+        }
       }
       if (nearest) {
         const dx = nearest.pos.x - drone.pos.x, dy = nearest.pos.y - drone.pos.y;
         const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
-        const dmg = player.bulletDamage * (0.45 + drone.level * 0.3);
-        bullets.push({
-          id: uid(), pos: { ...drone.pos },
-          vel: { x: (dx / dist) * 10.5, y: (dy / dist) * 10.5 },
-          fromPlayer: true, damage: dmg, size: 3.5, color: "#a78bfa",
-          pierce: 0, homing: false,
-        });
+        const dmg = player.bulletDamage * (0.45 + drone.level * 0.3) * fleetDamageMult;
+        bullets.push(spawnPlayerSideBullet(player, { ...drone.pos }, { x: (dx / dist) * 10.5, y: (dy / dist) * 10.5 }, dmg, 3.5, fleetSalvo ? "#fde047" : "#a78bfa"));
+        chargeFleet(2);
       }
     }
+  }
+  // Сброс накоплений эффективности после залпа.
+  if (fleetLinked && !fleetSalvo && player.fleetStacks > 0 && player.fleetSalvoTimer === 0) {
+    player.fleetStacks = 0;
   }
 
   // ─── Aura damage ───────────────────────────────────────────────────────────
@@ -602,7 +1094,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         if (dx * dx + dy * dy < auraR * auraR) {
           const auraDamage = damageEnemy(e, player.auraDamage * timeScale, frame, enemies);
           player.stats.damageDealt += auraDamage;
-          particles.push(...makeBurst({ x: e.pos.x, y: e.pos.y }, "#fde047", 1));
+          emitBurst(particles, { x: e.pos.x, y: e.pos.y }, "#fde047", 1);
         }
       }
     }
@@ -621,7 +1113,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           player.stats.damageDealt += novaDmg;
         }
       }
-      particles.push(...makeBurst(player.pos, "#f97316", 20, true));
+      emitBurst(particles, player.pos, "#f97316", 20, true);
       obj.screenShake = Math.max(obj.screenShake, 4);
     }
   }
@@ -642,7 +1134,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       if (dx * dx + dy * dy < mine.radius * mine.radius) {
         const mineDamage = damageEnemy(e, 6 * player.bulletDamage, frame, enemies);
         player.stats.damageDealt += mineDamage;
-        particles.push(...makeBurst(mine.pos, "#f59e0b", 20, true));
+        emitBurst(particles, mine.pos, "#f59e0b", 20, true);
         obj.explosions.push({ id: uid(), pos: { ...mine.pos }, radius: mine.radius * 1.5, progress: 0 });
         obj.screenShake = Math.max(obj.screenShake, 5);
         audio.playExplosion(false);
@@ -682,7 +1174,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   }
 
   // Pre-declare collision sets so the early enemy-resolution loop can check them.
-  const enemiesToRemove = new Set<number>();
+  enemiesToRemove.clear();
 
   // Resolve enemies finished by aura, mines, status effects, black holes or a
   // dash. Previously they could remain alive at zero/negative HP until a bullet
@@ -698,10 +1190,11 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     const scoreBoostXp = getUpgradeLevel(player, "score_boost");
     const xpGained = Math.floor((enemy.xp + scoreBoostXp) * (1 + xpBoostLevel * 0.25) * obj.routeXpMultiplier);
     audio.playExplosion(enemy.isBoss);
-    particles.push(...makeBurst(enemy.pos, enemy.isBoss ? "#f43f5e" : "#fb923c", enemy.isBoss ? 45 : 14, enemy.isBoss));
+    emitBurst(particles, enemy.pos, enemy.isBoss ? "#f43f5e" : "#fb923c", enemy.isBoss ? 45 : 14, enemy.isBoss);
     xpOrbs.push(makeXpOrb(enemy.pos, xpGained));
     player.score += Math.floor(enemy.xp * 10 * player.goldMultiplier * obj.routeScoreMultiplier);
     player.kills++;
+    onMythicKill(obj, enemy);
     if (enemy.isElite) player.stats.elitesKilled++;
     if (enemy.isBoss) player.stats.bossesKilled++;
     // Chain Detonation for non-bullet kills (no cascade)
@@ -736,7 +1229,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   if (obj.activeRoute === "asteroids" && frame % 105 === 0) {
     const rockCount = 2 + Math.min(2, Math.floor(wave / 20));
     for (let i = 0; i < rockCount; i++) {
-      bullets.push({ id: uid(), pos: { x: randRange(35, W - 35), y: -25 }, vel: { x: randRange(-0.7, 0.7), y: randRange(3.2, 5.2) }, fromPlayer: false, damage: 1.2 + wave * 0.025, size: randRange(8, 13), color: "#a8a29e", pierce: 0, homing: false });
+      bullets.push(spawnEnemyBullet({ x: randRange(35, W - 35), y: -25 }, { x: randRange(-0.7, 0.7), y: randRange(3.2, 5.2) }, 1.2 + wave * 0.025, randRange(8, 13), "#a8a29e", 0, false));
     }
   }
   if (obj.routeEffect === "gravity") {
@@ -774,7 +1267,12 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     const e = enemies[i];
     // Bosses are slowed, never fully disabled. Ordinary enemies keep the strong freeze.
     const controlResistant = e.isBoss || Boolean(e.guardRole);
-    const ets = e.frozen > 0 ? (controlResistant ? Math.max(0.58, timeScale * 0.58) : 0.15) : timeScale;
+    // 👁️ КОНЕЦ МАТЕРИИ: обычные — сильное замедление, элиты — среднее,
+    // боссы/гвардия — слабое (полностью не останавливаются, ТЗ §13).
+    const voidSlow = player.voidTimer > 0
+      ? (e.isBoss || e.guardRole ? 0.9 : e.isElite ? 0.7 : 0.45)
+      : 1;
+    const ets = (e.frozen > 0 ? (controlResistant ? Math.max(0.58, timeScale * 0.58) : 0.15) : timeScale) * voidSlow;
     const size = getEnemySize(e.type);
     const minX = size + 25;
     const maxX = W - size - 25;
@@ -795,8 +1293,8 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       }
       if (hurtAlly) {
         hurtAlly.hp = Math.min(hurtAlly.maxHp, hurtAlly.hp + 4);
-        particles.push(...makeBurst(hurtAlly.pos, "#4ade80", 4));
-        lightnings.push({ id: uid(), from: { ...e.pos }, to: { ...hurtAlly.pos }, life: 10 });
+        emitBurst(particles, hurtAlly.pos, "#4ade80", 4);
+        lightnings.push(makeLightning(e.pos, hurtAlly.pos, 10));
       }
     }
 
@@ -804,7 +1302,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     if (e.guardRole === "herald" && frame % 12 === 0) {
       for (const linked of enemies) {
         if (linked.guardRole && linked.guardRole !== "herald" && linked.hp > 0) {
-          lightnings.push({ id: uid(), from: { ...e.pos }, to: { ...linked.pos }, life: 14 });
+          lightnings.push(makeLightning(e.pos, linked.pos, 14));
         }
       }
     }
@@ -816,7 +1314,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         if (ally.id !== e.id && dx * dx + dy * dy < 190 * 190) {
           ally.maxShieldHp = Math.max(ally.maxShieldHp, 18);
           ally.shieldHp = Math.min(ally.maxShieldHp, ally.shieldHp + 12);
-          lightnings.push({ id: uid(), from: { ...e.pos }, to: { ...ally.pos }, life: 12 });
+          lightnings.push(makeLightning(e.pos, ally.pos, 12));
         }
       }
     }
@@ -927,7 +1425,8 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         } else if (bossHpPct < 0.25 && e.phase === 2) {
           transform(3, "ФИНАЛЬНАЯ ФОРМА ОМЕГИ", 5);
           enemies.push(spawnEnemy("phantom", wave, obj.adaptiveDifficulty), spawnEnemy("singularity", wave, obj.adaptiveDifficulty));
-          bullets.splice(0, Math.floor(bullets.length * 0.25));
+          const dropped = bullets.splice(0, Math.floor(bullets.length * 0.25));
+          for (const db of dropped) releaseBullet(db);
         }
         if (e.phase >= 3) {
           const dx = W / 2 - player.pos.x, dy = H / 2 - player.pos.y;
@@ -942,7 +1441,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           for (let i = 0; i < ringCount; i++) {
             const a = (i / ringCount) * Math.PI * 2;
             const ringSpd = 2.8 + e.phase * 0.4;
-            bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * ringSpd, y: Math.sin(a) * ringSpd }, fromPlayer: false, damage: 2.5 + wave * 0.1, size: 5, color: "#ff4444", pierce: 0, homing: false });
+            bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(a) * ringSpd, y: Math.sin(a) * ringSpd }, 2.5 + wave * 0.1, 5, "#ff4444", 0, false));
           }
           obj.screenShake = Math.max(obj.screenShake, 6);
         }
@@ -956,7 +1455,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           for (let i = 0; i < beamCount; i++) {
             const spread = (i - (beamCount - 1) / 2) * 0.06;
             const angle = aim + spread;
-            bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(angle) * beamSpd * 2.2, y: Math.sin(angle) * beamSpd * 2.2 }, fromPlayer: false, damage: beamDmg, size: 8, color: "#ffffff", pierce: 2, homing: false });
+            bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(angle) * beamSpd * 2.2, y: Math.sin(angle) * beamSpd * 2.2 }, beamDmg, 8, "#ffffff", 2, false));
           }
         }
         // Vortex pull: in phase 3, pull player bullets toward Omega every 3s
@@ -971,7 +1470,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
             }
           }
           obj.screenShake = Math.max(obj.screenShake, 5);
-          particles.push(...makeBurst(e.pos, "#e11d48", 12));
+          emitBurst(particles, e.pos, "#e11d48", 12);
         }
         // Rage mode: phase 3 Omega slowly drifts toward the player
         if (e.phase >= 3) {
@@ -1023,43 +1522,61 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     const b = bullets[i];
     const bts = timeScale * (!b.fromPlayer && obj.routeEffect === "bullet_storm" ? 1.22 : 1);
 
-    // Aim assist is the hottest O(bullets × enemies) path. Recalculate steering
-    // periodically; velocity persists between recalculations with no visual loss.
-    const homingInterval = obj.performanceTier === 0 ? 5 : obj.performanceTier === 1 ? 3 : 2;
-    if (b.fromPlayer && enemies.length > 0 && (b.id + frame) % homingInterval === 0) {
+    // Aim assist is the hottest O(bullets × enemies) path. Each bullet KEEPS
+    // its locked target and steers toward it every frame (cheap vector math);
+    // the full scan runs only when the target is dead / out of range, plus a
+    // slow refresh so a better target can still be found later.
+    if (b.fromPlayer && enemies.length > 0) {
       const isFullHoming = b.homing || player.homing;
       const strength = isFullHoming ? Math.max(player.homingStrength, 0.07) : 0.032;
       const maxDistance = isFullHoming ? 650 : 450;
+      const maxDistanceSq = maxDistance * maxDistance;
 
-      let bestTarget: Enemy | null = null;
-      let bestScore = -Infinity;
+      const targetGone = !b.target
+        || b.target.hp <= 0
+        || (() => { const tdx = b.target!.pos.x - b.pos.x, tdy = b.target!.pos.y - b.pos.y; return tdx * tdx + tdy * tdy > maxDistanceSq; })();
+      const homingInterval = obj.performanceTier === 0 ? 5 : obj.performanceTier === 1 ? 3 : 2;
+      const scanDue = targetGone
+        ? (b.id + frame) % homingInterval === 0
+        : (b.id + frame) % 36 === 0; // редкий поиск более удачной цели
 
-      for (const e of enemies) {
-        const dx = e.pos.x - b.pos.x;
-        const dy = e.pos.y - b.pos.y;
-        const distSq = dx * dx + dy * dy;
-        if (distSq > maxDistance * maxDistance) continue;
+      if (scanDue) {
+        let bestTarget: Enemy | null = null;
+        let bestScore = -Infinity;
 
-        const dist = Math.sqrt(distSq);
-        const bSpeed = Math.sqrt(b.vel.x * b.vel.x + b.vel.y * b.vel.y);
-        const dot = bSpeed > 0 ? (b.vel.x * dx + b.vel.y * dy) / (bSpeed * Math.max(dist, 1)) : 0;
+        for (const e of enemies) {
+          if (e.hp <= 0) continue;
+          const dx = e.pos.x - b.pos.x;
+          const dy = e.pos.y - b.pos.y;
+          const distSq = dx * dx + dy * dy;
+          if (distSq > maxDistanceSq) continue;
 
-        if (!isFullHoming && dot < 0.15) continue;
+          const dist = Math.sqrt(distSq);
+          const bSpeed = Math.sqrt(b.vel.x * b.vel.x + b.vel.y * b.vel.y);
+          const dot = bSpeed > 0 ? (b.vel.x * dx + b.vel.y * dy) / (bSpeed * Math.max(dist, 1)) : 0;
 
-        const score = (dot * 3) - (dist / 220);
-        if (score > bestScore) {
-          bestScore = score;
-          bestTarget = e;
+          if (!isFullHoming && dot < 0.15) continue;
+
+          const score = (dot * 3) - (dist / 220);
+          if (score > bestScore) {
+            bestScore = score;
+            bestTarget = e;
+          }
         }
+        b.target = bestTarget ?? undefined;
       }
 
-      if (bestTarget) {
-        const dx = bestTarget.pos.x - b.pos.x;
-        const dy = bestTarget.pos.y - b.pos.y;
+      if (b.target && b.target.hp > 0) {
+        const target = b.target;
+        const dx = target.pos.x - b.pos.x;
+        const dy = target.pos.y - b.pos.y;
         const dist = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
 
-        b.vel.x += (dx / dist) * strength * player.bulletSpeed;
-        b.vel.y += (dy / dist) * strength * player.bulletSpeed;
+        // Ежекадровое плавное доведение (масштаб подобран так, чтобы суммарная
+        // скорость поворота соответствовала прежнему интервальному наведению).
+        const steer = strength * player.bulletSpeed / 3;
+        b.vel.x += (dx / dist) * steer;
+        b.vel.y += (dy / dist) * steer;
 
         const curSpeed = Math.sqrt(b.vel.x * b.vel.x + b.vel.y * b.vel.y);
         if (curSpeed > 0) {
@@ -1073,20 +1590,45 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     b.pos.x += b.vel.x * bts;
     b.pos.y += b.vel.y * bts;
 
+    // 👁️ VOID FRACTURE: снаряд исчезает в разрыве и появляется у другого
+    // (макс. 2 телепорта на снаряд — без бесконечных циклов).
+    if (b.fromPlayer && obj.voidFractures.length >= 2 && (b.voidJumps ?? 0) < VOID_TELEPORT_MAX) {
+      for (let fi = 0; fi < obj.voidFractures.length; fi++) {
+        const f = obj.voidFractures[fi];
+        const fdx = b.pos.x - f.pos.x, fdy = b.pos.y - f.pos.y;
+        if (fdx * fdx + fdy * fdy < 26 * 26) {
+          const others = obj.voidFractures.filter((_, idx) => idx !== fi);
+          const target = others[Math.floor(Math.random() * others.length)];
+          b.pos.x = target.pos.x;
+          b.pos.y = target.pos.y;
+          b.voidJumps = (b.voidJumps ?? 0) + 1;
+          break;
+        }
+      }
+    }
+
     // Ricochet off walls
     if (b.fromPlayer && player.ricochet) {
       if (b.pos.x < 0 || b.pos.x > W) { b.vel.x *= -1; }
       if (b.pos.y < 0) { b.vel.y *= -1; }
     }
 
+    // «Ускоритель плазмы»: дальность полёта (кадры жизни снаряда).
+    if (b.life !== undefined && --b.life <= 0) {
+      releaseBullet(b);
+      bullets.splice(i, 1);
+      continue;
+    }
+
     if (b.pos.x < -40 || b.pos.x > W + 40 || b.pos.y < -60 || b.pos.y > H + 40) {
+      releaseBullet(b);
       bullets.splice(i, 1);
     }
   }
 
   // ─── Bullet collision with enemies ─────────────────────────────────────────
-  const bulletsToRemove = new Set<number>();
-  const spawnedFromSplit: Enemy[] = [];
+  bulletsToRemove.clear();
+  spawnedFromSplit.length = 0;
 
   // Spatial grid avoids testing every player bullet against every enemy.
   // 128px cells plus adjacent cells cover the largest boss collision radius.
@@ -1100,7 +1642,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     const cell = enemyGrid.get(key);
     if (cell) cell.push(enemy); else enemyGrid.set(key, [enemy]);
   }
-  const collisionCandidates: Enemy[] = [];
+  collisionCandidates.length = 0;
 
   for (const b of bullets) {
     if (!b.fromPlayer || bulletsToRemove.has(b.id)) continue;
@@ -1120,10 +1662,17 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       if (enemiesToRemove.has(e.id)) continue;
       // Phantoms are intangible during the dim phase of their cycle.
       if (e.type === "phantom" && Math.floor(e.patternTimer / 90) % 3 === 0) continue;
+      // Пробитие: одна цель не получает урон от одного снаряда дважды —
+      // иначе перекрытие на несколько кадров сжигало заряды pierce и
+      // раз за разом било по щиту одной и той же цели. Массив вместо WeakSet:
+      // pierce ≤ 12, линейная проверка дешевле и не аллоцирует GC-тяжёлые
+      // WeakSet на каждую пулю.
+      if (b.hitList?.includes(e)) continue;
       const size = getEnemySize(e.type);
       const dx = b.pos.x - e.pos.x, dy = b.pos.y - e.pos.y;
       if (dx * dx + dy * dy < (size + b.size) * (size + b.size)) {
         player.stats.shotsHit++;
+        if (b.pierce > 0) (b.hitList ??= []).push(e);
         audio.playHit();
 
         // Hit shield first
@@ -1131,7 +1680,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           const shieldDamage = limitEnemyDamage(e, b.damage * 0.6, frame, enemies);
           e.shieldHp = Math.max(0, e.shieldHp - shieldDamage);
           floatingTexts.push(makeFloatingText(b.pos, `${Math.ceil(shieldDamage)}`, "#93c5fd"));
-          particles.push(...makeBurst(b.pos, "#93c5fd", 4));
+          emitBurst(particles, b.pos, "#93c5fd", 4);
           if (b.pierce <= 0) bulletsToRemove.add(b.id);
           continue;
         }
@@ -1151,17 +1700,34 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         const isCrit = Math.random() < player.critChance;
         if (isCrit) {
           dmg *= player.critMultiplier;
-          particles.push(...makeBurst(b.pos, "#fff", 6));
+          emitBurst(particles, b.pos, "#fff", 2, false, 1);
           floatingTexts.push(makeFloatingText(b.pos, `${Math.ceil(dmg)}!`, "#fbbf24", true));
-        } else {
+          // ⚡ МИФИК «Бог Грома»: криты копят Гнев Бури; десятый высвобождает
+          // Судный Разряд — усиляющуюся цепь без повторов целей.
+          if (hasMythic(player, "mythic_judgement")) {
+            player.wrath++;
+            if (player.wrath >= WRATH_MAX) {
+              player.wrath = 0;
+              triggerJudgement(obj, e, dmg);
+            }
+          }
+          // 👁️ Энтропия растёт и от попаданий.
+          if (hasMythic(player, "mythic_void") && player.voidTimer <= 0) {
+            player.entropy = Math.min(ENTROPY_MAX, player.entropy + 0.15);
+          }
+        } else if (floatingTexts.length < 50 && (b.id + frame) % 4 === 0) {
+          // Числа урона обычных попаданий: не чаще 1/4 хитов и не под завязку —
+          // строка+объект на КАЖДОЕ попадание были главным источником churn.
           floatingTexts.push(makeFloatingText(b.pos, `${Math.ceil(dmg)}`, "#fff"));
         }
 
+        // 👁️ КОНЕЦ МАТЕРИИ: враги уязвимее (+25% урона).
+        if (player.voidTimer > 0) dmg *= 1.25;
         const appliedDamage = damageEnemy(e, dmg, frame, enemies);
         player.stats.damageDealt += appliedDamage;
 
         // Status effects
-        if (Math.random() < player.burnChance)   { e.burning  = Math.max(e.burning,  180); particles.push(...makeBurst(b.pos, "#f97316", 3)); }
+        if (Math.random() < player.burnChance)   { e.burning  = Math.max(e.burning,  180); emitBurst(particles, b.pos, "#f97316", 3); }
         if (Math.random() < player.freezeChance) {
           if (!e.isBoss && !e.guardRole) {
             e.frozen = Math.max(e.frozen, 120);
@@ -1176,9 +1742,9 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
               e.controlResistance = 3;
             }
           }
-          particles.push(...makeBurst(b.pos, "#bfdbfe", e.isBoss ? 5 : 3));
+          emitBurst(particles, b.pos, "#bfdbfe", e.isBoss ? 5 : 3);
         }
-        if (Math.random() < player.poisonChance) { e.poisoned = Math.max(e.poisoned, 240); particles.push(...makeBurst(b.pos, "#4ade80", 3)); }
+        if (Math.random() < player.poisonChance) { e.poisoned = Math.max(e.poisoned, 240); emitBurst(particles, b.pos, "#4ade80", 3); }
 
         // Lightning chain
         if (Math.random() < player.lightningChance) {
@@ -1217,6 +1783,17 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           if (e.isElite) player.stats.elitesKilled++;
           if (e.isBoss) player.stats.bossesKilled++;
           devourSoul(player, e, particles, floatingTexts);
+          onMythicKill(obj, e);
+
+          // «ГОЛОД БЕЗДНЫ» (синергия Немезиды): убийства подлечивают корпус
+          // и иногда кормят дополнительной душой (в пределах лимита).
+          if (player.voidHunger) {
+            if (Math.random() < 0.15) player.hp = Math.min(player.hp + 2, player.maxHp);
+            if (Math.random() < 0.25 && player.voidSouls < VOID_SOUL_MAX) {
+              player.voidSouls++;
+              player.voidSoulIdleTimer = 0;
+            }
+          }
 
           // Explosion
           if (player.explosiveBullets) {
@@ -1285,13 +1862,15 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
             obj.screenShake = Math.max(obj.screenShake, 4);
           }
 
+          // Лимит частиц смерти (§5): обычный ≤8, элитный ≤16, босс ≤40.
+          // Зрелищность — размером/яркостью частиц и кольцом взрыва, а не числом.
           const col = e.isBoss ? "#f43f5e" : (e.isElite ? "#fbbf24" : "#fb923c");
-          particles.push(...makeBurst(e.pos, col, e.isBoss ? 45 : (e.isElite ? 25 : 14), e.isBoss));
-          if (player.shipClass === "void_wraith") particles.push(...makeShards(e.pos, e.isBoss ? 16 : 7));
+          emitBurst(particles, e.pos, col, e.isBoss ? 40 : (e.isElite ? 16 : 8), e.isBoss, 2);
+          if (player.shipClass === "void_wraith") emitShards(particles, e.pos, e.isBoss ? 12 : 5);
           xpOrbs.push(makeXpOrb(e.pos, xpGained));
         }
 
-        particles.push(...makeBurst(b.pos, "#fbbf24", 3));
+        emitBurst(particles, b.pos, "#fbbf24", 1, false, 1);
 
         // Phase Discharge: every Nth hit spawns shard bullets
         if (player.phaseDischarge && player.phaseDischargeCount > 0) {
@@ -1299,12 +1878,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           if (frame % shardInterval === 0) {
             for (let si = 0; si < 4; si++) {
               const sa = (si / 4) * Math.PI * 2 + Math.random() * 0.5;
-              bullets.push({
-                id: uid(), pos: { x: b.pos.x, y: b.pos.y },
-                vel: { x: Math.cos(sa) * player.bulletSpeed * 0.7, y: Math.sin(sa) * player.bulletSpeed * 0.7 },
-                fromPlayer: true, damage: b.damage * 0.5, size: 2, color: "#c084fc",
-                pierce: 0, homing: false,
-              });
+              bullets.push(spawnPlayerSideBullet(player, { x: b.pos.x, y: b.pos.y }, { x: Math.cos(sa) * player.bulletSpeed * 0.7, y: Math.sin(sa) * player.bulletSpeed * 0.7 }, b.damage * 0.5, 2, "#c084fc"));
             }
           }
         }
@@ -1317,7 +1891,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 
   // Remove bullets/enemies and add splitters
   for (let i = bullets.length - 1; i >= 0; i--) {
-    if (bulletsToRemove.has(bullets[i].id)) bullets.splice(i, 1);
+    if (bulletsToRemove.has(bullets[i].id)) { releaseBullet(bullets[i]); bullets.splice(i, 1); }
   }
   for (let i = enemies.length - 1; i >= 0; i--) {
     if (enemiesToRemove.has(enemies[i].id)) enemies.splice(i, 1);
@@ -1334,6 +1908,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       if (b.fromPlayer) continue;
       const dx = b.pos.x - player.pos.x, dy = b.pos.y - player.pos.y;
       if (dx * dx + dy * dy < (18 + b.size) * (18 + b.size)) {
+        releaseBullet(b);
         bullets.splice(i, 1);
         takeDamage(player, b.damage * 8.5, particles, obj, input.onDeath);
         break; // invulnerability starts immediately; do not stack hits in one tick
@@ -1409,7 +1984,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           break;
       }
 
-      particles.push(...makeBurst(p.pos, "#38bdf8", 16));
+      emitBurst(particles, p.pos, "#38bdf8", 16);
       powerups.splice(i, 1);
       continue;
     }
@@ -1426,7 +2001,8 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     orb.attracted = true;
 
     const magnetBonus = Math.max(0, (player.magnetRange - 80) * 0.05);
-    const pullSpeed = Math.min(18, 8.5 + (dist > 250 ? 3.5 : 0) + magnetBonus);
+    // «Магнитный гравизахват» ускоряет само притяжение, а не только радиус.
+    const pullSpeed = Math.min(22, (8.5 + (dist > 250 ? 3.5 : 0) + magnetBonus) * (1 + player.magnetPullBonus));
 
     orb.pos.x += (dx / Math.max(dist, 1)) * pullSpeed;
     orb.pos.y += (dy / Math.max(dist, 1)) * pullSpeed;
@@ -1434,6 +2010,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     if (dist < 24) {
       audio.playXp();
       player.xp += orb.value;
+      releaseXpOrb(orb);
       xpOrbs.splice(i, 1);
       while (player.xp >= player.xpToNext) {
         player.xp -= player.xpToNext;
@@ -1453,13 +2030,13 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     ft.pos.y += ft.vel.y;
     ft.vel.y *= 0.95;
     ft.life--;
-    if (ft.life <= 0) floatingTexts.splice(i, 1);
+    if (ft.life <= 0) { releaseFloatingText(ft); floatingTexts.splice(i, 1); }
   }
 
   // ─── Lightnings ────────────────────────────────────────────────────────────
   for (let i = lightnings.length - 1; i >= 0; i--) {
     lightnings[i].life--;
-    if (lightnings[i].life <= 0) lightnings.splice(i, 1);
+    if (lightnings[i].life <= 0) { releaseLightning(lightnings[i]); lightnings.splice(i, 1); }
   }
 
   // ─── Particles ─────────────────────────────────────────────────────────────
@@ -1470,7 +2047,10 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     p.vel.x *= 0.93;
     p.vel.y *= 0.93;
     p.life--;
-    if (p.life <= 0) particles.splice(i, 1);
+    if (p.life <= 0) {
+      releaseParticle(p);
+      particles.splice(i, 1);
+    }
   }
 
   // ─── Explosions ────────────────────────────────────────────────────
@@ -1589,6 +2169,11 @@ const OBJECT_BUDGETS = {
   enemies: 80,
 } as const;
 
+/** Обрезка с возвратом вытесненных объектов в пул (анти-GC). */
+function trimToPool<T>(items: T[], max: number, release: (item: T) => void) {
+  while (items.length > max) release(items.shift()!);
+}
+
 function trimOldest<T>(items: T[], max: number) {
   if (items.length > max) items.splice(0, items.length - max);
 }
@@ -1609,6 +2194,7 @@ function enforceObjectBudgets(obj: GameObjects) {
       const target = bullet.fromPlayer ? playerBullets : enemyBullets;
       const max = bullet.fromPlayer ? playerBulletCap : enemyBulletCap;
       if (target.length < max) target.push(bullet);
+      else releaseBullet(bullet); // вытесненные возвращаются в пул
     }
     bullets.length = 0;
     bullets.push(...playerBullets.reverse(), ...enemyBullets.reverse());
@@ -1620,10 +2206,12 @@ function enforceObjectBudgets(obj: GameObjects) {
     obj.enemies.length = 0;
     obj.enemies.push(...bosses, ...regular);
   }
-  trimOldest(obj.particles, Math.ceil(OBJECT_BUDGETS.particles * qualityFactor));
-  trimOldest(obj.xpOrbs, Math.ceil(OBJECT_BUDGETS.xpOrbs * Math.max(0.75, qualityFactor)));
-  trimOldest(obj.floatingTexts, Math.ceil(OBJECT_BUDGETS.floatingTexts * qualityFactor));
-  trimOldest(obj.lightnings, Math.ceil(OBJECT_BUDGETS.lightnings * Math.max(0.6, qualityFactor)));
+  // Частицы: жёсткий лимит уже действует в acquireParticle; страховочная
+  // обрезка возвращает старые объекты в пул, а не выбрасывает.
+  while (obj.particles.length > particleBudget) releaseParticle(obj.particles.shift()!);
+  trimToPool(obj.xpOrbs, Math.ceil(OBJECT_BUDGETS.xpOrbs * Math.max(0.75, qualityFactor)), releaseXpOrb);
+  trimToPool(obj.floatingTexts, Math.ceil(OBJECT_BUDGETS.floatingTexts * qualityFactor), releaseFloatingText);
+  trimToPool(obj.lightnings, Math.ceil(OBJECT_BUDGETS.lightnings * Math.max(0.6, qualityFactor)), releaseLightning);
   trimOldest(obj.mines, OBJECT_BUDGETS.mines);
   trimOldest(obj.explosions, Math.ceil(OBJECT_BUDGETS.explosions * qualityFactor));
   trimOldest(obj.powerups, OBJECT_BUDGETS.powerups);
@@ -1631,21 +2219,39 @@ function enforceObjectBudgets(obj: GameObjects) {
 
 function makePlayerBullet(player: PlayerState, pos: Vec2, vel: Vec2): Bullet {
   player.stats.shotsFired++;
-  return {
-    id: uid(), pos: { ...pos }, vel,
-    fromPlayer: true,
-    // Devoured souls permanently boost every bolt the Wraith fires this run.
-    damage: player.bulletDamage * soulDamageMult(player),
-    size: player.bulletSize,
-    color: player.snipeMode ? "#ffffff" : (player.shipClass === "tempest" ? "#c084fc" : (player.shipClass === "dreadnought" ? "#f59e0b" : (player.shipClass === "void_wraith" ? "#e879f9" : "#38bdf8"))),
-    pierce: player.piercing,
-    homing: player.homing,
-  };
+  // «ПРИЗРАЧНЫЙ АРСЕНАЛ»: в Фазе Бездны снаряды чуть быстрее и вспыхивают
+  // призрачным светом (визуально отличается от обычных болтов).
+  const arsenalActive = player.ghostArsenal && player.ghostTimer > 0;
+  // Пул: объект и его pos/vel переиспользуются — ноль аллокаций после прогрева.
+  const b = acquireBullet();
+  b.fromPlayer = true;
+  b.pos.x = pos.x; b.pos.y = pos.y;
+  if (arsenalActive) { b.vel.x = vel.x * 1.15; b.vel.y = vel.y * 1.15; }
+  else { b.vel.x = vel.x; b.vel.y = vel.y; }
+  // Devoured souls permanently boost every bolt the Wraith fires this run.
+  b.damage = player.bulletDamage * soulDamageMult(player);
+  b.size = player.bulletSize;
+  b.color = arsenalActive ? "#f5d0fe"
+    : player.snipeMode ? "#ffffff"
+    : (player.shipClass === "tempest" ? "#c084fc" : (player.shipClass === "dreadnought" ? "#f59e0b" : (player.shipClass === "void_wraith" ? "#e879f9" : "#38bdf8")));
+  b.pierce = player.piercing + (player.voidTimer > 0 ? 2 : 0);
+  b.homing = player.homing;
+  // «Ускоритель плазмы» продлевает полёт: базовой дальности хватает на
+  // несколько экранов, так что прямой стрельбе лимит не мешает — выгоду
+  // получают наводящиеся и криволинейные снаряды.
+  b.life = Math.round(160 * (1 + player.bulletRangeBonus));
+  return b;
 }
 
 function firePlayerBullets(bullets: Bullet[], player: PlayerState, _enemies: Enemy[], _frame: number) {
   const shots = 1 + player.multishot;
-  const totalSpread = player.spreadAngle;
+  // 🔥 Перегрузка: снаряды летят быстрее (множитель только на время режима).
+  const odSpeed = player.overdriveTimer > 0 ? 1.25 : 1;
+  // «Широкий сектор» (чётные уровни) подтягивает крайние снаряды к центру,
+  // сохраняя полную окружность для круговых билдов.
+  const totalSpread = player.spreadAngle >= 350
+    ? player.spreadAngle
+    : player.spreadAngle * (1 - player.spreadTighten);
 
   for (let i = 0; i < shots; i++) {
     let angle: number;
@@ -1655,7 +2261,7 @@ function firePlayerBullets(bullets: Bullet[], player: PlayerState, _enemies: Ene
         for (const side of [-1, 1]) {
           bullets.push(makePlayerBullet(player,
             { x: player.pos.x + side * 7, y: player.pos.y - 16 },
-            { x: side * 0.12 * player.bulletSpeed, y: -player.bulletSpeed }
+            { x: side * 0.12 * player.bulletSpeed * odSpeed, y: -player.bulletSpeed * odSpeed }
           ));
         }
         continue;
@@ -1666,8 +2272,8 @@ function firePlayerBullets(bullets: Bullet[], player: PlayerState, _enemies: Ene
     } else {
       angle = -Math.PI / 2 + ((i / (shots - 1)) - 0.5) * (totalSpread * Math.PI / 180);
     }
-    const vx = Math.cos(angle) * player.bulletSpeed;
-    const vy = Math.sin(angle) * player.bulletSpeed;
+    const vx = Math.cos(angle) * player.bulletSpeed * odSpeed;
+    const vy = Math.sin(angle) * player.bulletSpeed * odSpeed;
     bullets.push(makePlayerBullet(player, { x: player.pos.x, y: player.pos.y - 20 }, { x: vx, y: vy }));
   }
 
@@ -1678,8 +2284,8 @@ function firePlayerBullets(bullets: Bullet[], player: PlayerState, _enemies: Ene
       if (shots === 1) angle = Math.PI / 2;
       else if (totalSpread >= 350) angle = (i / shots) * Math.PI * 2 + Math.PI;
       else angle = Math.PI / 2 + ((i / (shots - 1)) - 0.5) * (totalSpread * Math.PI / 180);
-      const vx = Math.cos(angle) * player.bulletSpeed;
-      const vy = Math.sin(angle) * player.bulletSpeed;
+      const vx = Math.cos(angle) * player.bulletSpeed * odSpeed;
+      const vy = Math.sin(angle) * player.bulletSpeed * odSpeed;
       bullets.push(makePlayerBullet(player, { x: player.pos.x, y: player.pos.y + 20 }, { x: vx, y: vy }));
     }
   }
@@ -1706,25 +2312,25 @@ function shootEnemy(e: Enemy, player: PlayerState, bullets: Bullet[], wave: numb
     case "bomber": {
       for (let i = 0; i < 6; i++) {
         const a = (i / 6) * Math.PI * 2;
-        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd, y: Math.sin(a) * spd }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
+        bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(a) * spd, y: Math.sin(a) * spd }, dmg, size, color, 0, false));
       }
       break;
     }
     case "sniper": {
-      bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: (dx / dist) * spd * 1.7, y: (dy / dist) * spd * 1.7 }, fromPlayer: false, damage: dmg * 1.8, size: size + 2, color, pierce: 0, homing: false });
+      bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: (dx / dist) * spd * 1.7, y: (dy / dist) * spd * 1.7 }, dmg * 1.8, size + 2, color, 0, false));
       break;
     }
     case "artillery": {
       for (let i = 0; i < 5; i++) {
         const a = (i / 5) * Math.PI * 2;
-        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd * 0.85, y: Math.sin(a) * spd * 0.85 }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
+        bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(a) * spd * 0.85, y: Math.sin(a) * spd * 0.85 }, dmg, size, color, 0, false));
       }
       break;
     }
     case "spinner": {
       for (let i = 0; i < 4; i++) {
         const a = (i / 4) * Math.PI * 2 + e.angle;
-        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd, y: Math.sin(a) * spd }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
+        bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(a) * spd, y: Math.sin(a) * spd }, dmg, size, color, 0, false));
       }
       break;
     }
@@ -1732,44 +2338,44 @@ function shootEnemy(e: Enemy, player: PlayerState, bullets: Bullet[], wave: numb
       const baseAngle = Math.atan2(dy, dx);
       for (const offset of [-0.22, 0, 0.22]) {
         const angle = baseAngle + offset;
-        bullets.push({ id: uid(), pos: { ...e.pos }, vel: { x: Math.cos(angle) * spd, y: Math.sin(angle) * spd }, fromPlayer: false, damage: dmg, size: size + 1, color, pierce: 0, homing: false });
+        bullets.push(spawnEnemyBullet({ ...e.pos }, { x: Math.cos(angle) * spd, y: Math.sin(angle) * spd }, dmg, size + 1, color, 0, false));
       }
       break;
     }
     case "phantom": {
       if (Math.floor(e.patternTimer / 90) % 3 !== 0) {
-        bullets.push({ id: uid(), pos: { ...e.pos }, vel: { x: (dx / dist) * spd * 1.65, y: (dy / dist) * spd * 1.65 }, fromPlayer: false, damage: dmg * 1.25, size, color, pierce: 0, homing: false });
+        bullets.push(spawnEnemyBullet({ ...e.pos }, { x: (dx / dist) * spd * 1.65, y: (dy / dist) * spd * 1.65 }, dmg * 1.25, size, color, 0, false));
       }
       break;
     }
     case "leecher": {
-      bullets.push({ id: uid(), pos: { ...e.pos }, vel: { x: (dx / dist) * spd * 1.25, y: (dy / dist) * spd * 1.25 }, fromPlayer: false, damage: dmg * 1.6, size: size + 3, color, pierce: 1, homing: false });
+      bullets.push(spawnEnemyBullet({ ...e.pos }, { x: (dx / dist) * spd * 1.25, y: (dy / dist) * spd * 1.25 }, dmg * 1.6, size + 3, color, 1, false));
       break;
     }
     case "carrier": {
       const baseAngle = Math.atan2(dy, dx);
       for (let i = -2; i <= 2; i++) {
         const angle = baseAngle + i * 0.18;
-        bullets.push({ id: uid(), pos: { ...e.pos }, vel: { x: Math.cos(angle) * spd * 0.9, y: Math.sin(angle) * spd * 0.9 }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
+        bullets.push(spawnEnemyBullet({ ...e.pos }, { x: Math.cos(angle) * spd * 0.9, y: Math.sin(angle) * spd * 0.9 }, dmg, size, color, 0, false));
       }
       break;
     }
     case "singularity": {
       for (let i = 0; i < 8; i++) {
         const angle = (i / 8) * Math.PI * 2 + e.angle;
-        bullets.push({ id: uid(), pos: { ...e.pos }, vel: { x: Math.cos(angle) * spd * 0.72, y: Math.sin(angle) * spd * 0.72 }, fromPlayer: false, damage: dmg * 1.15, size: size + 1, color, pierce: 0, homing: false });
+        bullets.push(spawnEnemyBullet({ ...e.pos }, { x: Math.cos(angle) * spd * 0.72, y: Math.sin(angle) * spd * 0.72 }, dmg * 1.15, size + 1, color, 0, false));
       }
       break;
     }
     case "boss_destroyer": {
-      bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: (dx / dist) * spd * 1.2, y: (dy / dist) * spd * 1.2 }, fromPlayer: false, damage: dmg, size: size + 2, color, pierce: 0, homing: false });
+      bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: (dx / dist) * spd * 1.2, y: (dy / dist) * spd * 1.2 }, dmg, size + 2, color, 0, false));
       for (let s2 = -1; s2 <= 1; s2 += 2) {
-        bullets.push({ id: uid(), pos: { x: e.pos.x + s2 * 45, y: e.pos.y }, vel: { x: s2 * spd * 0.45, y: spd * 0.95 }, fromPlayer: false, damage: dmg * 0.7, size, color, pierce: 0, homing: false });
+        bullets.push(spawnEnemyBullet({ x: e.pos.x + s2 * 45, y: e.pos.y }, { x: s2 * spd * 0.45, y: spd * 0.95 }, dmg * 0.7, size, color, 0, false));
       }
       if (e.phase >= 1) {
         for (let i = 0; i < 6; i++) {
           const a = (i / 6) * Math.PI * 2;
-          bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd * 0.8, y: Math.sin(a) * spd * 0.8 }, fromPlayer: false, damage: dmg * 0.6, size: size - 1, color, pierce: 0, homing: false });
+          bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(a) * spd * 0.8, y: Math.sin(a) * spd * 0.8 }, dmg * 0.6, size - 1, color, 0, false));
         }
       }
       break;
@@ -1777,32 +2383,32 @@ function shootEnemy(e: Enemy, player: PlayerState, bullets: Bullet[], wave: numb
     case "boss_mothership": {
       for (let i = 0; i < 6; i++) {
         const a = (i / 6) * Math.PI * 2 + e.angle * 0.02;
-        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd, y: Math.sin(a) * spd }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
+        bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(a) * spd, y: Math.sin(a) * spd }, dmg, size, color, 0, false));
       }
       if (e.phase >= 1) {
-        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: (dx / dist) * spd * 1.4, y: (dy / dist) * spd * 1.4 }, fromPlayer: false, damage: dmg * 1.3, size: size + 3, color, pierce: 1, homing: false });
+        bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: (dx / dist) * spd * 1.4, y: (dy / dist) * spd * 1.4 }, dmg * 1.3, size + 3, color, 1, false));
       }
       break;
     }
     case "boss_dreadnought": {
       for (let i = 0; i < 8; i++) {
         const a = (i / 8) * Math.PI * 2 + e.angle * 0.015;
-        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd * 0.9, y: Math.sin(a) * spd * 0.9 }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
+        bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(a) * spd * 0.9, y: Math.sin(a) * spd * 0.9 }, dmg, size, color, 0, false));
       }
       if (e.phase >= 1) {
-        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: (dx / dist) * spd * 1.7, y: (dy / dist) * spd * 1.7 }, fromPlayer: false, damage: dmg * 2, size: 11, color, pierce: 3, homing: false });
+        bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: (dx / dist) * spd * 1.7, y: (dy / dist) * spd * 1.7 }, dmg * 2, 11, color, 3, false));
       }
       break;
     }
     case "boss_eclipse": {
       for (let i = 0; i < 10; i++) {
         const a = (i / 10) * Math.PI * 2 + e.angle * 0.02;
-        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd, y: Math.sin(a) * spd }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
+        bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(a) * spd, y: Math.sin(a) * spd }, dmg, size, color, 0, false));
       }
       if (e.phase >= 1) {
         for (let i = 0; i < 5; i++) {
           const a = (i / 5) * Math.PI * 2;
-          bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd * 1.35, y: Math.sin(a) * spd * 1.35 }, fromPlayer: false, damage: dmg * 1.3, size: size + 2, color, pierce: 0, homing: true });
+          bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(a) * spd * 1.35, y: Math.sin(a) * spd * 1.35 }, dmg * 1.3, size + 2, color, 0, true));
         }
       }
       break;
@@ -1810,7 +2416,7 @@ function shootEnemy(e: Enemy, player: PlayerState, bullets: Bullet[], wave: numb
     case "boss_titan": {
       for (let i = 0; i < 12; i++) {
         const a = (i / 12) * Math.PI * 2;
-        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd * (0.5 + e.phase * 0.4), y: Math.sin(a) * spd * (0.5 + e.phase * 0.4) }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
+        bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(a) * spd * (0.5 + e.phase * 0.4), y: Math.sin(a) * spd * (0.5 + e.phase * 0.4) }, dmg, size, color, 0, false));
       }
       break;
     }
@@ -1819,19 +2425,19 @@ function shootEnemy(e: Enemy, player: PlayerState, bullets: Bullet[], wave: numb
       for (let i = 0; i < count; i++) {
         const a = (i / count) * Math.PI * 2 + e.angle * (0.025 + e.phase * 0.008);
         const speedBand = e.phase >= 2 && i % 2 === 0 ? 0.72 : 1.08 + e.phase * 0.08;
-        bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: Math.cos(a) * spd * speedBand, y: Math.sin(a) * spd * speedBand }, fromPlayer: false, damage: dmg * (e.phase >= 3 ? 1.15 : 1), size: size + e.phase, color, pierce: 0, homing: false });
+        bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(a) * spd * speedBand, y: Math.sin(a) * spd * speedBand }, dmg * (e.phase >= 3 ? 1.15 : 1), size + e.phase, color, 0, false));
       }
       if (e.phase >= 1) {
         const aim = Math.atan2(dy, dx);
         for (const offset of e.phase >= 3 ? [-0.3, -0.1, 0.1, 0.3] : [-0.14, 0.14]) {
           const angle = aim + offset;
-          bullets.push({ id: uid(), pos: { ...e.pos }, vel: { x: Math.cos(angle) * spd * 1.65, y: Math.sin(angle) * spd * 1.65 }, fromPlayer: false, damage: dmg * 1.25, size: size + 2, color: "#ffffff", pierce: 1, homing: false });
+          bullets.push(spawnEnemyBullet({ ...e.pos }, { x: Math.cos(angle) * spd * 1.65, y: Math.sin(angle) * spd * 1.65 }, dmg * 1.25, size + 2, "#ffffff", 1, false));
         }
       }
       break;
     }
     default: {
-      bullets.push({ id: uid(), pos: { x: e.pos.x, y: e.pos.y }, vel: { x: (dx / dist) * spd, y: (dy / dist) * spd }, fromPlayer: false, damage: dmg, size, color, pierce: 0, homing: false });
+      bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: (dx / dist) * spd, y: (dy / dist) * spd }, dmg, size, color, 0, false));
     }
   }
 }
@@ -1848,13 +2454,15 @@ function chainLightning(source: Enemy, enemies: Enemy[], lightnings: Lightning[]
       if (d < nearDist && d < 220 * 220) { nearDist = d; nearest = e; }
     }
     if (!nearest) break;
-    lightnings.push({ id: uid(), from: { ...current.pos }, to: { ...nearest.pos }, life: 8 });
+    lightnings.push(makeLightning(current.pos, nearest.pos, 8));
     damageEnemy(nearest, dmg * 0.7, frame, enemies);
     current = nearest;
   }
 }
 
-function explodeArea(pos: Vec2, radius: number, enemies: Enemy[], toRemove: Set<number>, particles: Particle[], explosions: { id: number; pos: Vec2; radius: number; progress: number }[], player: PlayerState, frame: number) {
+function explodeArea(pos: Vec2, radius: number, enemies: Enemy[], toRemove: Set<number>, particles: Particle[], explosions: { id: number; pos: Vec2; radius: number; progress: number }[], player: PlayerState, frame: number, visualScale = 0.5) {
+  // Урон взрыва — игровая логика: выполняется для ВСЕХ врагов в радиусе
+  // независимо от состояния визуальных лимитов.
   explosions.push({ id: uid(), pos: { ...pos }, radius, progress: 0 });
   for (const e of enemies) {
     const dx = e.pos.x - pos.x, dy = e.pos.y - pos.y;
@@ -1862,9 +2470,13 @@ function explodeArea(pos: Vec2, radius: number, enemies: Enemy[], toRemove: Set<
       const blastDamage = damageEnemy(e, player.bulletDamage * 3, frame, enemies);
       player.stats.damageDealt += blastDamage;
       if (e.hp <= 0) toRemove.add(e.id);
-      particles.push(...makeBurst(e.pos, "#f97316", 5));
     }
   }
+  // Визуал взрыва — ОДИН эффект (кольцо + искры в центре), а не по 5 частиц
+  // на каждого задетого врага: при 30 смертях × 40 врагов это давало до 6000
+  // частиц за кадр — тот самый квадратичный каскад из ТЗ. Смертельные взрывы
+  // — вторичная реакция, поэтому visualScale по умолчанию 0.5 (§11).
+  emitBurst(particles, pos, "#f97316", Math.ceil(10 * visualScale), true, 1);
 }
 
 function takeDamage(player: PlayerState, amount: number, particles: Particle[], obj: GameObjects, onDeath: () => void) {
@@ -1881,7 +2493,7 @@ function takeDamage(player: PlayerState, amount: number, particles: Particle[], 
     player.hp -= amount;
   }
   player.invincTimer = 75;
-  particles.push(...makeBurst(player.pos, "#f87171", 10));
+  emitBurst(particles, player.pos, "#f87171", 10);
   if (player.hp <= 0) {
     player.hp = 0;
     onDeath();

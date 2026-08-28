@@ -1,4 +1,4 @@
-import type { PlayerState } from "./types";
+import type { PlayerState, ShipClassId } from "./types";
 
 export interface SynergyDef {
   id: string;
@@ -6,6 +6,8 @@ export interface SynergyDef {
   icon: string;
   description: string;
   requires: string[];
+  /** Необязательный гейт класса корабля (синергии «Немезиды»). */
+  shipClass?: ShipClassId;
   apply: (player: PlayerState) => void;
 }
 
@@ -38,13 +40,31 @@ export const SYNERGIES: SynergyDef[] = [
     requires: ["ghost", "quantum_tunnel", "singularity_rounds"],
     apply: player => { player.ghostMode = true; player.piercing += 3; player.homing = true; player.homingStrength += 0.04; },
   },
+  // ─── Эксклюзивные синергии премиального «Призрака «Немезида»» ──────────────
+  // Только 2 штуки — отдельного дерева эксклюзивных предметов не создаём.
+  {
+    id: "void_hunger", name: "ГОЛОД БЕЗДНЫ", icon: "🩸",
+    description: "Убийства: шанс восстановить HP и шанс дополнительной души.",
+    requires: ["life_steal", "aura"],
+    shipClass: "void_wraith",
+    apply: player => { player.voidHunger = true; },
+  },
+  {
+    id: "ghost_arsenal", name: "ПРИЗРАЧНЫЙ АРСЕНАЛ", icon: "👁️",
+    description: "В Фазе Бездны снаряды ускоряются и вспыхивают призрачным светом.",
+    requires: ["phase_discharge", "homing", "singularity_rounds"],
+    shipClass: "void_wraith",
+    apply: player => { player.ghostArsenal = true; },
+  },
 ];
 
 export function unlockAvailableSynergies(player: PlayerState): SynergyDef[] {
   const owned = new Set(player.upgrades.map(upgrade => upgrade.id));
   const unlocked: SynergyDef[] = [];
   for (const synergy of SYNERGIES) {
-    if (player.synergies.includes(synergy.id) || !synergy.requires.every(id => owned.has(id))) continue;
+    if (player.synergies.includes(synergy.id)) continue;
+    if (synergy.shipClass && player.shipClass !== synergy.shipClass) continue;
+    if (!synergy.requires.every(id => owned.has(id))) continue;
     synergy.apply(player);
     player.synergies.push(synergy.id);
     unlocked.push(synergy);

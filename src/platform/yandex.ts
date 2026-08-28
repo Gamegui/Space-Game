@@ -258,6 +258,35 @@ class YandexPlatform {
       } catch { finish(); }
     });
   }
+
+  // ── Player Data (meta-progression cloud save) ──────────────────────────────
+  /** Load arbitrary JSON saved under a key. Returns null on guests/errors. */
+  async loadData<T>(key: string): Promise<T | null> {
+    await this.init();
+    try {
+      if (!this.player?.getData) return null;
+      const data = await this.player.getData([key]);
+      return (data?.[key] as T | undefined) ?? null;
+    } catch (err) {
+      console.warn("[yandex] loadData failed", err);
+      return null;
+    }
+  }
+
+  /** Save arbitrary JSON under a key (best-effort, non-blocking UI). Uses
+   *  flush=true: run results and purchased meta upgrades must reach the cloud
+   *  immediately — the player may quit right after the death screen. */
+  async saveData(key: string, value: unknown): Promise<boolean> {
+    await this.init();
+    try {
+      if (!this.player?.setData) return false;
+      await this.player.setData({ [key]: value }, true);
+      return true;
+    } catch (err) {
+      console.warn("[yandex] saveData failed", err);
+      return false;
+    }
+  }
 }
 
 export const yandex = new YandexPlatform();

@@ -306,6 +306,131 @@ class SoundEngine {
   }
 
   // ─── SFX: Tactical Nuke ─────────────────────────────────────────────────────
+  // ─── МИФИЧЕСКИЙ ТИР: торжественные звуки события ──────────────────────────
+  /** Mythic Sting (~2.6 c): мощный удар → подъём → торжественный аккорд →
+   *  высокий финал. Фоновая музыка временно приглушается и плавно возвращается. */
+  public playMythicSting() {
+    if (this.isMuted) return;
+    this.resume();
+    if (!this.ctx || !this.sfxGain) return;
+    const t = this.ctx.currentTime;
+
+    // Приглушить обычную музыку, вернуть через 3.2 c.
+    try {
+      if (this.musicGain) {
+        this.musicGain.gain.cancelScheduledValues(t);
+        this.musicGain.gain.setTargetAtTime(0.08, t, 0.12);
+        this.musicGain.gain.setTargetAtTime(1, t + 3.2, 0.8);
+      }
+    } catch { /* музыка не играет — не критично */ }
+
+    const master = this.ctx.createGain();
+    master.gain.value = 1.6; // заметнее обычных SFX
+    master.connect(this.sfxGain);
+
+    // 1) Мощный удар (низкий синус + шумовой транзиент).
+    const hit = this.ctx.createOscillator();
+    const hitGain = this.ctx.createGain();
+    hit.type = "sine";
+    hit.frequency.setValueAtTime(160, t);
+    hit.frequency.exponentialRampToValueAtTime(38, t + 0.5);
+    hitGain.gain.setValueAtTime(0.9, t);
+    hitGain.gain.exponentialRampToValueAtTime(0.001, t + 0.9);
+    hit.connect(hitGain).connect(master);
+    hit.start(t); hit.stop(t + 1);
+
+    // 2) Короткий подъём (свип вверх).
+    const rise = this.ctx.createOscillator();
+    const riseGain = this.ctx.createGain();
+    rise.type = "sawtooth";
+    rise.frequency.setValueAtTime(180, t + 0.25);
+    rise.frequency.exponentialRampToValueAtTime(720, t + 1.0);
+    riseGain.gain.setValueAtTime(0.0001, t + 0.25);
+    riseGain.gain.exponentialRampToValueAtTime(0.22, t + 0.55);
+    riseGain.gain.exponentialRampToValueAtTime(0.001, t + 1.15);
+    rise.connect(riseGain).connect(master);
+    rise.start(t + 0.25); rise.stop(t + 1.2);
+
+    // 3) Торжественный аккорд (мажорное трезвучие + квинта).
+    for (const [freq, delay, vol] of [[196, 1.0, 0.28], [246.9, 1.05, 0.22], [293.7, 1.1, 0.22], [392, 1.15, 0.18]] as const) {
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = "triangle";
+      osc.frequency.value = freq;
+      g.gain.setValueAtTime(0.0001, t + delay);
+      g.gain.exponentialRampToValueAtTime(vol, t + delay + 0.08);
+      g.gain.exponentialRampToValueAtTime(0.001, t + delay + 1.4);
+      osc.connect(g).connect(master);
+      osc.start(t + delay); osc.stop(t + delay + 1.5);
+    }
+
+    // 4) Высокий завершающий звук.
+    const shine = this.ctx.createOscillator();
+    const shineGain = this.ctx.createGain();
+    shine.type = "sine";
+    shine.frequency.setValueAtTime(1046, t + 1.9);
+    shine.frequency.exponentialRampToValueAtTime(2093, t + 2.5);
+    shineGain.gain.setValueAtTime(0.0001, t + 1.9);
+    shineGain.gain.exponentialRampToValueAtTime(0.3, t + 2.1);
+    shineGain.gain.exponentialRampToValueAtTime(0.001, t + 2.7);
+    shine.connect(shineGain).connect(master);
+    shine.start(t + 1.9); shine.stop(t + 2.8);
+  }
+
+  /** Появление карточки мифика: короткое искрящееся арпеджио вверх. */
+  public playMythicCard() {
+    if (this.isMuted) return;
+    this.resume();
+    if (!this.ctx || !this.sfxGain) return;
+    const t = this.ctx.currentTime;
+    const master = this.ctx.createGain();
+    master.gain.value = 0.9;
+    master.connect(this.sfxGain);
+    [523, 659, 784, 1046].forEach((freq, i) => {
+      const osc = this.ctx!.createOscillator();
+      const g = this.ctx!.createGain();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      const start = t + i * 0.09;
+      g.gain.setValueAtTime(0.0001, start);
+      g.gain.exponentialRampToValueAtTime(0.25, start + 0.03);
+      g.gain.exponentialRampToValueAtTime(0.001, start + 0.5);
+      osc.connect(g).connect(master);
+      osc.start(start); osc.stop(start + 0.55);
+    });
+  }
+
+  /** Выбор мифика: мощный низкий удар + энергетическая волна + аккорд. */
+  public playMythicSelect() {
+    if (this.isMuted) return;
+    this.resume();
+    if (!this.ctx || !this.sfxGain) return;
+    const t = this.ctx.currentTime;
+    const master = this.ctx.createGain();
+    master.gain.value = 1.4;
+    master.connect(this.sfxGain);
+    const boom = this.ctx.createOscillator();
+    const boomGain = this.ctx.createGain();
+    boom.type = "sine";
+    boom.frequency.setValueAtTime(110, t);
+    boom.frequency.exponentialRampToValueAtTime(30, t + 0.7);
+    boomGain.gain.setValueAtTime(1.0, t);
+    boomGain.gain.exponentialRampToValueAtTime(0.001, t + 1.0);
+    boom.connect(boomGain).connect(master);
+    boom.start(t); boom.stop(t + 1.1);
+    for (const [freq, delay] of [[392, 0.15], [493.9, 0.15], [587.3, 0.15], [784, 0.22]] as const) {
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = "triangle";
+      osc.frequency.value = freq;
+      g.gain.setValueAtTime(0.0001, t + delay);
+      g.gain.exponentialRampToValueAtTime(0.26, t + delay + 0.06);
+      g.gain.exponentialRampToValueAtTime(0.001, t + delay + 1.2);
+      osc.connect(g).connect(master);
+      osc.start(t + delay); osc.stop(t + delay + 1.3);
+    }
+  }
+
   public playNuke() {
     if (this.isMuted) return;
     this.resume();

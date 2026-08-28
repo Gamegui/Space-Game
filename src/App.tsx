@@ -1409,6 +1409,27 @@ export default function App() {
     syncUI();
   }, [syncUI]);
 
+  /** Полное МИФИК-событие: левел-ап с гарантированным мификом — чтобы
+   *  посмотреть анимацию выпадения карточки (вспышка, музыка, выбор). */
+  const adminMythicLevelUp = useCallback(() => {
+    const g = gameRef.current;
+    if (!g) return;
+    const owned = new Set(g.player.upgrades.map(u => u.id));
+    const available = ALL_UPGRADES.filter(u => u.rarity === "mythic" && !owned.has(u.id));
+    if (available.length === 0) return;
+    const def = available[Math.floor(Math.random() * available.length)];
+    g.player.level++;
+    setPlayerLevel(g.player.level);
+    pendingLevelUpsRef.current++;
+    pendingMythicDefRef.current = def;
+    setPendingMythic(def);
+    audio.stopAmbientBGM();
+    audio.playMythicSting();
+    phaseRef.current = "upgrade";
+    setPhase("upgrade");
+    setAdminRefresh(v => v + 1);
+  }, []);
+
   const adminGiveMythic = useCallback(() => {
     const g = gameRef.current;
     if (!g || ownedMythicCount(g.player) >= MAX_MYTHIC_PER_RUN) return;
@@ -1574,6 +1595,7 @@ export default function App() {
                     <button onClick={() => { for (let i = 0; i < 5; i++) adminLevelUp(); }} className="admin-button bg-indigo-800">+5 УРОВНЕЙ</button>
                     <button onClick={adminGiveLegendary} className="admin-button bg-amber-700">+ СЛУЧАЙНОЕ ЛЕГЕНД.</button>
                     <button onClick={adminGiveMythic} className="admin-button bg-gradient-to-r from-amber-500 to-yellow-400 text-black">✦ ДАТЬ МИФИК ({ownedMythicCount(gameRef.current?.player ?? { upgrades: [] } as never)}/{MAX_MYTHIC_PER_RUN})</button>
+                    <button onClick={adminMythicLevelUp} className="admin-button bg-gradient-to-r from-yellow-400 via-amber-300 to-yellow-400 text-black animate-pulse">✦ ЛЕВЕЛ С МИФИКОМ (показать событие)</button>
                     <button onClick={adminCompleteSynergies} className="admin-button bg-fuchsia-800">ВСЕ 4 СИНЕРГИИ</button>
                     <button onClick={adminMaxBuild} className="admin-button bg-red-800">МАКС. БИЛД · LVL 300</button>
                     <button onClick={() => { const g = gameRef.current; if (g) { g.player.hp = 1; if (g.player.shield) g.player.shield.hp = 0; setAdminRefresh(v => v + 1); } }} className="admin-button bg-rose-950">HP = 1</button>

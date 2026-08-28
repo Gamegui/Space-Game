@@ -145,7 +145,13 @@ test("⚡ Судный Разряд: криты копят гнев, десят�
   const targets: ReturnType<typeof spawnEnemy>[] = [];
   for (let i = 0; i < 5; i++) {
     const e = spawnEnemy("scout", 1);
-    e.pos = { x: 400 + i * 60, y: 200 };
+    // Строго в колонке огня («Флагман» стреляет вертикально вверх с x=480):
+    // иначе синус-дрейф уводит цели из потока и тест флейкует.
+    e.pos = { x: 476 + i * 2, y: 160 + i * 55 };
+    e.centerX = e.pos.x;
+    e.centerY = e.pos.y;
+    e.targetY = e.pos.y;
+    e.vel.x = 0;
     e.hp = e.maxHp = 500;
     targets.push(e);
     obj.enemies.push(e);
@@ -221,6 +227,12 @@ test("🌌 Пожиратель Звёзд: заряд → сингулярно�
   e.hp = 0;
   const victim = spawnEnemy("tank", 1);
   victim.pos = { x: 500, y: 310 };
+  // Без фиксации внутренних целей патруля танк уплывает из радиуса
+  // сингулярности (190 px) за 240 кадров — тест флейкует.
+  victim.centerX = victim.pos.x;
+  victim.centerY = victim.pos.y;
+  victim.targetY = victim.pos.y;
+  victim.vel.x = 0;
   victim.hp = victim.maxHp = 5_000;
   obj.enemies.push(e, victim);
   stepGame(obj, makeInput(1));

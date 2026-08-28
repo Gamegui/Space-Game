@@ -297,6 +297,13 @@ export function particleDebugStats(): { active: number; pooled: number; spawnedT
   };
 }
 
+// Посуда-кадровые контейнеры: создаются один раз, очищаются каждый кадр
+// (два new Set + два new Array на каждый stepGame давали ~330 байт/кадр churn).
+const enemiesToRemove: Set<number> = new Set();
+const bulletsToRemove: Set<number> = new Set();
+const spawnedFromSplit: Enemy[] = [];
+const collisionCandidates: Enemy[] = [];
+
 /** Плановое число частиц эффекта: тир качества × адаптивная доля × остатки
  *  жёстких лимитов. minKeep — гарантированный минимум эффекта смерти (§9):
  *  враг не исчезает совсем, пока есть свободный лимит. */
@@ -312,9 +319,11 @@ function particleCountFor(count: number, minKeep = 0): number {
   return Math.max(Math.min(minKeep, hardCap), n);
 }
 
-function makeBurst(pos: Vec2, color: string, count: number, big = false, minKeep = 0): Particle[] {
+/** Прямая запись в целевой массив: без промежуточного массива и spread —
+ *  главная точка churn'а на попаданиях/убийствах (аллокация ~20 КБ/убийство
+ *  через push(...makeBurst()) и была причиной GC-фризов). */
+function emitBurst(target: Particle[], pos: Vec2, color: string, count: number, big = false, minKeep = 0): void {
   const n = particleCountFor(count, minKeep);
-  const out: Particle[] = [];
   for (let i = 0; i < n; i++) {
     const p = acquireParticle();
     if (!p) break;
@@ -327,9 +336,8 @@ function makeBurst(pos: Vec2, color: string, count: number, big = false, minKeep
     p.size = randRange(big ? 4 : 2, big ? 10 : 6);
     p.glow = true;
     p.shape = "circle";
-    out.push(p);
+    target.push(p);
   }
-  return out;
 }
 
 // Particles flying from a slain enemy towards the Wraith (soul devouring).
@@ -360,6 +368,24 @@ export function makeSuckParticles(from: Vec2, to: Vec2, count = 6): Particle[] {
 }
 
 // Purple shards when the Wraith's victim shatters.
+function emitShards(target: Particle[], pos: Vec2, count = 7): void {
+  const n = particleCountFor(count, 1);
+  for (let i = 0; i < n; i++) {
+    const p = acquireParticle();
+    if (!p) break;
+    const a = randRange(0, Math.PI * 2);
+    const v = randRange(2, 6);
+    p.pos.x = pos.x; p.pos.y = pos.y;
+    p.vel.x = Math.cos(a) * v; p.vel.y = Math.sin(a) * v;
+    p.life = randRange(18, 34); p.maxLife = 34;
+    p.color = Math.random() < 0.6 ? "#e879f9" : "#a855f7";
+    p.size = randRange(1.8, 3.8);
+    p.glow = true;
+    p.shape = "square";
+    target.push(p);
+  }
+}
+
 export function makeShards(pos: Vec2, count = 7): Particle[] {
   const n = particleCountFor(count, 1);
   const out: Particle[] = [];
@@ -470,7 +496,7 @@ function soulDamageMult(player: PlayerState): number {
 function startVoidPhase(player: PlayerState, particles: Particle[]) {
   const origin = { x: player.pos.x, y: player.pos.y };
   player.voidEchoPos = { x: origin.x, y: Math.min(H - 40, origin.y + 34) };
-  particles.push(...makeBurst(origin, "#e879f9", 14));
+  emitBurst(particles, origin, "#e879f9", 14);
   player.voidEchoTimer = 120;
   audio.playVoidBlink();
 }
@@ -563,8 +589,8 @@ function triggerSupernova(obj: GameObjects): void {
   }
   // Визуал: одно большое кольцо + бюджетный залп частиц (лимиты соблюдаются).
   explosions.push({ id: uid(), pos: { ...player.pos }, radius: NOVA_RADIUS, progress: 0 });
-  particles.push(...makeBurst(player.pos, "#fde047", 26, true, 3));
-  particles.push(...makeBurst(player.pos, "#ffffff", 14, true, 2));
+  emitBurst(particles, player.pos, "#fde047", 26, true, 3);
+  emitBurst(particles, player.pos, "#ffffff", 14, true, 2);
   floatingTexts.push(makeFloatingText(player.pos, "✦ СВЕРХНОВАЯ ✦", "#fde047", true));
   obj.screenShake = Math.max(obj.screenShake, 14);
   audio.playNuke();
@@ -698,7 +724,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     player.dashTimer = 24;
     player.invincTimer = Math.max(player.invincTimer, 30);
     audio.playDash();
-    particles.push(...makeBurst(player.pos, "#38bdf8", 18));
+    emitBurst(particles, player.pos, "#38bdf8", 18);
 
     // Dash now has a tactical purpose: clear nearby hostile projectiles and
     // damage enemies crossed at close range.
@@ -864,7 +890,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         player.stats.damageDealt += applied;
       }
       obj.explosions.push({ id: uid(), pos: { ...sg.pos }, radius: SINGULARITY_RADIUS, progress: 0 });
-      particles.push(...makeBurst(sg.pos, "#a78bfa", 24, true, 3));
+      emitBurst(particles, sg.pos, "#a78bfa", 24, true, 3);
       floatingTexts.push(makeFloatingText(sg.pos, "✦ COLLAPSE ✦", "#c084fc", true));
       obj.screenShake = Math.max(obj.screenShake, 12);
       audio.playNuke();
@@ -922,7 +948,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       echoBullet.color = "#d946ef";
       bullets.push(echoBullet);
     }
-    if (player.voidEchoTimer === 0) particles.push(...makeBurst(player.voidEchoPos, "#a855f7", 10));
+    if (player.voidEchoTimer === 0) emitBurst(particles, player.voidEchoPos, "#a855f7", 10);
   }
 
   // Side lasers are a real weapon system, not a dead stat upgrade.
@@ -1068,7 +1094,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         if (dx * dx + dy * dy < auraR * auraR) {
           const auraDamage = damageEnemy(e, player.auraDamage * timeScale, frame, enemies);
           player.stats.damageDealt += auraDamage;
-          particles.push(...makeBurst({ x: e.pos.x, y: e.pos.y }, "#fde047", 1));
+          emitBurst(particles, { x: e.pos.x, y: e.pos.y }, "#fde047", 1);
         }
       }
     }
@@ -1087,7 +1113,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           player.stats.damageDealt += novaDmg;
         }
       }
-      particles.push(...makeBurst(player.pos, "#f97316", 20, true));
+      emitBurst(particles, player.pos, "#f97316", 20, true);
       obj.screenShake = Math.max(obj.screenShake, 4);
     }
   }
@@ -1108,7 +1134,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       if (dx * dx + dy * dy < mine.radius * mine.radius) {
         const mineDamage = damageEnemy(e, 6 * player.bulletDamage, frame, enemies);
         player.stats.damageDealt += mineDamage;
-        particles.push(...makeBurst(mine.pos, "#f59e0b", 20, true));
+        emitBurst(particles, mine.pos, "#f59e0b", 20, true);
         obj.explosions.push({ id: uid(), pos: { ...mine.pos }, radius: mine.radius * 1.5, progress: 0 });
         obj.screenShake = Math.max(obj.screenShake, 5);
         audio.playExplosion(false);
@@ -1148,7 +1174,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   }
 
   // Pre-declare collision sets so the early enemy-resolution loop can check them.
-  const enemiesToRemove = new Set<number>();
+  enemiesToRemove.clear();
 
   // Resolve enemies finished by aura, mines, status effects, black holes or a
   // dash. Previously they could remain alive at zero/negative HP until a bullet
@@ -1164,7 +1190,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     const scoreBoostXp = getUpgradeLevel(player, "score_boost");
     const xpGained = Math.floor((enemy.xp + scoreBoostXp) * (1 + xpBoostLevel * 0.25) * obj.routeXpMultiplier);
     audio.playExplosion(enemy.isBoss);
-    particles.push(...makeBurst(enemy.pos, enemy.isBoss ? "#f43f5e" : "#fb923c", enemy.isBoss ? 45 : 14, enemy.isBoss));
+    emitBurst(particles, enemy.pos, enemy.isBoss ? "#f43f5e" : "#fb923c", enemy.isBoss ? 45 : 14, enemy.isBoss);
     xpOrbs.push(makeXpOrb(enemy.pos, xpGained));
     player.score += Math.floor(enemy.xp * 10 * player.goldMultiplier * obj.routeScoreMultiplier);
     player.kills++;
@@ -1267,7 +1293,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       }
       if (hurtAlly) {
         hurtAlly.hp = Math.min(hurtAlly.maxHp, hurtAlly.hp + 4);
-        particles.push(...makeBurst(hurtAlly.pos, "#4ade80", 4));
+        emitBurst(particles, hurtAlly.pos, "#4ade80", 4);
         lightnings.push(makeLightning(e.pos, hurtAlly.pos, 10));
       }
     }
@@ -1444,7 +1470,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
             }
           }
           obj.screenShake = Math.max(obj.screenShake, 5);
-          particles.push(...makeBurst(e.pos, "#e11d48", 12));
+          emitBurst(particles, e.pos, "#e11d48", 12);
         }
         // Rage mode: phase 3 Omega slowly drifts toward the player
         if (e.phase >= 3) {
@@ -1601,8 +1627,8 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   }
 
   // ─── Bullet collision with enemies ─────────────────────────────────────────
-  const bulletsToRemove = new Set<number>();
-  const spawnedFromSplit: Enemy[] = [];
+  bulletsToRemove.clear();
+  spawnedFromSplit.length = 0;
 
   // Spatial grid avoids testing every player bullet against every enemy.
   // 128px cells plus adjacent cells cover the largest boss collision radius.
@@ -1616,7 +1642,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     const cell = enemyGrid.get(key);
     if (cell) cell.push(enemy); else enemyGrid.set(key, [enemy]);
   }
-  const collisionCandidates: Enemy[] = [];
+  collisionCandidates.length = 0;
 
   for (const b of bullets) {
     if (!b.fromPlayer || bulletsToRemove.has(b.id)) continue;
@@ -1654,7 +1680,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           const shieldDamage = limitEnemyDamage(e, b.damage * 0.6, frame, enemies);
           e.shieldHp = Math.max(0, e.shieldHp - shieldDamage);
           floatingTexts.push(makeFloatingText(b.pos, `${Math.ceil(shieldDamage)}`, "#93c5fd"));
-          particles.push(...makeBurst(b.pos, "#93c5fd", 4));
+          emitBurst(particles, b.pos, "#93c5fd", 4);
           if (b.pierce <= 0) bulletsToRemove.add(b.id);
           continue;
         }
@@ -1674,7 +1700,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         const isCrit = Math.random() < player.critChance;
         if (isCrit) {
           dmg *= player.critMultiplier;
-          particles.push(...makeBurst(b.pos, "#fff", 6));
+          emitBurst(particles, b.pos, "#fff", 2, false, 1);
           floatingTexts.push(makeFloatingText(b.pos, `${Math.ceil(dmg)}!`, "#fbbf24", true));
           // ⚡ МИФИК «Бог Грома»: криты копят Гнев Бури; десятый высвобождает
           // Судный Разряд — усиляющуюся цепь без повторов целей.
@@ -1689,7 +1715,9 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           if (hasMythic(player, "mythic_void") && player.voidTimer <= 0) {
             player.entropy = Math.min(ENTROPY_MAX, player.entropy + 0.15);
           }
-        } else {
+        } else if (floatingTexts.length < 50 && (b.id + frame) % 4 === 0) {
+          // Числа урона обычных попаданий: не чаще 1/4 хитов и не под завязку —
+          // строка+объект на КАЖДОЕ попадание были главным источником churn.
           floatingTexts.push(makeFloatingText(b.pos, `${Math.ceil(dmg)}`, "#fff"));
         }
 
@@ -1699,7 +1727,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         player.stats.damageDealt += appliedDamage;
 
         // Status effects
-        if (Math.random() < player.burnChance)   { e.burning  = Math.max(e.burning,  180); particles.push(...makeBurst(b.pos, "#f97316", 3)); }
+        if (Math.random() < player.burnChance)   { e.burning  = Math.max(e.burning,  180); emitBurst(particles, b.pos, "#f97316", 3); }
         if (Math.random() < player.freezeChance) {
           if (!e.isBoss && !e.guardRole) {
             e.frozen = Math.max(e.frozen, 120);
@@ -1714,9 +1742,9 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
               e.controlResistance = 3;
             }
           }
-          particles.push(...makeBurst(b.pos, "#bfdbfe", e.isBoss ? 5 : 3));
+          emitBurst(particles, b.pos, "#bfdbfe", e.isBoss ? 5 : 3);
         }
-        if (Math.random() < player.poisonChance) { e.poisoned = Math.max(e.poisoned, 240); particles.push(...makeBurst(b.pos, "#4ade80", 3)); }
+        if (Math.random() < player.poisonChance) { e.poisoned = Math.max(e.poisoned, 240); emitBurst(particles, b.pos, "#4ade80", 3); }
 
         // Lightning chain
         if (Math.random() < player.lightningChance) {
@@ -1837,12 +1865,12 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           // Лимит частиц смерти (§5): обычный ≤8, элитный ≤16, босс ≤40.
           // Зрелищность — размером/яркостью частиц и кольцом взрыва, а не числом.
           const col = e.isBoss ? "#f43f5e" : (e.isElite ? "#fbbf24" : "#fb923c");
-          particles.push(...makeBurst(e.pos, col, e.isBoss ? 40 : (e.isElite ? 16 : 8), e.isBoss, 2));
-          if (player.shipClass === "void_wraith") particles.push(...makeShards(e.pos, e.isBoss ? 12 : 5));
+          emitBurst(particles, e.pos, col, e.isBoss ? 40 : (e.isElite ? 16 : 8), e.isBoss, 2);
+          if (player.shipClass === "void_wraith") emitShards(particles, e.pos, e.isBoss ? 12 : 5);
           xpOrbs.push(makeXpOrb(e.pos, xpGained));
         }
 
-        particles.push(...makeBurst(b.pos, "#fbbf24", 3));
+        emitBurst(particles, b.pos, "#fbbf24", 1, false, 1);
 
         // Phase Discharge: every Nth hit spawns shard bullets
         if (player.phaseDischarge && player.phaseDischargeCount > 0) {
@@ -1956,7 +1984,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           break;
       }
 
-      particles.push(...makeBurst(p.pos, "#38bdf8", 16));
+      emitBurst(particles, p.pos, "#38bdf8", 16);
       powerups.splice(i, 1);
       continue;
     }
@@ -2448,7 +2476,7 @@ function explodeArea(pos: Vec2, radius: number, enemies: Enemy[], toRemove: Set<
   // на каждого задетого врага: при 30 смертях × 40 врагов это давало до 6000
   // частиц за кадр — тот самый квадратичный каскад из ТЗ. Смертельные взрывы
   // — вторичная реакция, поэтому visualScale по умолчанию 0.5 (§11).
-  particles.push(...makeBurst(pos, "#f97316", Math.ceil(10 * visualScale), true, 1));
+  emitBurst(particles, pos, "#f97316", Math.ceil(10 * visualScale), true, 1);
 }
 
 function takeDamage(player: PlayerState, amount: number, particles: Particle[], obj: GameObjects, onDeath: () => void) {
@@ -2465,7 +2493,7 @@ function takeDamage(player: PlayerState, amount: number, particles: Particle[], 
     player.hp -= amount;
   }
   player.invincTimer = 75;
-  particles.push(...makeBurst(player.pos, "#f87171", 10));
+  emitBurst(particles, player.pos, "#f87171", 10);
   if (player.hp <= 0) {
     player.hp = 0;
     onDeath();

@@ -6,8 +6,10 @@
     <meta name="theme-color" content="#020617" />
     <meta name="description" content="Космический Штурм: Ультра — динамический космический roguelite-шутер с кораблями, улучшениями и боссами." />
     <title>Космический Штурм: Ультра</title>
-    <!-- Official Yandex Games SDK (relative path for Yandex hosting, per documentation). -->
-    <script src="/sdk.js"></script>
+    <!-- Official Yandex Games SDK (relative path for Yandex hosting, per documentation).
+         defer: скрипт не блокирует парсинг страницы — в dev-режиме файла нет,
+         и блокирующий тег замораживал страницу на белом экране. -->
+    <script src="/sdk.js" defer></script>
     <script>
       // Ранний сборщик ошибок страницы: активен только в dev-сборке с VITE_ADMIN
       // (в релизе %VITE_ADMIN% не определён и условие ложно). Любой краш рендера
@@ -32,11 +34,25 @@
         window.addEventListener("unhandledrejection", function (e) {
           window.__sendPerfErr("PAGE_REJECTION", (e.reason && e.reason.message) || String(e.reason), e.reason && e.reason.stack);
         });
+        // Страховка «белого экрана»: если React не смонтировался за 6 секунд —
+        // сообщаем на сервер и показываем видимый текст вместо пустоты.
+        setTimeout(function () {
+          if (!window.__appMounted) {
+            window.__sendPerfErr("NO_MOUNT", "React не смонтировался за 6000 мс", "");
+            var el = document.getElementById("boot-msg");
+            if (el) el.style.display = "block";
+          }
+        }, 6000);
       }
     </script>
   </head>
   <body>
     <div id="root"></div>
+    <div id="boot-msg" style="display:none; position:fixed; inset:0; background:#020617; color:#67e8f9; font:14px/1.6 monospace; padding:40px; text-align:center; z-index:9999">
+      Идёт диагностика запуска…<br>
+      Игра не загрузилась за 6 секунд — сообщение об этом уже отправлено.<br>
+      Скажи владельцу: «вижу сообщение о загрузке».
+    </div>
     <noscript>Для запуска игры необходимо включить JavaScript.</noscript>
     <script type="module" src="/src/main.tsx"></script>
   </body>

@@ -19,9 +19,15 @@ const perfLogReceiver = {
     // Журнал всех входящих запросов: видно, доходит ли браузер игрока
     // до сервера вообще (диагностика «белого экрана» и кэша прокси).
     server.middlewares.use((req, _res, next) => {
-      const ua = (req.headers["user-agent"] ?? "?").toString().slice(0, 60);
+      const ua = (req.headers["user-agent"] ?? "?").toString().slice(0, 140);
       console.log(`[req] ${req.method} ${req.url} · ${ua}`);
       next();
+    });
+    // Dev-заглушка Yandex SDK: без неё vite отдавал на /sdk.js HTML-фолбэк
+    // (text/html), и блокирующий скрипт в head замораживал парсинг страницы.
+    server.middlewares.use("/sdk.js", (_req, res) => {
+      res.setHeader("Content-Type", "application/javascript");
+      res.end("// dev stub: Yandex SDK отсутствует вне платформы");
     });
     server.middlewares.use("/__perf_log", (req, res) => {
       const writeRecord = (raw: string) => {

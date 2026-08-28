@@ -25,6 +25,41 @@ import {
 import { PRODUCTS } from "./game/products";
 import { checkEvolutions } from "./game/evolutions";
 
+// ─── Perf-логгер (только DEV): покадровая диагностика фризов ──────────────────
+// Пишет строку в буфер на каждый медленный кадр: сколько ушло на симуляцию,
+// сколько на отрисовку (по слоям) и сколько сущностей было на экране.
+// Кнопка «📊 PERF» внизу слева копирует/скачивает лог — присылай его целиком.
+const PERF_SLOW_FRAME_MS = 90;
+const PERF_MAX_LINES = 80;
+const PERF_LINES: string[] = [];
+const PERF_FRAME_HISTORY: number[] = [];
+const perfDrawTimers: Record<string, number> = {};
+
+export function getPerfLog(): string {
+  return [
+    `Космический Штурм · перф-лог · ${new Date().toISOString()}`,
+    `UA: ${navigator.userAgent}`,
+    `CPU потоков: ${navigator.hardwareConcurrency ?? "?"} · DPR: ${devicePixelRatio}`,
+    `Кадров в истории: ${PERF_FRAME_HISTORY.length} · строк медленных кадров: ${PERF_LINES.length}`,
+    `История кадров (мс, последние 120): ${PERF_FRAME_HISTORY.slice(-120).join(",")}`,
+    "",
+    ...PERF_LINES,
+  ].join("\n");
+}
+
+function perfLogSlowFrame(line: string): void {
+  PERF_LINES.push(line);
+  if (PERF_LINES.length > PERF_MAX_LINES) PERF_LINES.shift();
+  // eslint-disable-next-line no-console
+  console.log(`[perf] ${line}`);
+}
+
+function perfTime(key: string, fn: () => void): void {
+  const start = performance.now();
+  fn();
+  perfDrawTimers[key] = (perfDrawTimers[key] ?? 0) + (performance.now() - start);
+}
+
 // ─── Initial game objects ──────────────────────────────────────────────────────
 function makeInitialObjects(player: PlayerState): GameObjects {
   const wave = 1;
@@ -199,6 +234,26 @@ export default function App() {
   const merchantRollRef = useRef<{ available: boolean; bought: Set<string> }>({ available: false, bought: new Set() });
   const [adminOpen, setAdminOpen] = useState(false);
   const [adminGod, setAdminGod] = useState(false);
+  // Перф-лог: оверлей с текстом лога (кнопка «📊 PERF» видна только в DEV).
+  const [perfOpen, setPerfOpen] = useState(false);
+  const [perfText, setPerfText] = useState("");
+
+  // longtask-наблюдатель: фиксирует блокировки главного потока ВНЕ игрового
+  // колбэка (коммит React, сборка мусора, композитинг браузера).
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    try {
+      const observer = new PerformanceObserver(list => {
+        for (const entry of list.getEntries()) {
+          if (entry.duration > 150) {
+            perfLogSlowFrame(`LONGTASK ${entry.duration.toFixed(0)}мс — блокировка вне игрового колбэка (React/GC/браузер)`);
+          }
+        }
+      });
+      observer.observe({ entryTypes: ["longtask"] } as PerformanceObserverInit);
+      return () => observer.disconnect();
+    } catch { /* PerformanceObserver longtask не поддерживается */ }
+  }, []);
   const [, setAdminRefresh] = useState(0);
   const [synergyNotice, setSynergyNotice] = useState<string | null>(null);
   const [rerollsLeft, setRerollsLeft] = useState(3);
@@ -915,23 +970,28 @@ export default function App() {
 
     function drawWorld(g: GameObjects, frame: number) {
       setRenderPerformanceTier(g.performanceTier);
+      for (const key of Object.keys(perfDrawTimers)) perfDrawTimers[key] = 0;
       const stride = g.performanceTier === 0 ? 3 : g.performanceTier === 1 ? 2 : 1;
-      for (let i = frame % stride; i < g.explosions.length; i += stride) {
-        const ex = g.explosions[i];
-        drawExplosion(ctx, ex.pos, ex.radius, ex.progress);
-      }
-      for (let i = frame % stride; i < g.particles.length; i += stride) drawParticle(ctx, g.particles[i]);
-      if (g.blackHolePos) drawBlackHole(ctx, g.blackHolePos, frame);
-      for (const lightning of g.lightnings) drawLightning(ctx, lightning);
-      for (const mine of g.mines) drawMine(ctx, mine, frame);
-      for (const orb of g.xpOrbs) drawXpOrb(ctx, orb, frame);
-      for (const powerup of g.powerups) drawPowerup(ctx, powerup, frame);
-      for (const bullet of g.bullets) drawBullet(ctx, bullet);
-      for (const enemy of g.enemies) drawEnemy(ctx, enemy, frame);
-      drawPlayer(ctx, g.player, frame);
+      perfTime("explosions", () => {
+        for (let i = frame % stride; i < g.explosions.length; i += stride) {
+          const ex = g.explosions[i];
+          drawExplosion(ctx, ex.pos, ex.radius, ex.progress);
+        }
+      });
+      perfTime("particles", () => {
+        for (let i = frame % stride; i < g.particles.length; i += stride) drawParticle(ctx, g.particles[i]);
+      });
+      perfTime("blackhole", () => { if (g.blackHolePos) drawBlackHole(ctx, g.blackHolePos, frame); });
+      perfTime("lightnings", () => { for (const lightning of g.lightnings) drawLightning(ctx, lightning); });
+      perfTime("mines", () => { for (const mine of g.mines) drawMine(ctx, mine, frame); });
+      perfTime("orbs", () => { for (const orb of g.xpOrbs) drawXpOrb(ctx, orb, frame); });
+      perfTime("powerups", () => { for (const powerup of g.powerups) drawPowerup(ctx, powerup, frame); });
+      perfTime("bullets", () => { for (const bullet of g.bullets) drawBullet(ctx, bullet); });
+      perfTime("enemies", () => { for (const enemy of g.enemies) drawEnemy(ctx, enemy, frame); });
+      perfTime("player", () => { drawPlayer(ctx, g.player, frame); });
       // The Wraith's phase window tints the whole arena with void light.
       if (g.player.shipClass === "void_wraith" && g.player.ghostTimer > 0) {
-        drawVoidPhaseVignette(ctx, frame, g.player.ghostTimer / 120);
+        perfTime("vignette", () => drawVoidPhaseVignette(ctx, frame, g.player.ghostTimer / 120));
       }
       for (let i = frame % stride; i < g.floatingTexts.length; i += stride) drawFloatingText(ctx, g.floatingTexts[i]);
     }
@@ -1044,6 +1104,11 @@ export default function App() {
         fpsWindowStart = timestamp;
       }
 
+      // ── Перф-замер кадра: симуляция отдельно, отрисовка отдельно ──
+      const perfFrameStart = performance.now();
+      const perfSimStart = performance.now();
+      let perfSimMs = 0;
+
       // Only active gameplay advances. Upgrade selection and pause now freeze combat.
       if (g && currentPhase === "playing") {
         while (steps-- > 0 && phaseRef.current === "playing") updateGame(g);
@@ -1056,6 +1121,7 @@ export default function App() {
       } else {
         accumulator = 0;
       }
+      perfSimMs = performance.now() - perfSimStart;
 
       ctx.save();
       if (g && g.screenShake > 0 && currentPhase === "playing") {
@@ -1071,6 +1137,29 @@ export default function App() {
       }
 
       drawWorld(g, frame);
+      if (import.meta.env.DEV) {
+        // sim фиксируем сразу после секции симуляции (она выше), draw — здесь.
+        // (perfSimMs выставлен сразу после while-цикла симуляции.)
+        const perfCallbackMs = performance.now() - perfFrameStart;
+        const drawMs = perfCallbackMs - perfSimMs;
+        PERF_FRAME_HISTORY.push(Math.round(elapsed));
+        if (PERF_FRAME_HISTORY.length > 300) PERF_FRAME_HISTORY.shift();
+        if (elapsed > PERF_SLOW_FRAME_MS && g) {
+          const layers = Object.entries(perfDrawTimers)
+            .map(([key, ms]) => `${key}=${ms.toFixed(1)}`)
+            .join(" ");
+          const pstats = particleDebugStats();
+          const callbackGap = elapsed - perfCallbackMs;
+          perfLogSlowFrame(
+            `кадр ${frame} | кадр=${elapsed.toFixed(0)}мс | колбэк=${perfCallbackMs.toFixed(1)}мс ` +
+            `(сим=${perfSimMs.toFixed(1)} draw=${drawMs.toFixed(1)}) | вне-колбэка=${Math.max(0, callbackGap).toFixed(0)}мс | ` +
+            `слои: ${layers} | tier=${g.performanceTier} | враги=${g.enemies.length} пули=${g.bullets.length} ` +
+            `частицы=${pstats.active}/${pstats.budget}(+${pstats.spawnedThisFrame}) пул=${pstats.pooled} ` +
+            `сферы=${g.xpOrbs.length} тексты=${g.floatingTexts.length} взрывы=${g.explosions.length} ` +
+            `молнии=${g.lightnings.length} мины=${g.mines.length}`
+          );
+        }
+      }
       if (currentPhase === "boss_intro") {
         const alpha = Math.min(1, bossIntroTimerRef.current / 60);
         ctx.fillStyle = `rgba(0,0,0,${alpha * 0.65})`;
@@ -1325,6 +1414,50 @@ export default function App() {
         />
 
         {/* Development-only admin panel */}
+        {import.meta.env.DEV && (
+          <div className="absolute bottom-3 left-3 z-50 font-mono text-[11px]">
+            <button
+              onClick={() => { setPerfText(getPerfLog()); setPerfOpen(true); }}
+              className="rounded-lg border border-cyan-400 bg-cyan-950/95 px-3 py-2 font-black text-cyan-100 shadow-lg cursor-pointer"
+            >
+              📊 PERF {PERF_LINES.length > 0 && <span className="text-amber-300">({PERF_LINES.length})</span>}
+            </button>
+            {perfOpen && (
+              <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 p-6" onClick={() => setPerfOpen(false)}>
+                <div className="flex max-h-[80vh] w-full max-w-3xl flex-col gap-2 rounded-xl border border-cyan-700 bg-slate-950 p-4" onClick={e => e.stopPropagation()}>
+                  <div className="flex items-center justify-between">
+                    <span className="font-black text-cyan-200">ПЕРФ-ЛОГ · скопируй и пришли целиком</span>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={async () => { try { await navigator.clipboard.writeText(perfText); } catch { /* iframe без прав — выделяем текст */ } }}
+                        className="rounded bg-cyan-700 px-3 py-1 font-black text-white cursor-pointer"
+                      >📋 КОПИРОВАТЬ</button>
+                      <button
+                        onClick={() => {
+                          const blob = new Blob([perfText], { type: "text/plain" });
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement("a");
+                          a.href = url; a.download = "perf-log.txt"; a.click();
+                          URL.revokeObjectURL(url);
+                        }}
+                        className="rounded bg-emerald-700 px-3 py-1 font-black text-white cursor-pointer"
+                      >💾 .TXT</button>
+                      <button onClick={() => setPerfOpen(false)} className="rounded bg-slate-700 px-3 py-1 font-black text-white cursor-pointer">✕</button>
+                    </div>
+                  </div>
+                  <textarea
+                    readOnly
+                    value={perfText}
+                    onFocus={e => e.currentTarget.select()}
+                    className="h-[55vh] w-full resize-none rounded bg-slate-900 p-2 font-mono text-[10px] text-slate-300"
+                  />
+                  <div className="text-[10px] text-slate-500">Кнопка «КОПИРОВАТЬ» может не работать внутри iframe превью — тогда выдели текст (клик — выделит всё) и Ctrl+C, либо скачай .txt</div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {adminEnabled && (
           <div className="absolute left-3 top-3 z-50 font-mono text-[11px]">
             <button

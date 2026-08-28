@@ -173,6 +173,66 @@ Downloading the release archive: the latest production ZIP is tracked in the rep
 `https://raw.githubusercontent.com/Gamegui/Space-Game/main/space-shooter-yandex.zip`
 Rebuild before publishing with `npm run package:yandex`, commit the refreshed ZIP, and the same link always serves the newest archive.
 
+## Release-readiness audit + LoadingAPI.ready() fix — 2026-08-28
+
+Owner request: full pre-release audit against the Yandex Games Game Requirements,
+plus a mechanics correctness check, then a pull request.
+
+**Что изменено** — `src/platform/yandex.ts`:
+- `markReady()` is invoked from the React game-loop `useEffect` (Effect B), which
+  runs before `yandex.init()` (Effect A, async, not awaited) has resolved. The
+  previous implementation called `this.sdk?.features?.LoadingAPI?.ready()`
+  synchronously, so on first mount `this.sdk` was still `null` and the call was a
+  no-op. `LoadingAPI.ready()` was therefore not fired until the game-loop effect
+  re-ran (deps `bossName`/`hiscore` change — i.e. wave 5 boss or death), so the
+  Yandex loading splash stayed visible through the menu and early gameplay.
+  This violates Game Requirements §1.23.2 ("в момент, когда пользователь уже может
+  приступить к игре, вызывается LoadingAPI.ready()").
+- Fix: added `readyRequested` + `readySent` flags and a `flushReady()` helper.
+  `markReady()` now sets `readyRequested = true` and flushes if the SDK is already
+  ready; `init()` calls `flushReady()` once `this.sdk` is assigned and the player
+  is fetched. Result: `LoadingAPI.ready()` fires exactly once, as soon as both the
+  canvas/loop and the SDK are ready, regardless of effect ordering. Duplicate
+  calls on later game-loop effect re-runs are suppressed by `readySent`.
+- Refreshed `space-shooter-yandex.zip` via `npm run package:yandex` (single
+  `index.html` at the archive root, fix present in the inlined bundle).
+
+**Почему** — release blocker: without the call the platform never hides its
+splash and moderation fails §1.23.2.
+
+**Как проверено** — `npm run typecheck` (clean), `npm run build` (clean), a
+Node logic test (`test_ready.mjs`, not committed) that mocks `window.YaGames`
+  with a deferred `init()` and asserts: `markReady()` before resolve → no-op
+  immediately, then `ready()` fires once after `init()` resolves, and a second
+  `markReady()` does not double-fire. Test result: PASS. A local-browser smoke
+  test of the deployed build confirmed the full gameplay loop
+  (menu → ship select → tutorial → gameplay → level-up/upgrade → death screen)
+  with zero console errors and no visual/text defects.
+
+**Yandex compliance checklist re-verified** (docs yandex.ru/dev/games/doc/ru):
+- SDK loaded via relative `<script src="/sdk.js">` in `index.html` head
+  (recommended path for archive upload; the legacy `https://yandex.ru/games/sdk/v2`
+  is not used). SDK script is synchronous and precedes the module bundle, so
+  `window.YaGames` exists before `YaGames.init()`.
+- `LoadingAPI.ready()` — fixed (see above).
+- `GameplayAPI.start/stop` — driven by phase changes (`setGameplay(phase === "playing")`)
+  plus `stop()` on blur/visibility loss, death, and before ads; `start()` resumes
+  when phase returns to `playing` (incl. after revive). §1.23.3.
+- Rewarded ads: reward applied only when `onRewarded` fired (the `rewarded` flag);
+  closing early yields no reward. §реклама п.5.
+- Interstitial only on return-to-menu (a logical pause) with a 180 s cooldown. §п.4.
+- Sound + gameplay paused before fullscreen/rewarded ads (`audio.suspend()` +
+  `setGameplay(false)`). §п.9.
+- Focus loss: `blur`/`visibilitychange` suspend audio, stop gameplay, clear keys. §звук/фокус.
+- Payments via SDK only (`getCatalog`/`getPurchases`/`purchase`); purchase CTA
+  hidden when the console product is absent/inactive (catalog parity). §1.5/§1.13.
+- No third-party ad code, no custom RTB banners; monetization is SDK-only.
+
+**Remaining external acceptance** — unchanged: the items in the
+"Remaining external acceptance tests" section must still be verified in the
+Yandex Games draft (real ads, real purchase, leaderboard, cloud score, mobile
+touch).
+
 ## Final release handoff — 2026-08-24
 
 The release title is exactly `Космический Штурм: Ультра` everywhere: in the game UI, page title, metadata, README, handoff notes, and the Yandex Games draft. The latest archive is `space-shooter-yandex.zip` in the repository root.

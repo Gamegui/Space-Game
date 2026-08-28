@@ -15,7 +15,9 @@ const LOCAL_STORAGE_KEY = "perf_log_mirror";
 const MIRROR_MAX_LINES = 60;
 
 function isDev(): boolean {
-  return import.meta.env.DEV;
+  // Активен в dev-режиме ИЛИ в диагностической сборке (VITE_PERF=true):
+  // одностраничный HTML для локального воспроизведения фризов.
+  return import.meta.env.DEV || import.meta.env.VITE_PERF === "true";
 }
 
 function mirror(line: string): void {
@@ -99,17 +101,20 @@ export function reportSessionStart(): void {
   });
 }
 
-/** Дослать логи прошлого сеанса после перезагрузки (вызывать один раз при старте). */
-export function recoverPerfMirror(): void {
-  if (!isDev()) return;
+/** Логи прошлого сеанса после перезагрузки: вернуть строки для показа в
+ *  кнопке PERF (локальная диагностическая сборка работает с file://, где
+ *  POST недоступен — localStorage остаётся единственным хранилищем). */
+export function recoverPerfMirror(): string[] {
+  if (!isDev()) return [];
   try {
     const stored = localStorage.getItem(LOCAL_STORAGE_KEY);
-    if (!stored) return;
-    localStorage.removeItem(LOCAL_STORAGE_KEY);
+    if (!stored) return [];
     const lines = stored.split("\n").filter(Boolean);
-    if (lines.length === 0) return;
+    if (lines.length === 0) return [];
+    localStorage.removeItem(LOCAL_STORAGE_KEY);
     post({ kind: "RECOVERED", t: Date.now(), lines, note: "логи предыдущего сеанса (перезагрузка после зависания?)" });
-  } catch { /* ignore */ }
+    return lines;
+  } catch { return []; }
 }
 
 /**

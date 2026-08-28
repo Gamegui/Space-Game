@@ -247,16 +247,17 @@ export default function App() {
   // отчёт о зависании из отдельного потока, когда главный уже заблокирован.
   const freezeBeatRef = useRef<((payload: Record<string, unknown>, hidden: boolean) => void) | null>(null);
   useEffect(() => {
-    if (!import.meta.env.DEV) return;
+    if (!(import.meta.env.DEV || import.meta.env.VITE_PERF === "true")) return;
     reportSessionStart();
-    recoverPerfMirror();
+    const recovered = recoverPerfMirror();
+    for (const line of recovered) PERF_LINES.push(`ПРЕД. СЕАНС: ${line.slice(0, 400)}`);
     freezeBeatRef.current = startFreezeWatchdog();
   }, []);
 
   // longtask-наблюдатель: фиксирует блокировки главного потока ВНЕ игрового
   // колбэка (коммит React, сборка мусора, композитинг браузера).
   useEffect(() => {
-    if (!import.meta.env.DEV) return;
+    if (!(import.meta.env.DEV || import.meta.env.VITE_PERF === "true")) return;
     try {
       const observer = new PerformanceObserver(list => {
         for (const entry of list.getEntries()) {
@@ -276,7 +277,9 @@ export default function App() {
   const [banishesLeft, setBanishesLeft] = useState(1);
   const [upgradeAdPending, setUpgradeAdPending] = useState(false);
   const [bonusChoiceUsed, setBonusChoiceUsed] = useState(false);
-  const adminEnabled = import.meta.env.DEV && import.meta.env.VITE_ADMIN === "true";
+  // Админка: в dev-режиме с VITE_ADMIN, либо в диагностической сборке
+  // (VITE_ADMIN=true при сборке) — для локального стресс-теста владельцем.
+  const adminEnabled = (import.meta.env.DEV || import.meta.env.VITE_ADMIN === "true") && import.meta.env.VITE_ADMIN === "true";
 
   // Yandex Games lifecycle, cloud record and automatic pause when the tab is hidden.
   useEffect(() => {
@@ -1153,7 +1156,7 @@ export default function App() {
       }
 
       drawWorld(g, frame);
-      if (import.meta.env.DEV) {
+      if (import.meta.env.DEV || import.meta.env.VITE_PERF === "true") {
         // sim фиксируем сразу после секции симуляции (она выше), draw — здесь.
         // (perfSimMs выставлен сразу после while-цикла симуляции.)
         const perfCallbackMs = performance.now() - perfFrameStart;
@@ -1450,7 +1453,7 @@ export default function App() {
         />
 
         {/* Development-only admin panel */}
-        {import.meta.env.DEV && (
+        {(import.meta.env.DEV || import.meta.env.VITE_PERF === "true") && (
           <div className="absolute bottom-3 left-3 z-50 font-mono text-[11px]">
             <button
               onClick={() => { setPerfText(getPerfLog()); setPerfOpen(true); }}

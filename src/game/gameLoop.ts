@@ -2011,7 +2011,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         const dx = e.pos.x - player.pos.x, dy = e.pos.y - player.pos.y;
         const size = getEnemySize(e.type);
         if (dx * dx + dy * dy < (size + 16) * (size + 16)) {
-          const baseContactDamage = e.isBoss ? 28 + wave * 0.8 : 11 + wave * 0.18;
+          const baseContactDamage = (e.isBoss ? 28 + wave * 0.8 : 11 + wave * 0.18) * enemyDamageFactor(obj.adaptiveDifficulty);
           const contactDamage = baseContactDamage * (e.guardRole ? 0.65 : 1);
           takeDamage(player, contactDamage, particles, obj, input.onDeath);
           if (e.type === "leecher") e.hp = Math.min(e.maxHp, e.hp + contactDamage * 2);
@@ -2184,6 +2184,18 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+/**
+ * Мягкий множитель урона врагов от шкалы сложности. До scale 12 ведёт себя
+ * в точности как прежняя формула (без регрессии волн 1–60), дальше растёт
+ * только логарифмически: +0.5 за каждое удвоение — макс-билд под давлением
+ * endless-эскалации, но не умирает мгновенно.
+ */
+export function enemyDamageFactor(adaptiveScale: number): number {
+  const base = 1 + (Math.min(adaptiveScale, 12) - 1) * 0.35;
+  const soft = Math.max(0, Math.log2(Math.max(1, adaptiveScale / 12))) * 0.5;
+  return base + soft;
+}
+
 function limitEnemyDamage(enemy: Enemy, amount: number, frame: number, enemies: Enemy[]): number {
   if (!enemy.guardRole) return amount;
   const heraldAlive = enemy.guardRole !== "herald" && enemies.some(other => other.guardRole === "herald" && other.hp > 0);
@@ -2398,9 +2410,11 @@ function shootEnemy(e: Enemy, player: PlayerState, bullets: Bullet[], wave: numb
   const spd = 3.6 + wave * 0.08;
   const color = getEnemyBulletColorLocal(e.type);
   const baseDamage = e.isBoss ? 2.5 + wave * 0.22 : 1 + wave * 0.035;
-  const adaptiveDamage = baseDamage * (1 + Math.max(0, adaptiveScale - 1) * 0.35);
+  // v1.8.3: enemyDamageFactor — прежняя линейная формула до шкалы 12 (волны
+  // 1–60 без изменений), дальше логарифмический рост для endless-эскалации.
+  const adaptiveDamage = baseDamage * enemyDamageFactor(adaptiveScale);
   // The Cortege tests positioning over time instead of deleting an early player in one volley.
-  const guardDamageFactor = e.guardRole ? 0.6 + Math.min(0.22, adaptiveScale * 0.02) : 1;
+  const guardDamageFactor = e.guardRole ? 0.6 + Math.min(0.22, Math.min(adaptiveScale, 12) * 0.02) : 1;
   const dmg = adaptiveDamage * guardDamageFactor;
   const size = e.isBoss ? 6.5 : 4.5;
 

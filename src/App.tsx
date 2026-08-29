@@ -583,6 +583,12 @@ export default function App() {
     g.guardEventActive = false;
     const adaptive = getAdaptiveDifficulty(g.player, newWave);
     g.powerRating = adaptive.power;
+    // ⚔ ЭСКАЛАЦИЯ БЕЗДНЫ (v1.8.3): предупреждение о резком росте силы врагов
+    // после 60-й волны (требование 2.8 «нарастающая сложность» в endless).
+    if (newWave > 60) {
+      setSynergyNotice(`⚔ ЭСКАЛАЦИЯ БЕЗДНЫ ×${(adaptive.scale / 12).toFixed(1)} · ВОЛНА ${newWave}`);
+      setTimeout(() => setSynergyNotice(null), 3200);
+    }
     let routeDifficulty = 1;
     let routeCount = 1;
     g.routeXpMultiplier = 1;

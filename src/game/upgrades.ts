@@ -379,7 +379,18 @@ export function getAdaptiveDifficulty(state: PlayerState, wave: number): { power
   const powerRatio = Math.max(1, power / expectedPower);
   // Near-expected builds keep the power fantasy. Extreme completed builds no
   // longer hit the old ×2.6 ceiling and now face proportionally tougher waves.
-  return { power, scale: Math.min(12, Math.pow(powerRatio, 0.85)) };
+  let scale = Math.min(12, Math.pow(powerRatio, 0.85));
+  // ⚔ ЭСКАЛАЦИЯ БЕЗДНЫ (v1.8.3, требование 2.8 «нарастающая сложность»):
+  // после 60-й волны (endless) враги крепчают ЭКСПОНЕНЦИАЛЬНО, причём
+  // пропорционально силе билда — макс-билд 300-го уровня больше не косит
+  // волны в один выстрел, а слабый билд почти ничего не замечает.
+  // HP: scale ×1.24 за волну (при силе 1200+); урон растёт мягко (см.
+  // enemyDamageFactor в gameLoop): +0.5 за удвоение шкалы.
+  if (wave > 60) {
+    const powerFactor = Math.min(2.5, Math.max(0.3, power / 1200));
+    scale = Math.min(6000, scale * Math.pow(1.32, wave - 60) * powerFactor);
+  }
+  return { power, scale };
 }
 
 // Экспортирована для тестов max-билдов: limit_break не входит в ALL_UPGRADES

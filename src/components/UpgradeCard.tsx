@@ -7,6 +7,8 @@ interface Props {
   maxed: boolean;
   cost: number;
   affordable: boolean;
+  /** Сколько осколков не хватает до покупки (0 = хватает). */
+  missing: number;
   flashing: boolean;
   onBuy: (id: string, cost: number) => void;
 }
@@ -17,7 +19,7 @@ interface Props {
  * покупки (зелёная рамка + галочка), переплата исключена: родитель проверяет
  * canBuyMetaUpgrade до вызова.
  */
-export default memo(function UpgradeCard({ def, lvl, maxed, cost, affordable, flashing, onBuy }: Props) {
+export default memo(function UpgradeCard({ def, lvl, maxed, cost, affordable, missing, flashing, onBuy }: Props) {
   return (
     <div className={`rounded-2xl border p-4 transition-colors duration-300 ${
       flashing ? "border-emerald-400 bg-emerald-950/60"
@@ -46,7 +48,9 @@ export default memo(function UpgradeCard({ def, lvl, maxed, cost, affordable, fl
               : "bg-slate-800 text-slate-600 cursor-not-allowed"
           }`}
         >
-          {flashing ? "✓ УСТАНОВЛЕНО" : <>✨ {cost} осколков{def.maxLevel > 1 && <span className="ml-1 opacity-70">· ур. {lvl + 1}/{def.maxLevel}</span>}</>}
+          {flashing ? "✓ УСТАНОВЛЕНО"
+            : affordable ? <>✨ {cost} осколков{def.maxLevel > 1 && <span className="ml-1 opacity-70">· ур. {lvl + 1}/{def.maxLevel}</span>}</>
+            : <span className="opacity-80">не хватает {missing} ✨</span>}
         </button>
       )}
     </div>

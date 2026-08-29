@@ -942,17 +942,11 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       e.pos.x += (dx / dist) * pullStrength * resist;
       e.pos.y += (dy / dist) * pullStrength * resist;
     }
-    // Поглощение снарядов игрока → накопленный урон коллапса (с потолком).
-    for (let i = bullets.length - 1; i >= 0; i--) {
-      const b = bullets[i];
-      if (!b.fromPlayer) continue;
-      const dx = b.pos.x - sg.pos.x, dy = b.pos.y - sg.pos.y;
-      if (dx * dx + dy * dy < SINGULARITY_RADIUS * SINGULARITY_RADIUS) {
-        sg.absorbed = Math.min(sg.absorbed + b.damage * 0.6, player.bulletDamage * 120);
-        releaseBullet(b);
-        bullets.splice(i, 1);
-      }
-    }
+    // v1.8.2: сингулярность больше НЕ засасывает пули игрока (фидбек:
+    // «чёрная дыра съедает мои пули» — прямая потеря огневой мощи). Снаряды
+    // свободно летят сквозь неё, а коллапс насыщается пассивно от времени
+    // и вашей атаки: +8% bulletDamage за кадр (тот же потолок ×120).
+    sg.absorbed = Math.min(sg.absorbed + player.bulletDamage * 0.08 * timeScale, player.bulletDamage * 120);
     if (sg.timer <= 0) {
       // COLLAPSE: огромный урон всем внутри; боссам — потолок 8% макс. HP.
       for (const e of enemies) {

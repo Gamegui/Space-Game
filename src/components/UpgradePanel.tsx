@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { UpgradeDef } from "../game/types";
 import type { PlayerState } from "../game/types";
 import { ALL_UPGRADES, canUpgrade, getUpgradeLevel } from "../game/upgrades";
@@ -31,6 +31,16 @@ export default function UpgradePanel({
   bonusChoiceUsed, onReroll, onAdReroll, onAdBonusChoice, onBanish,
 }: Props) {
   const [buildOpen, setBuildOpen] = useState(false);
+
+  // Выбор улучшений горячими клавишами 1–4 (v1.8.2).
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const index = ["Digit1", "Digit2", "Digit3", "Digit4"].indexOf(event.code);
+      if (index >= 0 && choices[index]) { event.preventDefault(); onChoose(choices[index]); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [choices, onChoose]);
   const availablePool = Math.max(0, ALL_UPGRADES.filter(upgrade => canUpgrade(player, upgrade)).length - banishedCount);
   return (
     <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/85 backdrop-blur-md z-20 rounded-2xl p-4">
@@ -38,13 +48,13 @@ export default function UpgradePanel({
       <div className="mb-3 text-center">
         <div className="text-xs font-mono text-sky-400 tracking-widest mb-1 font-bold">НОВЫЙ УРОВЕНЬ!</div>
         <div className="text-3xl font-black text-white">Уровень <span className="text-yellow-400">{level}</span></div>
-        <div className="text-xs text-slate-400 font-mono mt-1">Выберите улучшение для боевой системы:</div>
+        <div className="text-xs text-slate-400 font-mono mt-1">Выберите улучшение для боевой системы <span className="text-slate-500">(клавиши 1–4)</span>:</div>
       </div>
 
       {/* Cards */}
       <div className="flex gap-3 px-3 max-w-[940px] w-full justify-center">
-        {choices.map((u) => (
-          <ChoiceCard key={u.id} u={u} style={rarityColors[u.rarity] ?? rarityColors.common} player={player} onChoose={onChoose} />
+        {choices.map((u, index) => (
+          <ChoiceCard key={u.id} u={u} style={rarityColors[u.rarity] ?? rarityColors.common} player={player} hotkey={index + 1} onChoose={onChoose} />
         ))}
       </div>
 

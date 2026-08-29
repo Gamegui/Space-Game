@@ -1,6 +1,6 @@
-import { memo } from "react";
+import { memo, useMemo } from "react";
 import type { UpgradeDef, PlayerState } from "../game/types";
-import { getUpgradeLevel } from "../game/upgrades";
+import { applyUpgrade, calculatePlayerPower, getUpgradeLevel } from "../game/upgrades";
 import { SYNERGIES } from "../game/synergies";
 import { EVOLUTIONS } from "../game/evolutions";
 
@@ -24,6 +24,8 @@ interface Props {
   u: UpgradeDef;
   style: CardStyle;
   player: PlayerState;
+  /** Номер горячей клавиши (1–4), если включён выбор с клавиатуры. */
+  hotkey?: number;
   onChoose: (u: UpgradeDef) => void;
 }
 
@@ -33,8 +35,16 @@ interface Props {
  * процессе), прогресс эволюций, редкость, категорию, деления уровней.
  * memo безопасен: карточка перерисовывается только при смене пропов.
  */
-export default memo(function ChoiceCard({ u, style, player, onChoose }: Props) {
+export default memo(function ChoiceCard({ u, style, player, hotkey, onChoose }: Props) {
   const currentLevel = getUpgradeLevel(player, u.id);
+  // Прирост силы билда от этой карты (сухой прогон одного уровня на клоне).
+  const powerDelta = useMemo(() => {
+    try {
+      const clone = structuredClone(player) as PlayerState;
+      applyUpgrade(clone, u);
+      return calculatePlayerPower(clone) - calculatePlayerPower(player);
+    } catch { return 0; }
+  }, [player, u]);
   const maxLevel = u.maxLevel;
   const visiblePips = Math.min(maxLevel, 8);
   const stars = Array.from({ length: visiblePips }, (_, i) => i < Math.min(currentLevel, visiblePips));
@@ -63,9 +73,22 @@ export default memo(function ChoiceCard({ u, style, player, onChoose }: Props) {
         <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent" />
       </div>
 
-      {/* Rarity badge */}
-      <div className={`text-[10px] font-black px-2.5 py-0.5 rounded-full ${style.badge} inline-block mb-3 tracking-widest`}>
-        {rarityLabel[u.rarity]}
+      {/* Hotkey chip (1–4) */}
+      {hotkey !== undefined && (
+        <div className="absolute left-2 top-2 flex h-5 w-5 items-center justify-center rounded bg-black/60 font-mono text-[10px] font-black text-white/90">{hotkey}</div>
+      )}
+
+      {/* Rarity badge + NEW/LEVEL-UP marker */}
+      <div className="mb-3 flex flex-wrap items-center gap-1.5">
+        <div className={`text-[10px] font-black px-2.5 py-0.5 rounded-full ${style.badge} tracking-widest`}>
+          {rarityLabel[u.rarity]}
+        </div>
+        <div className={`text-[10px] font-black px-2 py-0.5 rounded-full ${currentLevel === 0 ? "bg-emerald-600 text-white" : "bg-slate-700 text-slate-200"}`}>
+          {currentLevel === 0 ? "НОВОЕ" : `УР. +${currentLevel + 1}`}
+        </div>
+        {powerDelta > 0 && (
+          <div className="ml-auto font-mono text-[10px] font-black text-cyan-300" title="Прирост силы билда от этой карты">⚔ +{powerDelta}</div>
+        )}
       </div>
 
       {/* Icon + Name */}

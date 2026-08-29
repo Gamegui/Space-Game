@@ -20,7 +20,7 @@ import Hangar, { type ProductStatus } from "./components/Hangar";
 import type { ShardEvent } from "./components/Hangar";
 import {
   META_KEY, META_UPGRADES, MISSIONS, defaultMetaState, normalizeMetaState,
-  buyMetaUpgrade, applyMetaToPlayer, metaBonusRerolls, applyRunResult,
+  buyMetaUpgrade, buyAllAffordableMeta, applyMetaToPlayer, metaBonusRerolls, applyRunResult,
   claimMission, isMissionComplete,
   type MetaState, type RunResult,
 } from "./game/meta";
@@ -875,6 +875,17 @@ export default function App() {
     persistMeta(next);
     setMeta(next);
   }, [persistMeta]);
+
+  const handleBuyAllAffordable = useCallback(() => {
+    const prev = metaRef.current;
+    const next = { ...prev, upgrades: { ...prev.upgrades } };
+    const before = next.shards;
+    const bought = buyAllAffordableMeta(next);
+    if (bought === 0) return;
+    persistMeta(next);
+    setMeta(next);
+    pushShardEvent(`Ангар · +${bought} ур.`, -(before - next.shards));
+  }, [persistMeta, pushShardEvent]);
 
   const handleClaimMission = useCallback((id: string) => {
     const def = MISSIONS.find(d => d.id === id);
@@ -2154,6 +2165,7 @@ export default function App() {
             purchasePendingId={purchasePendingId}
             shardLog={shardLog}
             onBuyUpgrade={handleBuyMetaUpgrade}
+            onBuyAll={handleBuyAllAffordable}
             onClaimMission={handleClaimMission}
             onBuyProduct={handleBuyProduct}
             onBack={() => { phaseRef.current = "menu"; setPhase("menu"); }}

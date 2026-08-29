@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   META_UPGRADES, MISSIONS, metaUpgradeCost, getMetaLevel, canBuyMetaUpgrade,
-  isMissionComplete,
+  isMissionComplete, metaBonusSummary,
   type MetaState,
 } from "../game/meta";
 import { PRODUCTS } from "../game/products";
@@ -25,6 +25,7 @@ interface Props {
   offers: Record<string, StoreOffer | null>;
   purchasePendingId: string | null;
   onBuyUpgrade: (id: string) => void;
+  onBuyAll: () => void;
   onClaimMission: (id: string) => void;
   onBuyProduct: (id: string) => void;
   onBack: () => void;
@@ -39,7 +40,7 @@ const FILTERS: { id: Filter; label: string }[] = [
   { id: "maxed", label: "МАКС." },
 ];
 
-export default function Hangar({ meta, shardLog, productStatuses, offers, purchasePendingId, onBuyUpgrade, onClaimMission, onBuyProduct, onBack }: Props) {
+export default function Hangar({ meta, shardLog, productStatuses, offers, purchasePendingId, onBuyUpgrade, onBuyAll, onClaimMission, onBuyProduct, onBack }: Props) {
   const [tab, setTab] = useState<Tab>("upgrades");
   const [filter, setFilter] = useState<Filter>("all");
   // Фидбек покупки (v1.8.0): карточка вспыхивает, у осколков появляется «−N ✨».
@@ -70,6 +71,27 @@ export default function Hangar({ meta, shardLog, productStatuses, offers, purcha
     if (filter === "maxed") return all.filter(u => u.maxed);
     return all;
   }, [meta, filter]);
+
+  // Сводка постоянных бонусов + сколько уровней можно купить прямо сейчас
+  // (сухой прогон той же логики, что у buyAllAffordableMeta).
+  const summary = useMemo(() => metaBonusSummary(meta), [meta]);
+  const buyAllCount = useMemo(() => {
+    let rest = meta.shards;
+    let count = 0;
+    let progress = true;
+    const levels: Record<string, number> = {};
+    for (const def of META_UPGRADES) levels[def.id] = getMetaLevel(meta, def.id);
+    while (progress) {
+      progress = false;
+      for (const def of META_UPGRADES) {
+        const lvl = levels[def.id];
+        if (lvl >= def.maxLevel) continue;
+        const cost = metaUpgradeCost(def, lvl);
+        if (rest >= cost) { rest -= cost; levels[def.id] = lvl + 1; count++; progress = true; }
+      }
+    }
+    return count;
+  }, [meta]);
 
   const counts = useMemo(() => {
     let maxed = 0, available = 0;
@@ -172,6 +194,34 @@ export default function Hangar({ meta, shardLog, productStatuses, offers, purcha
 
         {tab === "upgrades" && (
           <>
+            {/* Сводка постоянных бонусов Ангара */}
+            <div className="mb-3 rounded-xl border border-emerald-900/70 bg-emerald-950/30 px-4 py-2">
+              <div className="mb-1 text-[10px] font-black tracking-widest text-emerald-400">ТЕКУЩИЕ БОНУСЫ АНГАРА</div>
+              <div className="flex flex-wrap gap-x-4 gap-y-0.5 font-mono text-[11px] text-slate-300">
+                <span>❤️ +{summary.hp} HP</span>
+                <span>🔵 +{summary.shield} щит</span>
+                <span>💠 +{summary.damagePct}% урона</span>
+                <span>🎯 +{summary.homing.toFixed(2)} наведение</span>
+                <span>🧲 +{summary.magnet} радиус</span>
+                <span>♻️ +{summary.rerolls} реролл</span>
+                <span>💣 +{summary.nukes} заряд</span>
+                <span className="text-fuchsia-300">✨ +{summary.shardsPct}% осколков</span>
+              </div>
+            </div>
+
+            {/* Взять всё доступное */}
+            <div className="mb-3 flex items-center gap-2">
+              <button
+                onClick={onBuyAll}
+                disabled={buyAllCount === 0}
+                className={`rounded-full px-4 py-1.5 text-xs font-black cursor-pointer transition active:scale-95 ${
+                  buyAllCount > 0 ? "bg-emerald-600 text-white hover:bg-emerald-500" : "bg-slate-800 text-slate-600 cursor-not-allowed"
+                }`}
+              >
+                ⬆ ВЗЯТЬ ВСЁ ДОСТУПНОЕ{buyAllCount > 0 ? ` · ${buyAllCount} УР.` : ""}
+              </button>
+            </div>
+
             {/* Фильтры: Все / Доступные / Макс. */}
             <div className="mb-3 flex items-center gap-2">
               {FILTERS.map(f => (
@@ -205,6 +255,7 @@ export default function Hangar({ meta, shardLog, productStatuses, offers, purcha
                   maxed={maxed}
                   cost={cost}
                   affordable={affordable}
+                  missing={affordable ? 0 : Math.max(0, cost - meta.shards)}
                   flashing={boughtFlash?.id === def.id}
                   onBuy={handleBuy}
                 />

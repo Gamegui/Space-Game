@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { PlayerState, UpgradeDef, GamePhase, ShipClassId, Enemy } from "./game/types";
 import type { GameObjects, StepInput } from "./game/gameLoop";
-import { stepGame, makeStars, makeInitialPlayer, makeMaterializeBurst, devourSoul, getNextLevelXp, spawnAdaptiveGuard, bindParticleFrame, particleDebugStats, objectPoolStats, W, H, uid } from "./game/gameLoop";
+import { stepGame, makeStars, makeInitialPlayer, makeMaterializeBurst, devourSoul, getNextLevelXp, spawnAdaptiveGuard, bindParticleFrame, particleDebugStats, objectPoolStats, VOID_SOUL_MAX, W, H, uid } from "./game/gameLoop";
 import { ALL_UPGRADES, rollUpgrades, rollPremiumUpgradeChoices, rollHighRarityUpgrade, applyUpgrade, getUpgradeLevel, getAdaptiveDifficulty } from "./game/upgrades";
-import { getWaveComposition, isBossWave, spawnBoss, getBossName } from "./game/enemies";
+import { getWaveComposition, isBossWave, spawnBoss, getBossName, spawnEnemy } from "./game/enemies";
+import type { EnemyType } from "./game/types";
 import { SHIP_CLASSES } from "./game/shipClasses";
 import { audio } from "./game/audio";
 import { SYNERGIES, unlockAvailableSynergies } from "./game/synergies";
@@ -24,7 +25,7 @@ import {
   type MetaState, type RunResult,
 } from "./game/meta";
 import { PRODUCTS } from "./game/products";
-import { checkEvolutions } from "./game/evolutions";
+import { checkEvolutions, EVOLUTIONS } from "./game/evolutions";
 import { rollMythicDrop, ownedMythicCount, MAX_MYTHIC_PER_RUN } from "./game/mythics";
 import MythicReveal from "./components/MythicReveal";
 import { reportPerfEvent, recoverPerfMirror, reportSessionStart, startFreezeWatchdog } from "./game/perfReporter";
@@ -178,6 +179,7 @@ export default function App() {
   const bossIntroTimerRef = useRef(0);
   const waveTransitioningRef = useRef(false);
   const adminGodRef = useRef(false);
+  const fpsRef = useRef(0);
   const banishedUpgradeIdsRef = useRef<Set<string>>(new Set());
 
   // UI state (causes re-renders)
@@ -1170,6 +1172,7 @@ export default function App() {
       fpsFrames++;
       if (timestamp - fpsWindowStart >= 2000) {
         const fps = fpsFrames * 1000 / (timestamp - fpsWindowStart);
+        fpsRef.current = Math.round(fps);
         if (g && g.performanceAuto && currentPhase === "playing") {
           if (fps < 43 && g.performanceTier > 0) {
             g.performanceTier = (g.performanceTier - 1) as 0 | 1 | 2;
@@ -1338,6 +1341,13 @@ export default function App() {
     touchRef.current = null;
   };
 
+  // Телеметрия админки живёт, пока панель открыта (2 Гц) — FPS/пулы/бюджеты.
+  useEffect(() => {
+    if (!adminOpen) return;
+    const timer = window.setInterval(() => setAdminRefresh(v => v + 1), 500);
+    return () => clearInterval(timer);
+  }, [adminOpen]);
+
   // ─── Development admin tools (excluded from the Yandex production build) ──
   const adminSetWave = useCallback((targetWave: number) => {
     const g = gameRef.current;
@@ -1492,6 +1502,104 @@ export default function App() {
     syncUI();
   }, [syncUI]);
 
+  // ✦ QA-режим: все 6 мификов сразу (кап 2/забег игнорируется — только тут).
+  const adminGiveAllMythics = useCallback(() => {
+    const g = gameRef.current;
+    if (!g) return;
+    const owned = new Set(g.player.upgrades.map(u => u.id));
+    for (const def of ALL_UPGRADES) {
+      if (def.rarity === "mythic" && !owned.has(def.id)) applyUpgrade(g.player, def);
+    }
+    setAdminRefresh(v => v + 1);
+    syncUI();
+  }, [syncUI]);
+
+  // ⚡ Все мифики — у порога срабатывания: события запустятся сами в первые
+  // секунды обычной игры (сверхновая, сингулярность, судный разряд,
+  // перегрузка, залп флота, конец материи) — визуальный тур за один забег.
+  const adminChargeAllMythics = useCallback(() => {
+    const g = gameRef.current;
+    if (!g) return;
+    const p = g.player;
+    p.novaCore = 99;          // следующее убийство → фитиль → СВЕРХНОВАЯ
+    p.collapseCharge = 49;    // следующее убийство → сингулярность
+    p.wrath = 9;              // следующий крит → Судный Разряд
+    p.overdriveCharge = 99.5; // пара кадров стрельбы → OVERDRIVE
+    p.fleetCharge = 99;       // следующий выстрел помощника → залп армады
+    p.entropy = 99;           // следующий бой → КОНЕЦ МАТЕРИИ
+    setAdminRefresh(v => v + 1);
+  }, []);
+
+  // 🌊 Толпа смешанных врагов вокруг игрока (кольцами).
+  const adminSpawnCrowd = useCallback((count: number) => {
+    const g = gameRef.current;
+    if (!g) return;
+    const types: EnemyType[] = ["scout", "fighter", "bomber", "sniper", "splitter", "tank", "stealth", "healer", "charger", "spinner", "kamikaze", "phantom", "leecher", "carrier"];
+    for (let i = 0; i < count; i++) {
+      const enemy = spawnEnemy(types[i % types.length], Math.max(1, waveRef.current), g.adaptiveDifficulty);
+      const angle = (i / count) * Math.PI * 2;
+      const radius = 140 + (i % 4) * 60;
+      enemy.pos = {
+        x: Math.max(30, Math.min(W - 30, g.player.pos.x + Math.cos(angle) * radius)),
+        y: Math.max(30, Math.min(H - 30, g.player.pos.y + Math.sin(angle) * radius)),
+      };
+      enemy.centerX = enemy.pos.x;
+      enemy.centerY = enemy.pos.y;
+      enemy.targetY = enemy.pos.y;
+      g.enemies.push(enemy);
+    }
+    syncUI();
+  }, [syncUI]);
+
+  // 👻 Комплект Немезиды: эксклюзивные синергии класса + полный запас душ.
+  const adminWraithKit = useCallback(() => {
+    const g = gameRef.current;
+    if (!g) return;
+    for (const synergy of SYNERGIES) {
+      if (synergy.shipClass && g.player.shipClass !== synergy.shipClass) continue;
+      for (const id of synergy.requires) {
+        const upgrade = ALL_UPGRADES.find(item => item.id === id);
+        if (upgrade && getUpgradeLevel(g.player, id) === 0) applyUpgrade(g.player, upgrade);
+      }
+    }
+    unlockAvailableSynergies(g.player);
+    g.player.voidSouls = VOID_SOUL_MAX;
+    setAdminRefresh(v => v + 1);
+    syncUI();
+  }, [syncUI]);
+
+  // 🧬 Все 7 эволюций: применяет требования и запускает каждую однократно.
+  const adminTriggerAllEvolutions = useCallback(() => {
+    const g = gameRef.current;
+    if (!g) return;
+    for (const evolution of EVOLUTIONS) {
+      for (const id of evolution.requires) {
+        const upgrade = ALL_UPGRADES.find(item => item.id === id);
+        if (upgrade && getUpgradeLevel(g.player, id) === 0) applyUpgrade(g.player, upgrade);
+      }
+    }
+    checkEvolutions(g.player);
+    const adaptive = getAdaptiveDifficulty(g.player, Math.max(26, waveRef.current));
+    g.powerRating = adaptive.power;
+    g.adaptiveDifficulty = adaptive.scale;
+    setAdminRefresh(v => v + 1);
+    syncUI();
+  }, [syncUI]);
+
+  // ☠ РЕГРЕССИЯ v1.8.1: level-300 макс-билд × Чёрный кортеж — точный сценарий
+  // OOM «Фазового разряда». Пули в телеметрии должны остаться < 1000.
+  const adminStressCortege300 = useCallback(() => {
+    adminMaxBuild();
+    adminSpawnCortege();
+  }, [adminMaxBuild, adminSpawnCortege]);
+
+  // 🌊 АД ПЛОТНОСТИ: макс-билд (взрывы + цепная детонация) и 60 врагов —
+  // сценарий каскадных фризов v1.6.x, бюджеты частиц видны в телеметрии.
+  const adminStressCrowd = useCallback(() => {
+    adminMaxBuild();
+    adminSpawnCrowd(60);
+  }, [adminMaxBuild, adminSpawnCrowd]);
+
   const adminBossHp = useCallback((ratio: number) => {
     const boss = gameRef.current?.enemies.find(enemy => enemy.isBoss);
     if (!boss) return;
@@ -1606,17 +1714,19 @@ export default function App() {
               🛠 ADMIN {adminOpen ? "−" : "+"}
             </button>
             {adminOpen && (
-              <div className="mt-2 max-h-[650px] w-60 overflow-y-auto rounded-xl border border-fuchsia-700 bg-slate-950/95 p-3 text-slate-200 shadow-2xl backdrop-blur-md">
+              <div className="mt-2 max-h-[680px] w-72 overflow-y-auto rounded-xl border border-fuchsia-700 bg-slate-950/95 p-3 text-slate-200 shadow-2xl backdrop-blur-md">
                 <div className="mb-2 text-[10px] text-fuchsia-300">ТЕСТОВАЯ СБОРКА · НЕ ДЛЯ РЕЛИЗА</div>
                 {!gameRef.current ? (
                   <button onClick={() => startGame(selectedClass)} className="admin-button bg-emerald-700">БЫСТРЫЙ СТАРТ</button>
                 ) : (
                   <>
                     <div className="mb-2 rounded bg-slate-900 p-2 text-[10px] text-cyan-300">
-                      СИЛА: {gameRef.current.powerRating} · ×{gameRef.current.adaptiveDifficulty.toFixed(2)}<br/>
+                      СИЛА: {gameRef.current.powerRating} · ×{gameRef.current.adaptiveDifficulty.toFixed(2)} · FPS: {fpsRef.current}<br/>
                       УРОВЕНЬ: {gameRef.current.player.level} · КАЧЕСТВО: {gameRef.current.performanceTier}<br/>
-                      ВРАГИ: {gameRef.current.enemies.length} · ПУЛИ: {gameRef.current.bullets.length}<br/>
-                      ЧАСТИЦЫ: {particleDebugStats().active}/{particleDebugStats().budget} · ПУЛ: {particleDebugStats().pooled} · +{particleDebugStats().spawnedThisFrame}/кадр
+                      ВРАГИ: {gameRef.current.enemies.length} · ПУЛИ: <span className={gameRef.current.bullets.length > 1000 ? "font-black text-rose-400" : ""}>{gameRef.current.bullets.length}</span><br/>
+                      ЧАСТИЦЫ: {particleDebugStats().active}/{particleDebugStats().budget} · ПУЛ: {particleDebugStats().pooled} · +{particleDebugStats().spawnedThisFrame}/кадр<br/>
+                      ПУЛЫ п/т/с/м: {Object.values(objectPoolStats()).join("/")}
+                      {gameRef.current.bullets.length > 1000 && <div className="mt-1 font-black text-rose-400">⚠ ЦЕПНАЯ РЕАКЦИЯ ПУЛЬ — регрессия v1.8.1!</div>}
                     </div>
 
                     <div className="mt-2 text-[9px] font-black tracking-widest text-fuchsia-300">ИГРОК И БИЛД</div>
@@ -1631,6 +1741,14 @@ export default function App() {
                     <button onClick={() => { const g = gameRef.current; if (g) { g.player.hp = 1; if (g.player.shield) g.player.shield.hp = 0; setAdminRefresh(v => v + 1); } }} className="admin-button bg-rose-950">HP = 1</button>
                     <button onClick={() => { const g = gameRef.current; if (g) { g.player.hp = g.player.maxHp; if (g.player.shield) g.player.shield.hp = g.player.shield.maxHp; setAdminRefresh(v => v + 1); } }} className="admin-button bg-emerald-800">ПОЛНОЕ ЛЕЧЕНИЕ</button>
 
+                    <div className="mt-2 text-[9px] font-black tracking-widest text-emerald-300">⚡ МАССОВАЯ ПРОВЕРКА (всё сразу)</div>
+                    <button onClick={adminStressCortege300} className="admin-button bg-gradient-to-r from-purple-900 to-rose-900">☠ LVL 300 × ЧЁРНЫЙ КОРТЕЖ (регрессия OOM)</button>
+                    <button onClick={adminStressCrowd} className="admin-button bg-gradient-to-r from-orange-900 to-red-900">🌊 АД ПЛОТНОСТИ · МАКС-БИЛД + 60 ВРАГОВ</button>
+                    <button onClick={adminChargeAllMythics} className="admin-button bg-gradient-to-r from-amber-600 to-yellow-400 text-black">⚡ ЗАРЯДИТЬ ВСЕ МИФИКИ У ПОРОГА</button>
+                    <button onClick={adminGiveAllMythics} className="admin-button bg-gradient-to-r from-amber-500 to-yellow-400 text-black">✦ ВСЕ 6 МИФИКОВ СРАЗУ</button>
+                    <button onClick={adminTriggerAllEvolutions} className="admin-button bg-emerald-800">🧬 ВСЕ 7 ЭВОЛЮЦИЙ</button>
+                    <button onClick={adminWraithKit} className="admin-button bg-fuchsia-900">👻 КОМПЛЕКТ НЕМЕЗИДЫ (синергии + 20 душ)</button>
+
                     <div className="mt-2 text-[9px] font-black tracking-widest text-fuchsia-300">СОБЫТИЯ И БОССЫ</div>
                     <button onClick={adminSpawnCortege} className="admin-button bg-purple-900">👁 ПРИЗВАТЬ ЧЁРНЫЙ КОРТЕЖ</button>
                     <button onClick={() => adminSetWave(50)} className="admin-button bg-red-950">Ω ПРИЗВАТЬ ОМЕГУ</button>
@@ -1639,6 +1757,11 @@ export default function App() {
                     </div>
                     <button onClick={() => { const g = gameRef.current; if (g) g.enemies.forEach(enemy => { enemy.shieldHp = 0; enemy.hp = 0; }); }} className="admin-button bg-rose-800">УНИЧТОЖИТЬ ВСЕХ</button>
                     <button onClick={() => { const g = gameRef.current; if (g) g.bullets = g.bullets.filter(b => b.fromPlayer); }} className="admin-button bg-cyan-800">ОЧИСТИТЬ ВРАЖ. ПУЛИ</button>
+                    <div className="mt-1 grid grid-cols-3 gap-1">
+                      {[10, 30, 60].map(count => (
+                        <button key={count} onClick={() => adminSpawnCrowd(count)} className="rounded bg-teal-900 px-1 py-1.5 font-bold hover:bg-teal-700 cursor-pointer"> ТОЛПА ×{count}</button>
+                      ))}
+                    </div>
 
                     <div className="mt-2 text-[9px] font-black tracking-widest text-fuchsia-300">КАЧЕСТВО РЕНДЕРА</div>
                     <div className="grid grid-cols-3 gap-1">

@@ -142,6 +142,53 @@ export const META_UPGRADES: MetaUpgradeDef[] = [
   },
 ];
 
+/**
+ * Купить максимум доступных уровней за один проход (кнопка «Взять всё»).
+ * Повторяет проходы, пока хоть что-то можно купить (цены растут с уровнем).
+ * Возвращает число купленных уровней.
+ */
+export function buyAllAffordableMeta(state: MetaState): number {
+  let bought = 0;
+  let progress = true;
+  while (progress) {
+    progress = false;
+    for (const def of META_UPGRADES) {
+      if (canBuyMetaUpgrade(state, def)) {
+        buyMetaUpgrade(state, def);
+        bought++;
+        progress = true;
+      }
+    }
+  }
+  return bought;
+}
+
+export interface MetaBonusSummary {
+  hp: number;
+  shield: number;
+  magnet: number;
+  rerolls: number;
+  damagePct: number;
+  homing: number;
+  shardsPct: number;
+  nukes: number;
+}
+
+/** Суммарные постоянные бонусы текущих уровней Ангара — для сводки в UI. */
+export function metaBonusSummary(state: MetaState): MetaBonusSummary {
+  const lvl = (id: string) => getMetaLevel(state, id);
+  return {
+    hp: 20 * lvl("reinforced_hull"),
+    shield: 15 * lvl("energy_shield"),
+    magnet: 30 * lvl("tractor_beam"),
+    rerolls: lvl("field_logistics"),
+    damagePct: 5 * lvl("core_overclock"),
+    homing: 0.02 * lvl("adaptive_targeting"),
+    shardsPct: 10 * lvl("shard_magnet"),
+    nukes: lvl("quick_start"),
+  };
+}
+
 export function metaUpgradeCost(def: MetaUpgradeDef, currentLevel: number): number {
   return Math.round(def.baseCost * (1 + currentLevel));
 }

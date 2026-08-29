@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { UpgradeDef } from "../game/types";
 import type { PlayerState } from "../game/types";
 import { ALL_UPGRADES, canUpgrade, getUpgradeLevel } from "../game/upgrades";
 import { SYNERGIES } from "../game/synergies";
-import { EVOLUTIONS } from "../game/evolutions";
 import { MYTHIC_IDS } from "../game/mythics";
+import ChoiceCard, { type CardStyle } from "./ChoiceCard";
+import { rarityCardStyles } from "./cardStyles";
 
 interface Props {
   choices: UpgradeDef[];
@@ -23,28 +24,23 @@ interface Props {
   onBanish: (upgrade: UpgradeDef) => void;
 }
 
-const rarityColors: Record<string, { bg: string; border: string; text: string; badge: string }> = {
-  mythic:    { bg: "from-amber-950 to-slate-900",  border: "border-amber-300", text: "text-amber-100", badge: "bg-gradient-to-r from-amber-400 to-yellow-200 text-black" },
-  common:    { bg: "from-slate-800 to-slate-900", border: "border-slate-500", text: "text-slate-200", badge: "bg-slate-600 text-slate-200" },
-  rare:      { bg: "from-blue-900 to-slate-900",  border: "border-blue-500",  text: "text-blue-100",  badge: "bg-blue-600 text-blue-100"  },
-  epic:      { bg: "from-purple-900 to-slate-900",border: "border-purple-500",text: "text-purple-100",badge: "bg-purple-600 text-purple-100"},
-  legendary: { bg: "from-amber-900 to-slate-900", border: "border-amber-500", text: "text-amber-100", badge: "bg-amber-500 text-amber-900" },
-};
-
-const rarityLabel: Record<string, string> = {
-  common: "ОБЫЧНОЕ", rare: "РЕДКОЕ", epic: "ЭПИЧЕСКОЕ", legendary: "ЛЕГЕНДАРНОЕ", mythic: "✦ МИФИЧЕСКОЕ ✦",
-};
-
-const categoryIcon: Record<string, string> = {
-  атака: "⚔️", защита: "🛡️", стихии: "🌊", спутники: "🤖",
-  особое: "✨", утилиты: "⚙️",
-};
+const rarityColors: Record<string, CardStyle> = rarityCardStyles;
 
 export default function UpgradePanel({
   choices, player, onChoose, level, rerollsLeft, banishesLeft, banishedCount, adAvailable, adPending,
   bonusChoiceUsed, onReroll, onAdReroll, onAdBonusChoice, onBanish,
 }: Props) {
   const [buildOpen, setBuildOpen] = useState(false);
+
+  // Выбор улучшений горячими клавишами 1–4 (v1.8.2).
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const index = ["Digit1", "Digit2", "Digit3", "Digit4"].indexOf(event.code);
+      if (index >= 0 && choices[index]) { event.preventDefault(); onChoose(choices[index]); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [choices, onChoose]);
   const availablePool = Math.max(0, ALL_UPGRADES.filter(upgrade => canUpgrade(player, upgrade)).length - banishedCount);
   return (
     <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/85 backdrop-blur-md z-20 rounded-2xl p-4">
@@ -52,120 +48,14 @@ export default function UpgradePanel({
       <div className="mb-3 text-center">
         <div className="text-xs font-mono text-sky-400 tracking-widest mb-1 font-bold">НОВЫЙ УРОВЕНЬ!</div>
         <div className="text-3xl font-black text-white">Уровень <span className="text-yellow-400">{level}</span></div>
-        <div className="text-xs text-slate-400 font-mono mt-1">Выберите улучшение для боевой системы:</div>
+        <div className="text-xs text-slate-400 font-mono mt-1">Выберите улучшение для боевой системы <span className="text-slate-500">(клавиши 1–4)</span>:</div>
       </div>
 
       {/* Cards */}
       <div className="flex gap-3 px-3 max-w-[940px] w-full justify-center">
-        {choices.map((u) => {
-          const c = rarityColors[u.rarity] || rarityColors.common;
-          const currentLevel = getUpgradeLevel(player, u.id);
-          const maxLevel = u.maxLevel;
-          const visiblePips = Math.min(maxLevel, 8);
-          const stars = Array.from({ length: visiblePips }, (_, i) => i < Math.min(currentLevel, visiblePips));
-          const relatedSynergies = SYNERGIES.filter(synergy => synergy.requires.includes(u.id));
-          // Индикатор прогресса эволюций: игрок видит, что строит билд
-          // («до эволюции осталось 1 улучшение»).
-          const relatedEvolutions = EVOLUTIONS.filter(evolution =>
-            !player.evolved.includes(evolution.id) && evolution.requires.includes(u.id));
-
-          return (
-            <button
-              key={u.id}
-              onClick={() => onChoose(u)}
-              className={`
-                flex-1 min-w-0 max-w-[250px] p-4 rounded-2xl border-2 ${c.border}
-                bg-gradient-to-b ${c.bg} ${c.text}
-                transition-all duration-200
-                hover:scale-105 hover:shadow-2xl hover:brightness-110
-                active:scale-95
-                text-left relative overflow-hidden
-                group cursor-pointer
-              `}
-            >
-              {/* Shimmer effect */}
-              <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent" />
-              </div>
-
-              {/* Rarity badge */}
-              <div className={`text-[10px] font-black px-2.5 py-0.5 rounded-full ${c.badge} inline-block mb-3 tracking-widest`}>
-                {rarityLabel[u.rarity]}
-              </div>
-
-              {/* Icon + Name */}
-              <div className="flex items-center gap-2.5 mb-2.5">
-                <span className="text-3xl">{u.icon}</span>
-                <div>
-                  <div className="font-black text-base leading-tight">{u.name}</div>
-                  <div className="text-xs opacity-60 font-mono">{categoryIcon[u.category]} {u.category}</div>
-                </div>
-              </div>
-
-              {/* Synergy hint: explain why this card matters before selection. */}
-              {relatedSynergies.length > 0 && (
-                <div className="mb-2 space-y-1">
-                  {relatedSynergies.map(synergy => {
-                    const found = synergy.requires.filter(id => getUpgradeLevel(player, id) > 0).length;
-                    const afterPick = Math.min(synergy.requires.length, found + (currentLevel === 0 ? 1 : 0));
-                    const active = player.synergies.includes(synergy.id);
-                    const completes = !active && afterPick === synergy.requires.length;
-                    const style = active
-                      ? "border-emerald-500/50 bg-emerald-950/70 text-emerald-200"
-                      : completes
-                        ? "border-amber-400 bg-amber-500/20 text-amber-200 animate-pulse"
-                        : "border-fuchsia-500/50 bg-fuchsia-950/70 text-fuchsia-200";
-                    return (
-                      <div key={synergy.id} className={`rounded-md border px-2 py-1 text-[9px] font-black leading-tight ${style}`}>
-                        {active ? "✓ АКТИВНА" : completes ? "✦ ЗАВЕРШАЕТ" : "🧬 ДЛЯ СИНЕРГИИ"}: {synergy.name} · {afterPick}/{synergy.requires.length}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-
-              {/* Evolution hint: super-synergy progress on this card. */}
-              {relatedEvolutions.length > 0 && (
-                <div className="mb-2 space-y-1">
-                  {relatedEvolutions.map(evolution => {
-                    const found = evolution.requires.filter(id => getUpgradeLevel(player, id) > 0).length;
-                    const afterPick = Math.min(evolution.requires.length, found + (currentLevel === 0 ? 1 : 0));
-                    const completes = afterPick === evolution.requires.length;
-                    return (
-                      <div key={evolution.id} className={`rounded-md border px-2 py-1 text-[9px] font-black leading-tight ${completes ? "border-orange-400 bg-orange-500/20 text-orange-200 animate-pulse" : "border-amber-600/50 bg-amber-950/60 text-amber-200"}`}>
-                        {completes ? "⚡ ЗАПУСКАЕТ ЭВОЛЮЦИЮ" : `🧬 ЭВОЛЮЦИЯ ${afterPick}/${evolution.requires.length}`}: {evolution.name}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-
-              {/* Description */}
-              <div className="text-xs opacity-85 leading-relaxed mb-4 min-h-[38px]">{u.description}</div>
-
-              {/* Level indicator */}
-              <div className="flex items-center gap-1.5 border-t border-white/10 pt-2.5">
-                <span className="text-[11px] opacity-60 font-mono">УРОВЕНЬ</span>
-                {stars.map((filled, i) => (
-                  <div
-                    key={i}
-                    className={`w-4 h-1.5 rounded-full transition-all ${
-                      filled ? "bg-current opacity-100" : "bg-white opacity-20"
-                    }`}
-                  />
-                ))}
-                <span className="text-xs opacity-70 font-mono ml-auto">
-                  {currentLevel}/{maxLevel}
-                </span>
-              </div>
-
-              {/* Corner decoration */}
-              <div className="absolute top-2 right-2 opacity-10 text-4xl font-black">
-                {currentLevel > 0 ? `+${currentLevel}` : ""}
-              </div>
-            </button>
-          );
-        })}
+        {choices.map((u, index) => (
+          <ChoiceCard key={u.id} u={u} style={rarityColors[u.rarity] ?? rarityColors.common} player={player} hotkey={index + 1} onChoose={onChoose} />
+        ))}
       </div>
 
       {/* Choice controls */}

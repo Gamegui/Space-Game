@@ -316,32 +316,32 @@ export const ALL_UPGRADES: UpgradeDef[] = [
   // максимум 2 за забег) и никогда не входят в обычный пул выбора.
   {
     id: "mythic_nova", name: "Звёздный Пожиратель «Сердце Сверхновой»", icon: "☀️", rarity: "mythic", category: "миф", maxLevel: 1,
-    description: "Убийства заряжают Звёздное Ядро (0/100). На полном заряде — СВЕРХНОВАЯ: волна стирает слабых, элиты и мини-боссы получают огромный урон, боссы — до 6% макс. HP.",
+    description: "Убийства заряжают Звёздное Ядро (0/100). На полном заряде — СВЕРХНОВАЯ: волна стирает слабых, элиты и мини-боссы получают огромный урон, боссы — до 6% макс. HP. После взрыва — 3 c разогнанной стрельбы.",
     apply: (s, _l) => { s.novaCore = 0; s.novaFuseTimer = 0; },
   },
   {
     id: "mythic_singularity", name: "Сингулярность «Пожиратель Звёзд»", icon: "🌌", rarity: "mythic", category: "миф", maxLevel: 1,
-    description: "Убийства копят Коллапс (0/50). На полном заряде рождается сингулярность: стягивает врагов, поглощает ваши снаряды — и схлопывается чудовищным взрывом.",
+    description: "Убийства копят Коллапс (0/50). На полном заряде рождается сингулярность: стягивает врагов, насыщается от вашей огневой мощи (пули летят сквозь неё свободно) — и схлопывается взрывом, возвращая +20 опыта.",
     apply: (s, _l) => { s.collapseCharge = 0; },
   },
   {
     id: "mythic_judgement", name: "Бог Грома «Судный Разряд»", icon: "⚡", rarity: "mythic", category: "миф", maxLevel: 1,
-    description: "Криты заряжают Гнев Бури (0/10). Десятый крит высвобождает СУДНЫЙ РАЗРЯД: усиляющуюся молнию, ищущую до 16 целей и растущую на 5% за каждое уничтожение.",
+    description: "Криты заряжают Гнев Бури (0/10). Десятый крит высвобождает СУДНЫЙ РАЗРЯД: молнию до 16 целей, растущую на 8% за каждое уничтожение (до +80%).",
     apply: (s, _l) => { s.wrath = 0; },
   },
   {
     id: "mythic_overdrive", name: "Абсолютный Реактор «Перегрузка»", icon: "🔥", rarity: "mythic", category: "миф", maxLevel: 1,
-    description: "Непрерывная стрельба копит Перегрузку (0–100%). На 100% — 5 секунд ABSOLUTE OVERDRIVE: шквал огня; убийства продлевают режим (до 10 с), затем реактор остывает.",
+    description: "Непрерывная стрельба копит Перегрузку (0–100%). На 100% — 5 c ABSOLUTE OVERDRIVE: шквал огня, +10% шанс и +0.25 к множителю крита; убийства продлевают режим (до 10 с), затем реактор остывает.",
     apply: (s, _l) => { s.overdriveCharge = 0; s.overdriveTimer = 0; s.overdriveCooldown = 0; s.lastShotFrame = -9999; },
   },
   {
     id: "mythic_fleet", name: "Армада «Последний Флот»", icon: "🛰️", rarity: "mythic", category: "миф", maxLevel: 1,
-    description: "FLEET LINK: спутники и дроны бьют по общей приоритетной цели, их атаки копят командный канал (0/100). Залп FINAL FLEET SALVO — синхронный удар всей армады.",
+    description: "FLEET LINK: спутники и дроны бьют по общей приоритетной цели, их атаки копят командный канал (0/100). Залп FINAL FLEET SALVO: вся армада и ваш калибр (+15% урона) бьют 1.5 c в едином порыве.",
     apply: (s, _l) => { s.fleetCharge = 0; s.fleetSalvoTimer = 0; s.fleetStacks = 0; },
   },
   {
     id: "mythic_void", name: "Абсолютная Пустота «Конец Материи»", icon: "👁️", rarity: "mythic", category: "миф", maxLevel: 1,
-    description: "Бой копит Энтропию (0/100). На полном заряде — 4 c КОНЦА МАТЕРИИ: враги замедлены и уязвимы, снаряды пробивают и наводятся, а убитые оставляют разрывы-порталы для ваших снарядов.",
+    description: "Бой копит Энтропию (0/100). На полном заряде — 4 c КОНЦА МАТЕРИИ: враги замедлены и уязвимы, снаряды получают +2 пробития и наведение, убитые оставляют разрывы-порталы.",
     apply: (s, _l) => { s.entropy = 0; s.voidTimer = 0; },
   },
 ];
@@ -379,10 +379,23 @@ export function getAdaptiveDifficulty(state: PlayerState, wave: number): { power
   const powerRatio = Math.max(1, power / expectedPower);
   // Near-expected builds keep the power fantasy. Extreme completed builds no
   // longer hit the old ×2.6 ceiling and now face proportionally tougher waves.
-  return { power, scale: Math.min(12, Math.pow(powerRatio, 0.85)) };
+  let scale = Math.min(12, Math.pow(powerRatio, 0.85));
+  // ⚔ ЭСКАЛАЦИЯ БЕЗДНЫ (v1.8.3, требование 2.8 «нарастающая сложность»):
+  // после 60-й волны (endless) враги крепчают ЭКСПОНЕНЦИАЛЬНО, причём
+  // пропорционально силе билда — макс-билд 300-го уровня больше не косит
+  // волны в один выстрел, а слабый билд почти ничего не замечает.
+  // HP: scale ×1.24 за волну (при силе 1200+); урон растёт мягко (см.
+  // enemyDamageFactor в gameLoop): +0.5 за удвоение шкалы.
+  if (wave > 60) {
+    const powerFactor = Math.min(2.5, Math.max(0.3, power / 1200));
+    scale = Math.min(6000, scale * Math.pow(1.32, wave - 60) * powerFactor);
+  }
+  return { power, scale };
 }
 
-const LIMIT_BREAK: UpgradeDef = {
+// Экспортирована для тестов max-билдов: limit_break не входит в ALL_UPGRADES
+// и попадает в выбор только как fallback пустого пула.
+export const LIMIT_BREAK: UpgradeDef = {
   id: "limit_break",
   name: "Прорыв предела",
   icon: "♾️",

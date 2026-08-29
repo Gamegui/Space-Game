@@ -245,6 +245,8 @@ function releaseBullet(b: Bullet): void {
   // Ссылки на врагов обязаны обнуляться — иначе пул удерживает мёртвых врагов.
   b.target = undefined;
   b.hitList = undefined;
+  b.shardBorn = false;
+  b.voidJumps = undefined;
   if (bulletPool.length < BULLET_POOL_CAP) bulletPool.push(b);
 }
 
@@ -302,6 +304,15 @@ export function particleDebugStats(): { active: number; pooled: number; spawnedT
 const enemiesToRemove: Set<number> = new Set();
 const bulletsToRemove: Set<number> = new Set();
 const spawnedFromSplit: Enemy[] = [];
+/**
+ * Пули, порождённые ВНУТРИ цикла коллизий (сейчас — только «Фазовый разряд»).
+ * Пушить их в `bullets` во время for...of нельзя: цикл догоняет растущий конец
+ * массива и не завершается никогда. Наполняется в кадре, применяется после
+ * цикла (v1.8.1 — фикс OOM/фриза на Чёрном кортеже с level-300 билдом).
+ */
+const bulletsToSpawnAfterCollision: Bullet[] = [];
+/** Бюджет осколков «Фазового разряда» за кадр — страховка от любого разгона. */
+const MAX_DISCHARGE_SHARDS_PER_FRAME = 40;
 const collisionCandidates: Enemy[] = [];
 
 /** Плановое число частиц эффекта: тир качества × адаптивная доля × остатки
@@ -523,6 +534,37 @@ const VOID_DURATION = 240;    // 4 c
 const VOID_FRACTURE_MAX = 8;
 const VOID_FRACTURE_LIFE = 180;  // 3 c
 const VOID_TELEPORT_MAX = 2;
+/** v1.8.0: опыт за схлопывание сингулярности (COLLAPSE). */
+const COLLAPSE_XP_REWARD = 20;
+/** v1.8.0: бонус ABSOLUTE OVERDRIVE — окно перегрузки повышает криты. */
+export const OVERDRIVE_CRIT_CHANCE_BONUS = 0.10;
+export const OVERDRIVE_CRIT_MULTIPLIER_BONUS = 0.25;
+
+/**
+ * Актуальные шанс/множитель крита с учётом активного ABSOLUTE OVERDRIVE.
+ * Единая точка правды для боевого кода и тестов: бонус существует только
+ * пока горит окно перегрузки и не требует отката.
+ */
+export function overdriveCritBonus(player: PlayerState): { chance: number; multiplier: number } {
+  if (player.overdriveTimer <= 0) return { chance: 0, multiplier: 0 };
+  return { chance: OVERDRIVE_CRIT_CHANCE_BONUS, multiplier: OVERDRIVE_CRIT_MULTIPLIER_BONUS };
+}
+
+/**
+ * Начислить опыт вне сбора сфер (мифик «Сингулярность», v1.8.0) с тем же
+ * циклом повышений уровня, что и при сборе сфер.
+ */
+export function grantMythicXp(obj: GameObjects, input: Pick<StepInput, "onLevelUp">, amount: number): void {
+  const { player } = obj;
+  player.xp += amount;
+  while (player.xp >= player.xpToNext) {
+    player.xp -= player.xpToNext;
+    player.level++;
+    player.xpToNext = getNextLevelXp(player.level);
+    audio.playLevelUp();
+    input.onLevelUp(player);
+  }
+}
 
 /** Заряды мификов от убийства (счётчики, без физических частиц — ТЗ §11/§17). */
 function onMythicKill(obj: GameObjects, e: Enemy): void {
@@ -592,19 +634,29 @@ function triggerSupernova(obj: GameObjects): void {
   emitBurst(particles, player.pos, "#fde047", 26, true, 3);
   emitBurst(particles, player.pos, "#ffffff", 14, true, 2);
   floatingTexts.push(makeFloatingText(player.pos, "✦ СВЕРХНОВАЯ ✦", "#fde047", true));
+  // v1.8.0: после взрыва — 3 c разогнанного темпа стрельбы (тот же механизм,
+  // что у бонуса «разгон»: ×~2.2 темп). Короткий акцент звука усилит момент.
+  player.rapidBoostTimer = Math.max(player.rapidBoostTimer, 180);
+  floatingTexts.push(makeFloatingText({ x: player.pos.x, y: player.pos.y + 34 }, "☀️ РАЗГОН ОРУДИЯ · 3 С", "#fbbf24", true));
+  audio.playPowerup();
   obj.screenShake = Math.max(obj.screenShake, 14);
   audio.playNuke();
   player.novaCore = 0;
   player.novaFuseTimer = 0;
 }
 
-/** ⚡ МИФИК «Судный Разряд»: усиляющаяся цепь молний без повторов целей. */
-function triggerJudgement(obj: GameObjects, source: Enemy, baseDamage: number): void {
-  const { player, enemies, lightnings } = obj;
+/** ⚡ МИФИК «Судный Разряд»: усиляющаяся цепь молний без повторов целей.
+ *  v1.8.0: эскалация +8% за уничтожение (потолок ×1.8 от базы), молнии живут
+ *  дольше (18 тиков), старт цепи подсвечен кольцом, в тексте — число целей. */
+export function triggerJudgement(obj: GameObjects, source: Enemy, baseDamage: number): void {
+  const { player, enemies, lightnings, explosions } = obj;
   const struck = new Set<number>([source.id]);
   let current: Enemy | null = source;
   let damage = baseDamage * 1.5;
+  const damageCap = baseDamage * 1.5 * 1.8;
   let jumps = 0;
+  // Вспышка в точке высвобождения — цепь стало легче заметить началом.
+  explosions.push({ id: uid(), pos: { ...source.pos }, radius: 140, progress: 0 });
   while (current && jumps < JUDGEMENT_TARGETS) {
     let nearest: Enemy | null = null;
     let nearDist = Infinity;
@@ -616,18 +668,40 @@ function triggerJudgement(obj: GameObjects, source: Enemy, baseDamage: number): 
       if (d < nearDist && d < JUDGEMENT_RADIUS * JUDGEMENT_RADIUS) { nearDist = d; nearest = e; }
     }
     if (!nearest) break;
-    lightnings.push(makeLightning(current.pos, nearest.pos, 14));
+    lightnings.push(makeLightning(current.pos, nearest.pos, 18));
     const applied = damageEnemy(nearest, damage, 0, enemies);
     player.stats.damageDealt += applied;
     struck.add(nearest.id);
-    // Эскалация: +5% за каждое уничтожение в цепи (до +50%).
-    if (nearest.hp <= 0) damage = Math.min(damage * 1.05, baseDamage * 1.5 * 1.5);
+    // Эскалация: +8% за каждое уничтожение в цепи (до +80%).
+    if (nearest.hp <= 0) damage = Math.min(damage * 1.08, damageCap);
     current = nearest;
     jumps++;
   }
-  obj.floatingTexts.push(makeFloatingText(source.pos, "✦ СУДНЫЙ РАЗРЯД ✦", "#fde047", true));
+  obj.floatingTexts.push(makeFloatingText(source.pos, `✦ СУДНЫЙ РАЗРЯД ×${jumps} ✦`, "#fde047", true));
   obj.screenShake = Math.max(obj.screenShake, 8);
   audio.playNuke();
+}
+
+/**
+ * 🛰️ МИФИК «Последний Флот»: копит командный канал от атак помощников.
+ * Канал полон → FINAL FLEET SALVO: синхронный залп армады (v1.8.0 — с ярким
+ * стартовым импульсом: кольцо + искры над кораблём, залп стал заметнее).
+ * Функция уровня модуля вместо замыкания в кадре (анти-GC).
+ */
+function chargeFleetChannel(obj: GameObjects, linked: boolean, salvoActive: boolean, amount: number): void {
+  if (!linked || salvoActive || amount <= 0) return;
+  const { player, floatingTexts } = obj;
+  player.fleetCharge = Math.min(FLEET_CHARGE_MAX, player.fleetCharge + amount);
+  if (player.fleetCharge >= FLEET_CHARGE_MAX) {
+    player.fleetCharge = 0;
+    player.fleetSalvoTimer = FLEET_SALVO_DURATION;
+    player.fleetStacks = 0;
+    floatingTexts.push(makeFloatingText(player.pos, "✦ FINAL FLEET SALVO ✦", "#fbbf24", true));
+    obj.explosions.push({ id: uid(), pos: { ...player.pos }, radius: 170, progress: 0 });
+    emitBurst(obj.particles, player.pos, "#fde047", 14, true, 2);
+    obj.screenShake = Math.max(obj.screenShake, 6);
+    audio.playPowerup();
+  }
 }
 
 // ─── Main step function ───────────────────────────────────────────────────────
@@ -868,17 +942,11 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       e.pos.x += (dx / dist) * pullStrength * resist;
       e.pos.y += (dy / dist) * pullStrength * resist;
     }
-    // Поглощение снарядов игрока → накопленный урон коллапса (с потолком).
-    for (let i = bullets.length - 1; i >= 0; i--) {
-      const b = bullets[i];
-      if (!b.fromPlayer) continue;
-      const dx = b.pos.x - sg.pos.x, dy = b.pos.y - sg.pos.y;
-      if (dx * dx + dy * dy < SINGULARITY_RADIUS * SINGULARITY_RADIUS) {
-        sg.absorbed = Math.min(sg.absorbed + b.damage * 0.6, player.bulletDamage * 120);
-        releaseBullet(b);
-        bullets.splice(i, 1);
-      }
-    }
+    // v1.8.2: сингулярность больше НЕ засасывает пули игрока (фидбек:
+    // «чёрная дыра съедает мои пули» — прямая потеря огневой мощи). Снаряды
+    // свободно летят сквозь неё, а коллапс насыщается пассивно от времени
+    // и вашей атаки: +8% bulletDamage за кадр (тот же потолок ×120).
+    sg.absorbed = Math.min(sg.absorbed + player.bulletDamage * 0.08 * timeScale, player.bulletDamage * 120);
     if (sg.timer <= 0) {
       // COLLAPSE: огромный урон всем внутри; боссам — потолок 8% макс. HP.
       for (const e of enemies) {
@@ -891,7 +959,10 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       }
       obj.explosions.push({ id: uid(), pos: { ...sg.pos }, radius: SINGULARITY_RADIUS, progress: 0 });
       emitBurst(particles, sg.pos, "#a78bfa", 24, true, 3);
-      floatingTexts.push(makeFloatingText(sg.pos, "✦ COLLAPSE ✦", "#c084fc", true));
+      // v1.8.0: коллапс вознаграждает опытом (~3–4 обычных убийства) — риск
+      // скормить снаряды сингулярности окупается заметнее.
+      grantMythicXp(obj, input, COLLAPSE_XP_REWARD);
+      floatingTexts.push(makeFloatingText(sg.pos, `✦ COLLAPSE · +${COLLAPSE_XP_REWARD} XP ✦`, "#c084fc", true));
       obj.screenShake = Math.max(obj.screenShake, 12);
       audio.playNuke();
       obj.singularity = null;
@@ -1009,16 +1080,9 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   }
   const fleetSalvo = player.fleetSalvoTimer > 0;
   const fleetDamageMult = 1 + player.fleetStacks * 0.05 + (fleetSalvo ? 0.5 : 0);
-  const chargeFleet = (amount: number) => {
-    if (!fleetLinked || fleetSalvo) return;
-    player.fleetCharge = Math.min(FLEET_CHARGE_MAX, player.fleetCharge + amount);
-    if (player.fleetCharge >= FLEET_CHARGE_MAX) {
-      player.fleetCharge = 0;
-      player.fleetSalvoTimer = FLEET_SALVO_DURATION;
-      floatingTexts.push(makeFloatingText(player.pos, "✦ FINAL FLEET SALVO ✦", "#fbbf24", true));
-      audio.playPowerup();
-    }
-  };
+  // Анти-GC (v1.8.0): замыкание chargeFleet, создававшееся каждый кадр,
+  // заменено функцией уровня модуля chargeFleetChannel (вызывается из мест
+  // выстрела спутников и дронов ниже).
 
   for (const sat of player.satellites) {
     sat.angle += sat.speed * timeScale;
@@ -1043,7 +1107,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
         const dmg = player.bulletDamage * (0.55 + sat.level * 0.35) * fleetDamageMult;
         bullets.push(spawnPlayerSideBullet(player, { x: sx, y: sy }, { x: (dx / dist) * 11, y: (dy / dist) * 11 }, dmg, 3.5, fleetSalvo ? "#fde047" : "#fbbf24"));
-        chargeFleet(2);
+        chargeFleetChannel(obj, fleetLinked, fleetSalvo, 2);
       }
     }
   }
@@ -1075,7 +1139,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
         const dmg = player.bulletDamage * (0.45 + drone.level * 0.3) * fleetDamageMult;
         bullets.push(spawnPlayerSideBullet(player, { ...drone.pos }, { x: (dx / dist) * 10.5, y: (dy / dist) * 10.5 }, dmg, 3.5, fleetSalvo ? "#fde047" : "#a78bfa"));
-        chargeFleet(2);
+        chargeFleetChannel(obj, fleetLinked, fleetSalvo, 2);
       }
     }
   }
@@ -1532,9 +1596,14 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       const maxDistance = isFullHoming ? 650 : 450;
       const maxDistanceSq = maxDistance * maxDistance;
 
-      const targetGone = !b.target
-        || b.target.hp <= 0
-        || (() => { const tdx = b.target!.pos.x - b.pos.x, tdy = b.target!.pos.y - b.pos.y; return tdx * tdx + tdy * tdy > maxDistanceSq; })();
+      // Анти-GC (v1.8.0): раньше здесь на каждый кадр каждой пули создавалась
+      // IIFE-замыкация (~400 замыканий/кадр при плотном бое) — вычисляем инлайн.
+      let targetGone = true;
+      const bt = b.target;
+      if (bt) {
+        const tdx = bt.pos.x - b.pos.x, tdy = bt.pos.y - b.pos.y;
+        targetGone = bt.hp <= 0 || tdx * tdx + tdy * tdy > maxDistanceSq;
+      }
       const homingInterval = obj.performanceTier === 0 ? 5 : obj.performanceTier === 1 ? 3 : 2;
       const scanDue = targetGone
         ? (b.id + frame) % homingInterval === 0
@@ -1629,6 +1698,8 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
   // ─── Bullet collision with enemies ─────────────────────────────────────────
   bulletsToRemove.clear();
   spawnedFromSplit.length = 0;
+  bulletsToSpawnAfterCollision.length = 0;
+  let dischargeShardsThisFrame = 0;
 
   // Spatial grid avoids testing every player bullet against every enemy.
   // 128px cells plus adjacent cells cover the largest boss collision radius.
@@ -1685,7 +1756,10 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           continue;
         }
 
-        // Crit calculation
+        // Crit calculation. v1.8.0: активный ABSOLUTE OVERDRIVE повышает и
+        // шанс, и множитель крита (см. overdriveCritBonus) — окно перегрузки
+        // стало «золотым временем» крит-билдов.
+        const odCrit = overdriveCritBonus(player);
         let dmg = b.damage;
         // Sniper Protocol: +damage when target has no nearby allies
         if (player.sniperProtocol) {
@@ -1697,9 +1771,9 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           }
           if (allyCount < 2) dmg *= (1 + player.sniperBonus);
         }
-        const isCrit = Math.random() < player.critChance;
+        const isCrit = Math.random() < player.critChance + odCrit.chance;
         if (isCrit) {
-          dmg *= player.critMultiplier;
+          dmg *= player.critMultiplier + odCrit.multiplier;
           emitBurst(particles, b.pos, "#fff", 2, false, 1);
           floatingTexts.push(makeFloatingText(b.pos, `${Math.ceil(dmg)}!`, "#fbbf24", true));
           // ⚡ МИФИК «Бог Грома»: криты копят Гнев Бури; десятый высвобождает
@@ -1872,13 +1946,22 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 
         emitBurst(particles, b.pos, "#fbbf24", 1, false, 1);
 
-        // Phase Discharge: every Nth hit spawns shard bullets
-        if (player.phaseDischarge && player.phaseDischargeCount > 0) {
+        // Phase Discharge: every Nth hit spawns shard bullets.
+        // v1.8.1: осколки помечаются shardBorn и больше НЕ порождают осколков —
+        // против неубиваемых целей (Чёрный кортеж) прежний код давал
+        // экспоненциальный цепной взрыв массива пуль внутри этого же for...of
+        // (миллионы пуль за кадр → OOM/фриз). Дополнительно: бюджет за кадр
+        // и отложенный пуш после завершения цикла.
+        if (player.phaseDischarge && player.phaseDischargeCount > 0
+          && !b.shardBorn && dischargeShardsThisFrame < MAX_DISCHARGE_SHARDS_PER_FRAME) {
           const shardInterval = Math.max(3, 8 - player.phaseDischargeCount);
           if (frame % shardInterval === 0) {
-            for (let si = 0; si < 4; si++) {
+            for (let si = 0; si < 4 && dischargeShardsThisFrame < MAX_DISCHARGE_SHARDS_PER_FRAME; si++) {
               const sa = (si / 4) * Math.PI * 2 + Math.random() * 0.5;
-              bullets.push(spawnPlayerSideBullet(player, { x: b.pos.x, y: b.pos.y }, { x: Math.cos(sa) * player.bulletSpeed * 0.7, y: Math.sin(sa) * player.bulletSpeed * 0.7 }, b.damage * 0.5, 2, "#c084fc"));
+              const shard = spawnPlayerSideBullet(player, { x: b.pos.x, y: b.pos.y }, { x: Math.cos(sa) * player.bulletSpeed * 0.7, y: Math.sin(sa) * player.bulletSpeed * 0.7 }, b.damage * 0.5, 2, "#c084fc");
+              shard.shardBorn = true;
+              dischargeShardsThisFrame++;
+              bulletsToSpawnAfterCollision.push(shard);
             }
           }
         }
@@ -1887,6 +1970,13 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         else (b as { pierce: number }).pierce--;
       }
     }
+  }
+
+  // v1.8.1: пули, порождённые внутри цикла коллизий, добавляются строго
+  // ПОСЛЕ него — for...of по `bullets` обязан завершаться.
+  if (bulletsToSpawnAfterCollision.length > 0) {
+    for (const extra of bulletsToSpawnAfterCollision) bullets.push(extra);
+    bulletsToSpawnAfterCollision.length = 0;
   }
 
   // Remove bullets/enemies and add splitters
@@ -1921,7 +2011,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         const dx = e.pos.x - player.pos.x, dy = e.pos.y - player.pos.y;
         const size = getEnemySize(e.type);
         if (dx * dx + dy * dy < (size + 16) * (size + 16)) {
-          const baseContactDamage = e.isBoss ? 28 + wave * 0.8 : 11 + wave * 0.18;
+          const baseContactDamage = (e.isBoss ? 28 + wave * 0.8 : 11 + wave * 0.18) * enemyDamageFactor(obj.adaptiveDifficulty);
           const contactDamage = baseContactDamage * (e.guardRole ? 0.65 : 1);
           takeDamage(player, contactDamage, particles, obj, input.onDeath);
           if (e.type === "leecher") e.hp = Math.min(e.maxHp, e.hp + contactDamage * 2);
@@ -2094,6 +2184,18 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+/**
+ * Мягкий множитель урона врагов от шкалы сложности. До scale 12 ведёт себя
+ * в точности как прежняя формула (без регрессии волн 1–60), дальше растёт
+ * только логарифмически: +0.5 за каждое удвоение — макс-билд под давлением
+ * endless-эскалации, но не умирает мгновенно.
+ */
+export function enemyDamageFactor(adaptiveScale: number): number {
+  const base = 1 + (Math.min(adaptiveScale, 12) - 1) * 0.35;
+  const soft = Math.max(0, Math.log2(Math.max(1, adaptiveScale / 12))) * 0.5;
+  return base + soft;
+}
+
 function limitEnemyDamage(enemy: Enemy, amount: number, frame: number, enemies: Enemy[]): number {
   if (!enemy.guardRole) return amount;
   const heraldAlive = enemy.guardRole !== "herald" && enemies.some(other => other.guardRole === "herald" && other.hp > 0);
@@ -2229,13 +2331,19 @@ function makePlayerBullet(player: PlayerState, pos: Vec2, vel: Vec2): Bullet {
   if (arsenalActive) { b.vel.x = vel.x * 1.15; b.vel.y = vel.y * 1.15; }
   else { b.vel.x = vel.x; b.vel.y = vel.y; }
   // Devoured souls permanently boost every bolt the Wraith fires this run.
-  b.damage = player.bulletDamage * soulDamageMult(player);
+  // 🛰️ v1.8.0: FINAL FLEET SALVO усиливает и главный калибр (+15% урона),
+  // а не только помощников — залп армады ощущается как общий наступательный
+  // режим на время залпа.
+  b.damage = player.bulletDamage * soulDamageMult(player)
+    * (player.fleetSalvoTimer > 0 ? 1.15 : 1);
   b.size = player.bulletSize;
   b.color = arsenalActive ? "#f5d0fe"
     : player.snipeMode ? "#ffffff"
     : (player.shipClass === "tempest" ? "#c084fc" : (player.shipClass === "dreadnought" ? "#f59e0b" : (player.shipClass === "void_wraith" ? "#e879f9" : "#38bdf8")));
   b.pierce = player.piercing + (player.voidTimer > 0 ? 2 : 0);
-  b.homing = player.homing;
+  // 👁️ v1.8.0: в КОНЦЕ МАТЕРИИ снаряды наводятся, даже если самонаведения
+  // в билде нет (описание мифика теперь честно совпадает с реализацией).
+  b.homing = player.homing || player.voidTimer > 0;
   // «Ускоритель плазмы» продлевает полёт: базовой дальности хватает на
   // несколько экранов, так что прямой стрельбе лимит не мешает — выгоду
   // получают наводящиеся и криволинейные снаряды.
@@ -2302,9 +2410,11 @@ function shootEnemy(e: Enemy, player: PlayerState, bullets: Bullet[], wave: numb
   const spd = 3.6 + wave * 0.08;
   const color = getEnemyBulletColorLocal(e.type);
   const baseDamage = e.isBoss ? 2.5 + wave * 0.22 : 1 + wave * 0.035;
-  const adaptiveDamage = baseDamage * (1 + Math.max(0, adaptiveScale - 1) * 0.35);
+  // v1.8.3: enemyDamageFactor — прежняя линейная формула до шкалы 12 (волны
+  // 1–60 без изменений), дальше логарифмический рост для endless-эскалации.
+  const adaptiveDamage = baseDamage * enemyDamageFactor(adaptiveScale);
   // The Cortege tests positioning over time instead of deleting an early player in one volley.
-  const guardDamageFactor = e.guardRole ? 0.6 + Math.min(0.22, adaptiveScale * 0.02) : 1;
+  const guardDamageFactor = e.guardRole ? 0.6 + Math.min(0.22, Math.min(adaptiveScale, 12) * 0.02) : 1;
   const dmg = adaptiveDamage * guardDamageFactor;
   const size = e.isBoss ? 6.5 : 4.5;
 

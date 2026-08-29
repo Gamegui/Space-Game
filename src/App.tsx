@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { PlayerState, UpgradeDef, GamePhase, ShipClassId, Enemy } from "./game/types";
-import type { GameObjects } from "./game/gameLoop";
-import { stepGame, makeStars, makeInitialPlayer, makeMaterializeBurst, devourSoul, getNextLevelXp, spawnAdaptiveGuard, bindParticleFrame, particleDebugStats, objectPoolStats, W, H, uid } from "./game/gameLoop";
+import type { GameObjects, StepInput } from "./game/gameLoop";
+import { stepGame, makeStars, makeInitialPlayer, makeMaterializeBurst, devourSoul, getNextLevelXp, spawnAdaptiveGuard, bindParticleFrame, particleDebugStats, objectPoolStats, VOID_SOUL_MAX, W, H, uid } from "./game/gameLoop";
 import { ALL_UPGRADES, rollUpgrades, rollPremiumUpgradeChoices, rollHighRarityUpgrade, applyUpgrade, getUpgradeLevel, getAdaptiveDifficulty } from "./game/upgrades";
-import { getWaveComposition, isBossWave, spawnBoss, getBossName } from "./game/enemies";
+import { getWaveComposition, isBossWave, spawnBoss, getBossName, spawnEnemy } from "./game/enemies";
+import type { EnemyType } from "./game/types";
 import { SHIP_CLASSES } from "./game/shipClasses";
 import { audio } from "./game/audio";
 import { SYNERGIES, unlockAvailableSynergies } from "./game/synergies";
@@ -16,14 +17,15 @@ import {
 import UpgradePanel from "./components/UpgradePanel";
 import HUD from "./components/HUD";
 import Hangar, { type ProductStatus } from "./components/Hangar";
+import type { ShardEvent } from "./components/Hangar";
 import {
   META_KEY, META_UPGRADES, MISSIONS, defaultMetaState, normalizeMetaState,
-  buyMetaUpgrade, applyMetaToPlayer, metaBonusRerolls, applyRunResult,
+  buyMetaUpgrade, buyAllAffordableMeta, applyMetaToPlayer, metaBonusRerolls, applyRunResult,
   claimMission, isMissionComplete,
   type MetaState, type RunResult,
 } from "./game/meta";
 import { PRODUCTS } from "./game/products";
-import { checkEvolutions } from "./game/evolutions";
+import { checkEvolutions, EVOLUTIONS } from "./game/evolutions";
 import { rollMythicDrop, ownedMythicCount, MAX_MYTHIC_PER_RUN } from "./game/mythics";
 import MythicReveal from "./components/MythicReveal";
 import { reportPerfEvent, recoverPerfMirror, reportSessionStart, startFreezeWatchdog } from "./game/perfReporter";
@@ -60,7 +62,13 @@ function perfLogSlowFrame(line: string): void {
   reportPerfEvent("SLOW_FRAME", { line });
 }
 
+// Замер слоёв отрисовки нужен только в dev/диагностической сборке. В релизе
+// обёртка — прозрачный вызов: минус 11 замыканий и 22 вызова performance.now()
+// на каждый кадр (v1.8.0).
+const PERF_DRAW_PROFILING = import.meta.env.DEV || import.meta.env.VITE_PERF === "true";
+
 function perfTime(key: string, fn: () => void): void {
+  if (!PERF_DRAW_PROFILING) { fn(); return; }
   const start = performance.now();
   fn();
   perfDrawTimers[key] = (perfDrawTimers[key] ?? 0) + (performance.now() - start);
@@ -171,6 +179,7 @@ export default function App() {
   const bossIntroTimerRef = useRef(0);
   const waveTransitioningRef = useRef(false);
   const adminGodRef = useRef(false);
+  const fpsRef = useRef(0);
   const banishedUpgradeIdsRef = useRef<Set<string>>(new Set());
 
   // UI state (causes re-renders)
@@ -285,6 +294,8 @@ export default function App() {
   const [banishesLeft, setBanishesLeft] = useState(1);
   const [upgradeAdPending, setUpgradeAdPending] = useState(false);
   const [bonusChoiceUsed, setBonusChoiceUsed] = useState(false);
+  // v1.8.0: журнал операций с осколками для «Ангара» (сессионный, только UI).
+  const [shardLog, setShardLog] = useState<ShardEvent[]>([]);
   // Админка: в dev-режиме с VITE_ADMIN, либо в диагностической сборке
   // (VITE_ADMIN=true при сборке) — для локального стресс-теста владельцем.
   const adminEnabled = (import.meta.env.DEV || import.meta.env.VITE_ADMIN === "true") && import.meta.env.VITE_ADMIN === "true";
@@ -396,7 +407,9 @@ export default function App() {
     const g = gameRef.current;
     if (!g) return;
     setPlayerLevel(g.player.level);
-    setEnemiesLeft(g.enemies.length + g.waveEnemyQueue.reduce((a, c) => a + c.count, 0));
+    let queued = 0;
+    for (const c of g.waveEnemyQueue) queued += c.count;
+    setEnemiesLeft(g.enemies.length + queued);
     if (g.bossActive && g.boss) {
       setBossHpPct(Math.max(0, g.boss.hp / g.boss.maxHp));
     }
@@ -421,6 +434,10 @@ export default function App() {
     metaRef.current = next;
     try { localStorage.setItem("meta_v1", JSON.stringify(next)); } catch { /* storage blocked */ }
     void yandex.saveData(META_KEY, next);
+  }, []);
+
+  const pushShardEvent = useCallback((label: string, amount: number) => {
+    setShardLog(prev => [{ key: Date.now() + Math.random(), label, amount }, ...prev].slice(0, 8));
   }, []);
 
   /** Apply permanent meta upgrades + owned product bonuses to a fresh run. */
@@ -473,7 +490,8 @@ export default function App() {
     setLastShardsEarned(earned);
     persistMeta(next);
     setMeta(next);
-  }, [persistMeta]);
+    pushShardEvent(victory ? "Победа · волна 50" : "Забег завершён", earned);
+  }, [persistMeta, pushShardEvent]);
 
   // ─── Sound Toggle ───────────────────────────────────────────────────────────
   const handleToggleSound = useCallback(() => {
@@ -565,6 +583,12 @@ export default function App() {
     g.guardEventActive = false;
     const adaptive = getAdaptiveDifficulty(g.player, newWave);
     g.powerRating = adaptive.power;
+    // ⚔ ЭСКАЛАЦИЯ БЕЗДНЫ (v1.8.3): предупреждение о резком росте силы врагов
+    // после 60-й волны (требование 2.8 «нарастающая сложность» в endless).
+    if (newWave > 60) {
+      setSynergyNotice(`⚔ ЭСКАЛАЦИЯ БЕЗДНЫ ×${(adaptive.scale / 12).toFixed(1)} · ВОЛНА ${newWave}`);
+      setTimeout(() => setSynergyNotice(null), 3200);
+    }
     let routeDifficulty = 1;
     let routeCount = 1;
     g.routeXpMultiplier = 1;
@@ -833,6 +857,7 @@ export default function App() {
     setMeta(next);
     persistMeta(next);
     merchantRollRef.current.bought.add(buffId);
+    pushShardEvent(`Торговец · ${buff.name}`, -buff.cost);
     // Apply the temporary in-run buff to the live player.
     const p = g.player;
     switch (buff.id) {
@@ -844,7 +869,7 @@ export default function App() {
       case "chrono": p.timeSlowCooldown = 0; timeSlowRef.current = false; setTimeSlow(false); break;
     }
     audio.playPowerup();
-  }, [persistMeta]);
+  }, [persistMeta, pushShardEvent]);
 
   // ── Hangar handlers (v1.5.0) ────────────────────────────────────────────────
   const handleBuyMetaUpgrade = useCallback((id: string) => {
@@ -857,6 +882,17 @@ export default function App() {
     setMeta(next);
   }, [persistMeta]);
 
+  const handleBuyAllAffordable = useCallback(() => {
+    const prev = metaRef.current;
+    const next = { ...prev, upgrades: { ...prev.upgrades } };
+    const before = next.shards;
+    const bought = buyAllAffordableMeta(next);
+    if (bought === 0) return;
+    persistMeta(next);
+    setMeta(next);
+    pushShardEvent(`Ангар · +${bought} ур.`, -(before - next.shards));
+  }, [persistMeta, pushShardEvent]);
+
   const handleClaimMission = useCallback((id: string) => {
     const def = MISSIONS.find(d => d.id === id);
     if (!def) return;
@@ -865,7 +901,8 @@ export default function App() {
     if (!claimMission(next, def)) return;
     persistMeta(next);
     setMeta(next);
-  }, [persistMeta]);
+    pushShardEvent(`Задание «${def.name}»`, def.reward);
+  }, [persistMeta, pushShardEvent]);
 
   const handleBuyProduct = useCallback(async (id: string) => {
     if (purchasePendingId) return;
@@ -1012,7 +1049,7 @@ export default function App() {
 
     function drawWorld(g: GameObjects, frame: number) {
       setRenderPerformanceTier(g.performanceTier);
-      for (const key of Object.keys(perfDrawTimers)) perfDrawTimers[key] = 0;
+      if (PERF_DRAW_PROFILING) for (const key of Object.keys(perfDrawTimers)) perfDrawTimers[key] = 0;
       const stride = g.performanceTier === 0 ? 3 : g.performanceTier === 1 ? 2 : 1;
       perfTime("explosions", () => {
         for (let i = frame % stride; i < g.explosions.length; i += stride) {
@@ -1048,18 +1085,17 @@ export default function App() {
       for (let i = frame % stride; i < g.floatingTexts.length; i += stride) drawFloatingText(ctx, g.floatingTexts[i]);
     }
 
-    function updateGame(g: GameObjects) {
-      const slowNow = g.player.timeSlowTimer > 0;
-      if (slowNow !== timeSlowRef.current) {
-        timeSlowRef.current = slowNow;
-        setTimeSlow(slowNow);
-      }
-
-      const simulationFrame = ++frameRef.current;
-      stepGame(g, {
+    // v1.8.0 анти-GC: объект StepInput и его 4 колбэка-замыкания создаются
+    // один раз на экземпляр игры, а не на каждый шаг симуляции (60/с × 5
+    // объектов = до 300 аллокаций/с раньше). frame/wave/timeSlow мутируются
+    // на переиспользуемом объекте.
+    let stepInput: StepInput | null = null;
+    let stepInputFor: GameObjects | null = null;
+    function buildStepInput(g: GameObjects): StepInput {
+      return {
         keys: keysRef.current,
         wave: waveRef.current,
-        frame: simulationFrame,
+        frame: 0,
         timeSlow: timeSlowRef.current,
         onLevelUp: handleLevelUp,
         onDeath: () => {
@@ -1113,8 +1149,21 @@ export default function App() {
             }
           }
         },
-      });
+      };
+    }
 
+    function updateGame(g: GameObjects) {
+      const slowNow = g.player.timeSlowTimer > 0;
+      if (slowNow !== timeSlowRef.current) {
+        timeSlowRef.current = slowNow;
+        setTimeSlow(slowNow);
+      }
+
+      if (stepInputFor !== g || !stepInput) { stepInput = buildStepInput(g); stepInputFor = g; }
+      stepInput.wave = waveRef.current;
+      stepInput.timeSlow = timeSlowRef.current;
+      stepInput.frame = ++frameRef.current;
+      stepGame(g, stepInput);
       if (g.bossActive && g.enemies.length > 0) {
         g.boss = g.enemies.find(enemy => enemy.isBoss) || null;
         if (!g.boss) { g.bossActive = false; setBossActive(false); }
@@ -1140,6 +1189,7 @@ export default function App() {
       fpsFrames++;
       if (timestamp - fpsWindowStart >= 2000) {
         const fps = fpsFrames * 1000 / (timestamp - fpsWindowStart);
+        fpsRef.current = Math.round(fps);
         if (g && g.performanceAuto && currentPhase === "playing") {
           if (fps < 43 && g.performanceTier > 0) {
             g.performanceTier = (g.performanceTier - 1) as 0 | 1 | 2;
@@ -1308,6 +1358,13 @@ export default function App() {
     touchRef.current = null;
   };
 
+  // Телеметрия админки живёт, пока панель открыта (2 Гц) — FPS/пулы/бюджеты.
+  useEffect(() => {
+    if (!adminOpen) return;
+    const timer = window.setInterval(() => setAdminRefresh(v => v + 1), 500);
+    return () => clearInterval(timer);
+  }, [adminOpen]);
+
   // ─── Development admin tools (excluded from the Yandex production build) ──
   const adminSetWave = useCallback((targetWave: number) => {
     const g = gameRef.current;
@@ -1462,6 +1519,104 @@ export default function App() {
     syncUI();
   }, [syncUI]);
 
+  // ✦ QA-режим: все 6 мификов сразу (кап 2/забег игнорируется — только тут).
+  const adminGiveAllMythics = useCallback(() => {
+    const g = gameRef.current;
+    if (!g) return;
+    const owned = new Set(g.player.upgrades.map(u => u.id));
+    for (const def of ALL_UPGRADES) {
+      if (def.rarity === "mythic" && !owned.has(def.id)) applyUpgrade(g.player, def);
+    }
+    setAdminRefresh(v => v + 1);
+    syncUI();
+  }, [syncUI]);
+
+  // ⚡ Все мифики — у порога срабатывания: события запустятся сами в первые
+  // секунды обычной игры (сверхновая, сингулярность, судный разряд,
+  // перегрузка, залп флота, конец материи) — визуальный тур за один забег.
+  const adminChargeAllMythics = useCallback(() => {
+    const g = gameRef.current;
+    if (!g) return;
+    const p = g.player;
+    p.novaCore = 99;          // следующее убийство → фитиль → СВЕРХНОВАЯ
+    p.collapseCharge = 49;    // следующее убийство → сингулярность
+    p.wrath = 9;              // следующий крит → Судный Разряд
+    p.overdriveCharge = 99.5; // пара кадров стрельбы → OVERDRIVE
+    p.fleetCharge = 99;       // следующий выстрел помощника → залп армады
+    p.entropy = 99;           // следующий бой → КОНЕЦ МАТЕРИИ
+    setAdminRefresh(v => v + 1);
+  }, []);
+
+  // 🌊 Толпа смешанных врагов вокруг игрока (кольцами).
+  const adminSpawnCrowd = useCallback((count: number) => {
+    const g = gameRef.current;
+    if (!g) return;
+    const types: EnemyType[] = ["scout", "fighter", "bomber", "sniper", "splitter", "tank", "stealth", "healer", "charger", "spinner", "kamikaze", "phantom", "leecher", "carrier"];
+    for (let i = 0; i < count; i++) {
+      const enemy = spawnEnemy(types[i % types.length], Math.max(1, waveRef.current), g.adaptiveDifficulty);
+      const angle = (i / count) * Math.PI * 2;
+      const radius = 140 + (i % 4) * 60;
+      enemy.pos = {
+        x: Math.max(30, Math.min(W - 30, g.player.pos.x + Math.cos(angle) * radius)),
+        y: Math.max(30, Math.min(H - 30, g.player.pos.y + Math.sin(angle) * radius)),
+      };
+      enemy.centerX = enemy.pos.x;
+      enemy.centerY = enemy.pos.y;
+      enemy.targetY = enemy.pos.y;
+      g.enemies.push(enemy);
+    }
+    syncUI();
+  }, [syncUI]);
+
+  // 👻 Комплект Немезиды: эксклюзивные синергии класса + полный запас душ.
+  const adminWraithKit = useCallback(() => {
+    const g = gameRef.current;
+    if (!g) return;
+    for (const synergy of SYNERGIES) {
+      if (synergy.shipClass && g.player.shipClass !== synergy.shipClass) continue;
+      for (const id of synergy.requires) {
+        const upgrade = ALL_UPGRADES.find(item => item.id === id);
+        if (upgrade && getUpgradeLevel(g.player, id) === 0) applyUpgrade(g.player, upgrade);
+      }
+    }
+    unlockAvailableSynergies(g.player);
+    g.player.voidSouls = VOID_SOUL_MAX;
+    setAdminRefresh(v => v + 1);
+    syncUI();
+  }, [syncUI]);
+
+  // 🧬 Все 7 эволюций: применяет требования и запускает каждую однократно.
+  const adminTriggerAllEvolutions = useCallback(() => {
+    const g = gameRef.current;
+    if (!g) return;
+    for (const evolution of EVOLUTIONS) {
+      for (const id of evolution.requires) {
+        const upgrade = ALL_UPGRADES.find(item => item.id === id);
+        if (upgrade && getUpgradeLevel(g.player, id) === 0) applyUpgrade(g.player, upgrade);
+      }
+    }
+    checkEvolutions(g.player);
+    const adaptive = getAdaptiveDifficulty(g.player, Math.max(26, waveRef.current));
+    g.powerRating = adaptive.power;
+    g.adaptiveDifficulty = adaptive.scale;
+    setAdminRefresh(v => v + 1);
+    syncUI();
+  }, [syncUI]);
+
+  // ☠ РЕГРЕССИЯ v1.8.1: level-300 макс-билд × Чёрный кортеж — точный сценарий
+  // OOM «Фазового разряда». Пули в телеметрии должны остаться < 1000.
+  const adminStressCortege300 = useCallback(() => {
+    adminMaxBuild();
+    adminSpawnCortege();
+  }, [adminMaxBuild, adminSpawnCortege]);
+
+  // 🌊 АД ПЛОТНОСТИ: макс-билд (взрывы + цепная детонация) и 60 врагов —
+  // сценарий каскадных фризов v1.6.x, бюджеты частиц видны в телеметрии.
+  const adminStressCrowd = useCallback(() => {
+    adminMaxBuild();
+    adminSpawnCrowd(60);
+  }, [adminMaxBuild, adminSpawnCrowd]);
+
   const adminBossHp = useCallback((ratio: number) => {
     const boss = gameRef.current?.enemies.find(enemy => enemy.isBoss);
     if (!boss) return;
@@ -1576,17 +1731,19 @@ export default function App() {
               🛠 ADMIN {adminOpen ? "−" : "+"}
             </button>
             {adminOpen && (
-              <div className="mt-2 max-h-[650px] w-60 overflow-y-auto rounded-xl border border-fuchsia-700 bg-slate-950/95 p-3 text-slate-200 shadow-2xl backdrop-blur-md">
+              <div className="mt-2 max-h-[680px] w-72 overflow-y-auto rounded-xl border border-fuchsia-700 bg-slate-950/95 p-3 text-slate-200 shadow-2xl backdrop-blur-md">
                 <div className="mb-2 text-[10px] text-fuchsia-300">ТЕСТОВАЯ СБОРКА · НЕ ДЛЯ РЕЛИЗА</div>
                 {!gameRef.current ? (
                   <button onClick={() => startGame(selectedClass)} className="admin-button bg-emerald-700">БЫСТРЫЙ СТАРТ</button>
                 ) : (
                   <>
                     <div className="mb-2 rounded bg-slate-900 p-2 text-[10px] text-cyan-300">
-                      СИЛА: {gameRef.current.powerRating} · ×{gameRef.current.adaptiveDifficulty.toFixed(2)}<br/>
+                      СИЛА: {gameRef.current.powerRating} · ×{gameRef.current.adaptiveDifficulty.toFixed(2)} · FPS: {fpsRef.current}<br/>
                       УРОВЕНЬ: {gameRef.current.player.level} · КАЧЕСТВО: {gameRef.current.performanceTier}<br/>
-                      ВРАГИ: {gameRef.current.enemies.length} · ПУЛИ: {gameRef.current.bullets.length}<br/>
-                      ЧАСТИЦЫ: {particleDebugStats().active}/{particleDebugStats().budget} · ПУЛ: {particleDebugStats().pooled} · +{particleDebugStats().spawnedThisFrame}/кадр
+                      ВРАГИ: {gameRef.current.enemies.length} · ПУЛИ: <span className={gameRef.current.bullets.length > 1000 ? "font-black text-rose-400" : ""}>{gameRef.current.bullets.length}</span><br/>
+                      ЧАСТИЦЫ: {particleDebugStats().active}/{particleDebugStats().budget} · ПУЛ: {particleDebugStats().pooled} · +{particleDebugStats().spawnedThisFrame}/кадр<br/>
+                      ПУЛЫ п/т/с/м: {Object.values(objectPoolStats()).join("/")}
+                      {gameRef.current.bullets.length > 1000 && <div className="mt-1 font-black text-rose-400">⚠ ЦЕПНАЯ РЕАКЦИЯ ПУЛЬ — регрессия v1.8.1!</div>}
                     </div>
 
                     <div className="mt-2 text-[9px] font-black tracking-widest text-fuchsia-300">ИГРОК И БИЛД</div>
@@ -1601,6 +1758,14 @@ export default function App() {
                     <button onClick={() => { const g = gameRef.current; if (g) { g.player.hp = 1; if (g.player.shield) g.player.shield.hp = 0; setAdminRefresh(v => v + 1); } }} className="admin-button bg-rose-950">HP = 1</button>
                     <button onClick={() => { const g = gameRef.current; if (g) { g.player.hp = g.player.maxHp; if (g.player.shield) g.player.shield.hp = g.player.shield.maxHp; setAdminRefresh(v => v + 1); } }} className="admin-button bg-emerald-800">ПОЛНОЕ ЛЕЧЕНИЕ</button>
 
+                    <div className="mt-2 text-[9px] font-black tracking-widest text-emerald-300">⚡ МАССОВАЯ ПРОВЕРКА (всё сразу)</div>
+                    <button onClick={adminStressCortege300} className="admin-button bg-gradient-to-r from-purple-900 to-rose-900">☠ LVL 300 × ЧЁРНЫЙ КОРТЕЖ (регрессия OOM)</button>
+                    <button onClick={adminStressCrowd} className="admin-button bg-gradient-to-r from-orange-900 to-red-900">🌊 АД ПЛОТНОСТИ · МАКС-БИЛД + 60 ВРАГОВ</button>
+                    <button onClick={adminChargeAllMythics} className="admin-button bg-gradient-to-r from-amber-600 to-yellow-400 text-black">⚡ ЗАРЯДИТЬ ВСЕ МИФИКИ У ПОРОГА</button>
+                    <button onClick={adminGiveAllMythics} className="admin-button bg-gradient-to-r from-amber-500 to-yellow-400 text-black">✦ ВСЕ 6 МИФИКОВ СРАЗУ</button>
+                    <button onClick={adminTriggerAllEvolutions} className="admin-button bg-emerald-800">🧬 ВСЕ 7 ЭВОЛЮЦИЙ</button>
+                    <button onClick={adminWraithKit} className="admin-button bg-fuchsia-900">👻 КОМПЛЕКТ НЕМЕЗИДЫ (синергии + 20 душ)</button>
+
                     <div className="mt-2 text-[9px] font-black tracking-widest text-fuchsia-300">СОБЫТИЯ И БОССЫ</div>
                     <button onClick={adminSpawnCortege} className="admin-button bg-purple-900">👁 ПРИЗВАТЬ ЧЁРНЫЙ КОРТЕЖ</button>
                     <button onClick={() => adminSetWave(50)} className="admin-button bg-red-950">Ω ПРИЗВАТЬ ОМЕГУ</button>
@@ -1609,6 +1774,11 @@ export default function App() {
                     </div>
                     <button onClick={() => { const g = gameRef.current; if (g) g.enemies.forEach(enemy => { enemy.shieldHp = 0; enemy.hp = 0; }); }} className="admin-button bg-rose-800">УНИЧТОЖИТЬ ВСЕХ</button>
                     <button onClick={() => { const g = gameRef.current; if (g) g.bullets = g.bullets.filter(b => b.fromPlayer); }} className="admin-button bg-cyan-800">ОЧИСТИТЬ ВРАЖ. ПУЛИ</button>
+                    <div className="mt-1 grid grid-cols-3 gap-1">
+                      {[10, 30, 60].map(count => (
+                        <button key={count} onClick={() => adminSpawnCrowd(count)} className="rounded bg-teal-900 px-1 py-1.5 font-bold hover:bg-teal-700 cursor-pointer"> ТОЛПА ×{count}</button>
+                      ))}
+                    </div>
 
                     <div className="mt-2 text-[9px] font-black tracking-widest text-fuchsia-300">КАЧЕСТВО РЕНДЕРА</div>
                     <div className="grid grid-cols-3 gap-1">
@@ -1999,7 +2169,9 @@ export default function App() {
             productStatuses={productStatuses}
             offers={productOffers}
             purchasePendingId={purchasePendingId}
+            shardLog={shardLog}
             onBuyUpgrade={handleBuyMetaUpgrade}
+            onBuyAll={handleBuyAllAffordable}
             onClaimMission={handleClaimMission}
             onBuyProduct={handleBuyProduct}
             onBack={() => { phaseRef.current = "menu"; setPhase("menu"); }}

@@ -15,6 +15,16 @@ class SoundEngine {
   private lastShootAt: number = -1;
   private lastHitAt: number = -1;
   private lastExplosionAt: number = -1;
+  // v1.8.3: бюджет одновременно звучащих SFX. При макс-билде (кортеж, толпы)
+  // троттлинги по времени всё равно дают непрерывную стену звука; лимит
+  // голосов страхует кодек/динамики от каши и заодно снижает нагрузку.
+  private activeVoices: number = 0;
+  private beginVoice(): boolean {
+    if (this.activeVoices >= 22) return false;
+    this.activeVoices++;
+    return true;
+  }
+  private readonly endVoice = () => { this.activeVoices = Math.max(0, this.activeVoices - 1); };
 
   constructor() {}
 
@@ -86,8 +96,11 @@ class SoundEngine {
     if (!this.ctx || !this.sfxGain) return;
 
     const t = this.ctx.currentTime;
-    if (t - this.lastShootAt < 0.035) return;
+    // Под нагрузкой (много голосов) окно троттлинга расширяется: звук остаётся
+    // плотным, но не превращается в сплошной гул.
+    if (t - this.lastShootAt < (this.activeVoices > 12 ? 0.08 : 0.035)) return;
     this.lastShootAt = t;
+    if (!this.beginVoice()) return;
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
     const filter = this.ctx.createBiquadFilter();
@@ -112,6 +125,7 @@ class SoundEngine {
     filter.connect(gain);
     gain.connect(this.sfxGain);
 
+    osc.onended = this.endVoice;
     osc.start(t);
     osc.stop(t + duration);
   }
@@ -179,8 +193,9 @@ class SoundEngine {
     if (!this.ctx || !this.sfxGain) return;
 
     const t = this.ctx.currentTime;
-    if (t - this.lastHitAt < 0.045) return;
+    if (t - this.lastHitAt < (this.activeVoices > 12 ? 0.1 : 0.045)) return;
     this.lastHitAt = t;
+    if (!this.beginVoice()) return;
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
 
@@ -194,6 +209,7 @@ class SoundEngine {
     osc.connect(gain);
     gain.connect(this.sfxGain);
 
+    osc.onended = this.endVoice;
     osc.start(t);
     osc.stop(t + 0.035);
   }
@@ -207,6 +223,7 @@ class SoundEngine {
     const t = this.ctx.currentTime;
     if (!big && t - this.lastExplosionAt < 0.07) return;
     this.lastExplosionAt = t;
+    if (!this.beginVoice()) return;
     const dur = big ? 0.55 : 0.22;
 
     const whiteNoise = this.ctx.createBufferSource();
@@ -236,6 +253,7 @@ class SoundEngine {
     sub.connect(subGain);
     subGain.connect(this.sfxGain);
 
+    whiteNoise.onended = this.endVoice; // noise и sub — один голос (всегда живут вместе)
     whiteNoise.start(t, Math.random() * Math.max(0, 1.2 - dur), dur);
     whiteNoise.stop(t + dur);
     sub.start(t);
@@ -247,6 +265,7 @@ class SoundEngine {
     if (this.isMuted) return;
     this.resume();
     if (!this.ctx || !this.sfxGain) return;
+    if (!this.beginVoice()) return;
 
     const now = Date.now();
     if (now - this.lastXpTime < 500) {
@@ -273,6 +292,7 @@ class SoundEngine {
     osc.connect(gain);
     gain.connect(this.sfxGain);
 
+    osc.onended = this.endVoice;
     osc.start(t);
     osc.stop(t + 0.07);
   }

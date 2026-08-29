@@ -209,6 +209,9 @@ test("👁 Конец Материи: энтропия от боя, разрыв
   assert.ok(obj.voidFractures.length <= 8, `разрывов ${obj.voidFractures.length}`);
   // Детерминированные разрывы для проверки телепорта (макс. 2 прыжка).
   obj.voidFractures.push({ pos: { x: 150, y: 400 }, life: 180 }, { pos: { x: 750, y: 400 }, life: 180 });
+  // Детерминированный телепорт: только пробная пуля, стоит точно в разрыве.
+  obj.bullets.length = 0;
+  obj.enemies.length = 0;
   const probe = { id: uid(), pos: { x: 150, y: 400 }, vel: { x: 2, y: 0 }, fromPlayer: true, damage: 1, size: 3, color: "#fff", pierce: 0, homing: false, voidJumps: 0 };
   obj.bullets.push(probe);
   stepGame(obj, makeInput(50));
@@ -216,7 +219,7 @@ test("👁 Конец Материи: энтропия от боя, разрыв
   assert.ok(Math.abs(probe.pos.x - 150) > 100, "снаряд должен оказаться у другого разрыва");
 });
 
-test("🌌 Пожиратель Звёзд: заряд → сингулярность → поглощение пуль → коллапс", () => {
+test("🌌 Пожиратель Звёзд: заряд → сингулярность → пули летят свободно → коллапс", () => {
   const player = makeInitialPlayer("interceptor");
   player.level = 20;
   give(player, "mythic_singularity");
@@ -237,10 +240,12 @@ test("🌌 Пожиратель Звёзд: заряд → сингулярно�
   obj.enemies.push(e, victim);
   stepGame(obj, makeInput(1));
   assert.ok(obj.singularity, "сингулярность должна появиться на 50 заряда");
-  // Своя пуля внутрь — поглощается.
-  obj.bullets.push({ id: uid(), pos: { x: obj.singularity!.pos.x, y: obj.singularity!.pos.y }, vel: { x: 0, y: -5 }, fromPlayer: true, damage: 10, size: 3, color: "#fff", pierce: 0, homing: false });
+  // v1.8.2: пуля внутри радиуса сингулярности больше НЕ засасывается —
+  // летит свободно (спавним в стороне от жертвы, чтобы не ловить попадание).
+  const sgPos = obj.singularity!.pos;
+  obj.bullets.push({ id: uid(), pos: { x: sgPos.x, y: sgPos.y - 120 }, vel: { x: 0, y: -5 }, fromPlayer: true, damage: 10, size: 3, color: "#fff", pierce: 0, homing: false });
   stepGame(obj, makeInput(2));
-  assert.equal(obj.bullets.length, 0, "пуля должна быть поглощена");
+  assert.equal(obj.bullets.length, 1, "пуля не должна поглощаться сингулярностью");
   // Дожидаемся коллапса (240 кадров) — жертва получает урон.
   for (let k = 3; k < 260; k++) stepGame(obj, makeInput(k));
   assert.equal(obj.singularity, null, "сингулярность должна схлопнуться");

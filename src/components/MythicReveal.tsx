@@ -1,6 +1,22 @@
 import { useEffect, useState } from "react";
 import type { UpgradeDef, PlayerState } from "../game/types";
 
+/**
+ * Позиции CSS-искр события — константа модуля: создаётся один раз, а не на
+ * каждый рендер (v1.8.0). 8 искр вместо 14 — событие торжественнее не стало
+ * от количества DOM-узлов, а композиция стабильнее.
+ */
+const SPARK_POSITIONS: ReadonlyArray<{ left: string; top: string; delay: string; duration: string }> = [
+  { left: "8%",  top: "16%", delay: "0s",    duration: "2s" },
+  { left: "22%", top: "70%", delay: "0.17s", duration: "3s" },
+  { left: "38%", top: "12%", delay: "0.34s", duration: "2.5s" },
+  { left: "55%", top: "78%", delay: "0.51s", duration: "4s" },
+  { left: "70%", top: "20%", delay: "0.68s", duration: "3.5s" },
+  { left: "84%", top: "62%", delay: "0.85s", duration: "2s" },
+  { left: "92%", top: "34%", delay: "1.02s", duration: "3s" },
+  { left: "14%", top: "42%", delay: "1.19s", duration: "4s" },
+];
+
 interface Props {
   mythic: UpgradeDef;
   player: PlayerState;
@@ -80,19 +96,19 @@ export default function MythicReveal({ mythic, player, onAccept, onDecline }: Pr
         </div>
       )}
 
-      {/* CSS-«частицы» света вокруг (ограниченное число, без canvas) */}
+      {/* CSS-«частицы» света вокруг (константа модуля, без canvas) */}
       {stage >= 3 && (
         <div className="pointer-events-none absolute inset-0">
-          {Array.from({ length: 14 }, (_, i) => (
+          {SPARK_POSITIONS.map((p, i) => (
             <span
               key={i}
               className="absolute h-1.5 w-1.5 rounded-full"
               style={{
-                left: `${8 + (i * 67) % 84}%`,
-                top: `${12 + (i * 41) % 76}%`,
+                left: p.left,
+                top: p.top,
                 background: wraith && i % 3 === 0 ? "#e879f9" : "#fde047",
                 boxShadow: `0 0 10px ${wraith && i % 3 === 0 ? "#e879f9" : "#fde047"}`,
-                animation: `mythicSpark ${2 + (i % 5) * 0.5}s ease-in-out ${i * 0.17}s infinite`,
+                animation: `mythicSpark ${p.duration} ease-in-out ${p.delay} infinite`,
               }}
             />
           ))}

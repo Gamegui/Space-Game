@@ -4,3 +4,4 @@ dist
 *.local
 space-shooter-yandex.zip
 .perf-logs.ndjson
+isolate-*.log

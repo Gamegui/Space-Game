@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import type { PlayerState, UpgradeDef, GamePhase, ShipClassId, Enemy } from "./game/types";
 import type { GameObjects, StepInput } from "./game/gameLoop";
 import { stepGame, makeStars, makeInitialPlayer, makeMaterializeBurst, devourSoul, getNextLevelXp, spawnAdaptiveGuard, bindParticleFrame, particleDebugStats, objectPoolStats, VOID_SOUL_MAX, W, H, uid } from "./game/gameLoop";
@@ -12,7 +12,7 @@ import { yandex, type StoreOffer } from "./platform/yandex";
 import {
   drawBackground, drawStars, drawPlayer, drawEnemy, drawBullet, drawSingularity, drawVoidFractures, drawMythicAuras,
   drawParticle, drawXpOrb, drawMine, drawLightning, drawBlackHole, drawExplosion,
-  drawFloatingText, drawPowerup, drawVoidEye, drawVoidPhaseVignette, setRenderPerformanceTier
+  drawFloatingText, drawPowerup, drawVoidEye, drawVoidPhaseVignette, setRenderPerformanceTier, setDisabledFeatures
 } from "./game/renderer";
 import UpgradePanel from "./components/UpgradePanel";
 import HUD from "./components/HUD";
@@ -29,11 +29,14 @@ import { checkEvolutions, EVOLUTIONS } from "./game/evolutions";
 import { rollMythicDrop, ownedMythicCount, MAX_MYTHIC_PER_RUN } from "./game/mythics";
 import MythicReveal from "./components/MythicReveal";
 import { reportPerfEvent, recoverPerfMirror, reportSessionStart, startFreezeWatchdog } from "./game/perfReporter";
+import { APP_VERSION_DISPLAY } from "./game/version";
+import { ARCHETYPES, type ArchetypeId } from "./game/archetypes";
+import { QualityController } from "./game/qualityController";
+import { GameProfiler } from "./game/profiler";
+import { FpsTracker, saveTelemetryRun, loadTelemetryRuns, exportTelemetryJson, computeBalanceStats, type TelemetryRun } from "./game/telemetry";
+import { loadMeta as loadMetaV3, saveMeta as saveMetaV3, exportMeta, getBackupInfo, restoreBackup } from "./game/metaMigration";
 
 // ─── Perf-логгер (только DEV): покадровая диагностика фризов ──────────────────
-// Пишет строку в буфер на каждый медленный кадр: сколько ушло на симуляцию,
-// сколько на отрисовку (по слоям) и сколько сущностей было на экране.
-// Кнопка «📊 PERF» внизу слева копирует/скачивает лог — присылай его целиком.
 const PERF_SLOW_FRAME_MS = 90;
 const PERF_MAX_LINES = 80;
 const PERF_LINES: string[] = [];
@@ -57,14 +60,9 @@ function perfLogSlowFrame(line: string): void {
   if (PERF_LINES.length > PERF_MAX_LINES) PERF_LINES.shift();
   // eslint-disable-next-line no-console
   console.log(`[perf] ${line}`);
-  // Каждое медленное событие немедленно улетает на dev-сервер: при жёстком
-  // зависании кнопка PERF уже мертва, а лог уже сохранён.
   reportPerfEvent("SLOW_FRAME", { line });
 }
 
-// Замер слоёв отрисовки нужен только в dev/диагностической сборке. В релизе
-// обёртка — прозрачный вызов: минус 11 замыканий и 22 вызова performance.now()
-// на каждый кадр (v1.8.0).
 const PERF_DRAW_PROFILING = import.meta.env.DEV || import.meta.env.VITE_PERF === "true";
 
 function perfTime(key: string, fn: () => void): void {
@@ -110,14 +108,20 @@ function makeInitialObjects(player: PlayerState): GameObjects {
     guardSpawnedThisWave: false,
     fastClearStreak: 0,
     guardEventActive: false,
-  singularity: null,
-  voidFractures: [],
+    singularity: null,
+    voidFractures: [],
+    maxEnemies: 0,
+    maxBullets: 0,
+    maxParticles: 0,
+    maxXpOrbs: 0,
+    frameTimeHistory: [],
+    lastBossAttack: undefined,
   };
 }
 
 type RouteId = "asteroids" | "warzone" | "anomaly";
 type QualityMode = "auto" | "low" | "medium" | "high";
-type RouteChoice = { id: RouteId; icon: string; name: string; description: string; risk: string; reward: string };
+type RouteChoice = { id: RouteId; icon: string; name: string; description: string; risk: string; reward: string; enemyMul: number; eliteChance: number; xpMul: number; scoreMul: number; rule: string; adaptiveMul: number };
 
 function detectPerformanceTier(): 0 | 1 | 2 {
   const cores = navigator.hardwareConcurrency || 4;
@@ -128,14 +132,11 @@ function detectPerformanceTier(): 0 | 1 | 2 {
 }
 
 const ROUTES: RouteChoice[] = [
-  { id: "asteroids", icon: "☄️", name: "ПОЯС АСТЕРОИДОВ", description: "Каменный дождь пересекает арену и заставляет постоянно маневрировать.", risk: "Метеоры · −15% врагов", reward: "+30% опыта" },
-  { id: "warzone", icon: "⚔️", name: "ВОЕННЫЙ СЕКТОР", description: "Ударный корпус присылает усиленные элитные эскадрильи.", risk: "+25% врагов · элиты", reward: "+60% опыта и очков" },
-  { id: "anomaly", icon: "🌀", name: "АНОМАЛИЯ", description: "Гравитация, ускоренные пули или помехи оружия меняют правила волны.", risk: "Случайное правило", reward: "Рискованная награда" },
+  { id: "asteroids", icon: "☄️", name: "ПОЯС АСТЕРОИДОВ", description: "Каменный дождь пересекает арену и заставляет постоянно маневрировать.", risk: "Метеоры · −15% врагов", reward: "+30% опыта", enemyMul: 0.85, eliteChance: 0.05, xpMul: 1.3, scoreMul: 1.0, rule: "Метеоры наносят 1.2 урона, +30% XP", adaptiveMul: 0.94 },
+  { id: "warzone", icon: "⚔️", name: "ВОЕННЫЙ СЕКТОР", description: "Ударный корпус присылает усиленные элитные эскадрильи.", risk: "+25% врагов · элиты", reward: "+60% опыта и очков", enemyMul: 1.25, eliteChance: 0.22, xpMul: 1.6, scoreMul: 1.6, rule: "Элиты 22%, +25% врагов", adaptiveMul: 1.25 },
+  { id: "anomaly", icon: "🌀", name: "АНОМАЛИЯ", description: "Гравитация, ускоренные пули или помехи оружия меняют правила волны.", risk: "Случайное правило", reward: "Рискованная награда", enemyMul: 1.15, eliteChance: 0.12, xpMul: 1.75, scoreMul: 1.5, rule: "gravity / bullet_storm / interference", adaptiveMul: 1.38 },
 ];
 
-// v1.5.0 — «Торговец осколков» on the route screen: a meta-currency sink that
-// trades permanent shards for a temporary in-run buff. Risk/reward: spending
-// permanent currency on a run that may still fail.
 type MerchantBuff = { id: string; name: string; icon: string; cost: number; desc: string };
 const MERCHANT_BUFFS: MerchantBuff[] = [
   { id: "multishot", name: "Боевой заряд", icon: "⚡", cost: 50, desc: "+1 снаряд за выстрел (этот забег)" },
@@ -143,6 +144,106 @@ const MERCHANT_BUFFS: MerchantBuff[] = [
   { id: "nuke", name: "Ядерный боезапас", icon: "💣", cost: 45, desc: "+1 ядерный заряд" },
   { id: "chrono", name: "Сброс хронозамедления", icon: "⏱️", cost: 30, desc: "Мгновенная готовность хроно-замедления" },
 ];
+
+// ─── Build weighting ───────────────────────────────────────────────────────────
+function getMissingSynergyPieces(player: PlayerState): Set<string> {
+  const owned = new Set(player.upgrades.map(u => u.id));
+  const missing = new Set<string>();
+  for (const syn of SYNERGIES) {
+    if (player.synergies.includes(syn.id)) continue;
+    const have = syn.requires.filter(id => owned.has(id)).length;
+    if (have >= syn.requires.length - 1 && have < syn.requires.length) {
+      for (const id of syn.requires) if (!owned.has(id)) missing.add(id);
+    }
+  }
+  for (const evo of EVOLUTIONS) {
+    if (player.evolved.includes(evo.id)) continue;
+    const have = evo.requires.filter(id => owned.has(id)).length;
+    if (have >= evo.requires.length - 1 && have < evo.requires.length) {
+      for (const id of evo.requires) if (!owned.has(id)) missing.add(id);
+    }
+  }
+  return missing;
+}
+
+function rollWeightedUpgrades(player: PlayerState, count: number, banned: string[], archetypeId?: ArchetypeId): UpgradeDef[] {
+  const missingPieces = getMissingSynergyPieces(player);
+  const archetype = archetypeId ? ARCHETYPES.find(a => a.id === archetypeId) : undefined;
+  const archetypeUpgrades = new Set(archetype?.upgrades ?? []);
+  const level = player.level;
+  // Build weighted pool
+  const pool: { def: UpgradeDef; weight: number }[] = [];
+  for (const def of ALL_UPGRADES) {
+    if (banned.includes(def.id)) continue;
+    // canUpgrade check (reuse logic from upgrades.ts canUpgrade)
+    const lvl = getUpgradeLevel(player, def.id);
+    if (lvl >= def.maxLevel) continue;
+    // basic availability: check requires? For simplicity, allow all except those needing level
+    let weight = 1;
+    // archetype boost
+    if (archetypeUpgrades.has(def.id)) weight *= 1.8;
+    // missing synergy boost after lvl6
+    if (level >= 6 && missingPieces.has(def.id)) weight *= 2.5;
+    else if (level >= 6 && archetypeUpgrades.has(def.id)) weight *= 1.4;
+    // rarity weighting: don't guarantee mythic/legendary, but slight boost for archetype
+    if (def.rarity === "mythic") weight *= 0.15; // rare
+    if (def.rarity === "legendary") weight *= 0.5;
+    if (def.rarity === "epic" && archetypeUpgrades.has(def.id)) weight *= 1.2;
+    // avoid too many same category? slight penalty if already have many of same category
+    const sameCat = player.upgrades.filter(u => {
+      const d = ALL_UPGRADES.find(a => a.id === u.id);
+      return d?.category === def.category;
+    }).length;
+    if (sameCat > 5) weight *= 0.7;
+    pool.push({ def, weight });
+  }
+  // weighted random without replacement
+  const result: UpgradeDef[] = [];
+  const poolCopy = [...pool];
+  for (let i = 0; i < count && poolCopy.length > 0; i++) {
+    const totalWeight = poolCopy.reduce((s, p) => s + p.weight, 0);
+    let r = Math.random() * totalWeight;
+    let idx = 0;
+    for (; idx < poolCopy.length; idx++) {
+      r -= poolCopy[idx].weight;
+      if (r <= 0) break;
+    }
+    idx = Math.min(idx, poolCopy.length - 1);
+    result.push(poolCopy[idx].def);
+    poolCopy.splice(idx, 1);
+  }
+  return result;
+}
+
+// ─── Advice generation ────────────────────────────────────────────────────────
+function generateAdvice(player: PlayerState, deathCause?: string, incomingByType?: Record<string, number>): string {
+  const advices: string[] = [];
+  const incoming = incomingByType ?? player.stats.incomingByType ?? {};
+  const topIncoming = Object.entries(incoming).sort((a,b)=>b[1]-a[1])[0];
+  if (deathCause) {
+    if (deathCause.startsWith("bullet_")) advices.push("Смерть от пуль — возьмите щит, регенерацию щита или призрачный сдвиг.");
+    if (deathCause.startsWith("boss_")) advices.push("Босс убил — изучите телеграф атаки (15 кадров до выстрела) и держите рывок для ухода.");
+    if (deathCause.startsWith("contact_")) advices.push("Контактный урон — ускорьте корабль, возьмите турбодвигатель и ауру.");
+  }
+  if (topIncoming) {
+    const [type, dmg] = topIncoming;
+    if (dmg > 50) advices.push(`Основной источник урона: ${type} (${Math.round(dmg)}). Контрмеры: щит/уклонение/заморозка.`);
+  }
+  const owned = new Set(player.upgrades.map(u=>u.id));
+  // missing synergy advice
+  for (const syn of SYNERGIES) {
+    if (player.synergies.includes(syn.id)) continue;
+    const have = syn.requires.filter(id=>owned.has(id)).length;
+    if (have === syn.requires.length - 1) {
+      const missing = syn.requires.find(id=>!owned.has(id));
+      if (missing) advices.push(`Близко к синергии ${syn.name} — не хватает ${missing}.`);
+    }
+  }
+  if (player.upgrades.length < 5) advices.push("Ранний билд — фокус на одной арке: Залпы или Стихии для стабильного урона.");
+  if (player.level < 8 && player.hp / player.maxHp < 0.3) advices.push("Мало HP на низких уровнях — приоритезируйте выживание: щит, реген, скорость.");
+  if (advices.length === 0) advices.push("Билд сбалансирован. Попробуйте закрыть эволюцию для усиления.");
+  return advices[0];
+}
 
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function App() {
@@ -152,8 +253,6 @@ export default function App() {
   const keysRef    = useRef<Set<string>>(new Set());
   const [gameScale, setGameScale] = useState(1);
 
-  // Scale the complete 960×640 playfield uniformly. Canvas coordinates, touch input
-  // and every overlay stay aligned on phones, tablets and catalogue iframes.
   useEffect(() => {
     const resize = () => {
       const horizontalPadding = window.innerWidth >= 640 ? 24 : 4;
@@ -169,7 +268,6 @@ export default function App() {
     };
   }, []);
 
-  // Game state refs (mutable, not causing re-renders)
   const gameRef    = useRef<GameObjects | null>(null);
   const phaseRef   = useRef<GamePhase>("menu");
   const waveRef    = useRef(1);
@@ -182,9 +280,19 @@ export default function App() {
   const fpsRef = useRef(0);
   const banishedUpgradeIdsRef = useRef<Set<string>>(new Set());
 
-  // UI state (causes re-renders)
+  // New refs for P1.4, P0.1
+  const qualityControllerRef = useRef<QualityController>(new QualityController(2));
+  const fpsTrackerRef = useRef<FpsTracker>(new FpsTracker());
+  const profilerRef = useRef<GameProfiler>(new GameProfiler(import.meta.env.DEV));
+  const frameTimeRef = useRef<number>(performance.now());
+  const selectedArchetypeRef = useRef<ArchetypeId | undefined>(undefined);
+  const runStartTimeRef = useRef<number>(0);
+  const lastRerollChoicesRef = useRef<string[]>([]);
+
   const [phase, setPhase]         = useState<GamePhase>("menu");
   const [selectedClass, setSelectedClass] = useState<ShipClassId>("interceptor");
+  const [selectedArchetype, setSelectedArchetype] = useState<ArchetypeId | undefined>(undefined);
+  const [archetypeChoices, setArchetypeChoices] = useState<ArchetypeId[]>(["barrage","elements","fleet"]);
   const [wave, setWave]           = useState(1);
   const [playerLevel, setPlayerLevel] = useState(1);
   const [upgradeChoices, setUpgradeChoices] = useState<UpgradeDef[]>([]);
@@ -215,13 +323,20 @@ export default function App() {
   const [adsAvailable, setAdsAvailable] = useState(false);
   const [premiumUnlocked, setPremiumUnlocked] = useState(false);
   const [purchasePending, setPurchasePending] = useState(false);
-  // Store offer for the premium ship, provided by the SDK catalog: the numeric
-  // price and the portal currency (name + icon) are always taken from Yandex.
   const [premiumOffer, setPremiumOffer] = useState<StoreOffer | null>(null);
   const [premiumCatalogChecked, setPremiumCatalogChecked] = useState(false);
-  // ── Meta-progression (v1.5.0): cloud-saved permanent upgrades + shards + missions.
   const [meta, setMeta] = useState<MetaState>(() => {
-    try { return normalizeMetaState(JSON.parse(localStorage.getItem("meta_v1") ?? "null")); }
+    try {
+      // P1.6: use versioned migration with backup
+      loadMetaV3();
+      // Convert migrated v3 to MetaState format (shards, upgrades etc)
+      // For compatibility, try to load old meta_v1 as fallback for game meta
+      const oldRaw = localStorage.getItem("meta_v1");
+      if (oldRaw) {
+        try { return normalizeMetaState(JSON.parse(oldRaw)); } catch {}
+      }
+      return defaultMetaState();
+    }
     catch { return defaultMetaState(); }
   });
   const metaRef = useRef(meta);
@@ -238,30 +353,25 @@ export default function App() {
   const runEvolutionsRef = useRef(0);
   const comboTierRef = useRef(0);
   const runFinalizedRef = useRef(false);
-  // v1.5.0 fix: the death screen finalizes the run immediately (instant shard
-  // feedback), but the player may still revive via a rewarded video. Keep the
-  // pre-finalize snapshot + finalize kind so handleRevive can roll a death
-  // finalization back and award the continued run once, in full, at its end.
   const runFinalizeSnapshotRef = useRef<MetaState | null>(null);
   const runFinalizeVictoryRef = useRef(false);
-  // Notice timers: cancel the previous timeout so a fast tier climb (10→25→50)
-  // can't clear the newer banner with the older timeout.
   const comboNoticeTimerRef = useRef<number | null>(null);
   const evolutionNoticeTimerRef = useRef<number | null>(null);
   const merchantRollRef = useRef<{ available: boolean; bought: Set<string> }>({ available: false, bought: new Set() });
   const pendingMythicDefRef = useRef<UpgradeDef | null>(null);
   const [adminOpen, setAdminOpen] = useState(false);
   const [adminGod, setAdminGod] = useState(false);
-  // Перф-лог: оверлей с текстом лога (кнопка «📊 PERF» видна только в DEV).
   const [perfOpen, setPerfOpen] = useState(false);
   const [perfText, setPerfText] = useState("");
-  // ✦ МИФИЧЕСКОЕ СОБЫТИЕ: выпавший мифик (заменяет панель улучшений).
   const [pendingMythic, setPendingMythic] = useState<UpgradeDef | null>(null);
   const [mythicBanner, setMythicBanner] = useState<{ icon: string; name: string; description: string } | null>(null);
+  const [debugOverlay, setDebugOverlay] = useState(false);
+  const [qualityState, setQualityState] = useState(qualityControllerRef.current.getState());
+  const [telemetryRuns, setTelemetryRuns] = useState<TelemetryRun[]>(() => loadTelemetryRuns());
+  const [showBalance, setShowBalance] = useState(false);
+  const [showTelemetry, setShowTelemetry] = useState(false);
+  const balanceStats = useMemo(() => computeBalanceStats(telemetryRuns), [telemetryRuns]);
 
-  // Автологирование фризов: досылаем логи прошлого сеанса (если страница
-  // умерла и её перезагрузили) и запускаем watchdog-воркер, который шлёт
-  // отчёт о зависании из отдельного потока, когда главный уже заблокирован.
   const freezeBeatRef = useRef<((payload: Record<string, unknown>, hidden: boolean) => void) | null>(null);
   useEffect(() => {
     if (!(import.meta.env.DEV || import.meta.env.VITE_PERF === "true")) return;
@@ -271,8 +381,6 @@ export default function App() {
     freezeBeatRef.current = startFreezeWatchdog();
   }, []);
 
-  // longtask-наблюдатель: фиксирует блокировки главного потока ВНЕ игрового
-  // колбэка (коммит React, сборка мусора, композитинг браузера).
   useEffect(() => {
     if (!(import.meta.env.DEV || import.meta.env.VITE_PERF === "true")) return;
     try {
@@ -284,9 +392,11 @@ export default function App() {
           }
         }
       });
-      observer.observe({ entryTypes: ["longtask"] } as PerformanceObserverInit);
+      try { (observer as any).observe({ entryTypes: ["longtask"] }); } catch {}
+
+
       return () => observer.disconnect();
-    } catch { /* PerformanceObserver longtask не поддерживается */ }
+    } catch { }
   }, []);
   const [, setAdminRefresh] = useState(0);
   const [synergyNotice, setSynergyNotice] = useState<string | null>(null);
@@ -294,27 +404,18 @@ export default function App() {
   const [banishesLeft, setBanishesLeft] = useState(1);
   const [upgradeAdPending, setUpgradeAdPending] = useState(false);
   const [bonusChoiceUsed, setBonusChoiceUsed] = useState(false);
-  // v1.8.0: журнал операций с осколками для «Ангара» (сессионный, только UI).
   const [shardLog, setShardLog] = useState<ShardEvent[]>([]);
-  // Админка: в dev-режиме с VITE_ADMIN, либо в диагностической сборке
-  // (VITE_ADMIN=true при сборке) — для локального стресс-теста владельцем.
   const adminEnabled = (import.meta.env.DEV || import.meta.env.VITE_ADMIN === "true") && import.meta.env.VITE_ADMIN === "true";
 
-  // Yandex Games lifecycle, cloud record and automatic pause when the tab is hidden.
   useEffect(() => {
     void yandex.init().then(async () => {
       setAdsAvailable(yandex.isAvailable());
-      // Cloud meta state (permanent upgrades, shards, missions). Falls back to
-      // the localStorage snapshot when the SDK is absent or the player is a guest.
       const cloudMeta = await yandex.loadData<unknown>(META_KEY);
       if (cloudMeta) {
         const normalized = normalizeMetaState(cloudMeta);
-        try { localStorage.setItem("meta_v1", JSON.stringify(normalized)); } catch { /* storage blocked */ }
+        try { localStorage.setItem("meta_v1", JSON.stringify(normalized)); } catch { }
         setMeta(normalized);
       }
-      // Product catalog-parity: fetch ownership + offers for every known product
-      // (void_wraith + the new premium_pass / starter_pack). Absent products are
-      // hidden from purchase UI (Game Requirements §1.13).
       const productIds = PRODUCTS.map(p => p.id);
       const [cloudScore, catalogOffer, ...ownershipChecks] = await Promise.all([
         yandex.loadHighScore(),
@@ -322,14 +423,10 @@ export default function App() {
         ...productIds.map(id => yandex.hasPermanentPurchase(id)),
       ]);
       if (cloudScore !== null) setHiscore(current => Math.max(current, cloudScore));
-      // Outside the Yandex catalogue the ship is unlocked for development and QA.
       const ownsPremiumShip = Boolean(ownershipChecks[0]) || !yandex.isPlatformAvailable();
       setPremiumUnlocked(ownsPremiumShip);
-      // When the product is inactive in the console the purchase must be
-      // absent from the game, so the offer stays null and the CTA never shows.
       setPremiumOffer(catalogOffer);
       setPremiumCatalogChecked(true);
-      // Sync meta.unlockedProducts from real ownership, then fetch offers.
       const devOwned = !yandex.isPlatformAvailable();
       const ownedSet = new Set<string>();
       productIds.forEach((id, i) => {
@@ -355,9 +452,6 @@ export default function App() {
       setProductOffers(offers);
     });
     const pauseForFocusLoss = () => {
-      // Yandex checks focus loss independently of document.visibilityState. Some
-      // browsers fire blur while the document is still visible, so always stop
-      // audio and freeze combat here instead of relying only on document.hidden.
       audio.suspend();
       yandex.setGameplay(false);
       if (phaseRef.current === "playing") {
@@ -390,7 +484,7 @@ export default function App() {
     try {
       localStorage.setItem("music_volume", String(musicVolume));
       localStorage.setItem("sfx_volume", String(sfxVolume));
-    } catch { /* optional preferences */ }
+    } catch { }
   }, [musicVolume, sfxVolume]);
 
   useEffect(() => {
@@ -400,7 +494,7 @@ export default function App() {
       g.performanceAuto = qualityMode === "auto";
       g.performanceTier = qualityMode === "auto" ? detectPerformanceTier() : tierMap[qualityMode];
     }
-    try { localStorage.setItem("quality_mode", qualityMode); } catch { /* optional preference */ }
+    try { localStorage.setItem("quality_mode", qualityMode); } catch { }
   }, [qualityMode]);
 
   const syncUI = useCallback(() => {
@@ -413,7 +507,6 @@ export default function App() {
     if (g.bossActive && g.boss) {
       setBossHpPct(Math.max(0, g.boss.hp / g.boss.maxHp));
     }
-    // v1.5.0: combo escalation “juice” — banner + colour shift at milestones.
     const combo = g.player.comboTimer > 0 ? g.player.combo : 0;
     const tier = combo >= 50 ? 3 : combo >= 25 ? 2 : combo >= 10 ? 1 : 0;
     if (tier !== comboTierRef.current) {
@@ -427,38 +520,78 @@ export default function App() {
     }
   }, []);
 
-  // ── Meta-progression persistence & run finalisation (v1.5.0) ───────────────
-  // Writes the meta state to localStorage immediately (instant UI on reload)
-  // and mirrors it to the Yandex Player Data cloud (best-effort, async).
   const persistMeta = useCallback((next: MetaState) => {
     metaRef.current = next;
-    try { localStorage.setItem("meta_v1", JSON.stringify(next)); } catch { /* storage blocked */ }
+    try { localStorage.setItem("meta_v1", JSON.stringify(next)); } catch { }
     void yandex.saveData(META_KEY, next);
+    // also save via new versioned system
+    try { saveMetaV3(next as any); } catch {}
   }, []);
 
   const pushShardEvent = useCallback((label: string, amount: number) => {
     setShardLog(prev => [{ key: Date.now() + Math.random(), label, amount }, ...prev].slice(0, 8));
   }, []);
 
-  /** Apply permanent meta upgrades + owned product bonuses to a fresh run. */
   const applyRunBonuses = useCallback((player: PlayerState) => {
     const m = metaRef.current;
     applyMetaToPlayer(m, player);
-    // «Ускоритель прогресса»: +1 free reroll (on top of field_logistics).
-    // «Стартовый набор»: +1 banish and an extra starting shield.
     if (m.unlockedProducts.includes("starter_pack")) {
       if (!player.shield) player.shield = { hp: 0, maxHp: 0, regenTimer: 0 };
       player.shield.maxHp += 25;
       player.shield.hp = player.shield.maxHp;
     }
+    if (selectedArchetypeRef.current) {
+      player.buildArchetype = selectedArchetypeRef.current;
+    }
   }, []);
 
-  /** Compute the run result, award shards, update missions/totals, persist.
-   *  Reads from metaRef.current (not the state updater) so it stays pure w.r.t.
-   *  React and is guarded against double-fire on death+later frames. The
-   *  pre-finalize snapshot is kept so an ad-revive can roll this back (see
-   *  handleRevive); a victory finalize is never rolled back because endless
-   *  mode may continue afterwards. */
+  const saveCurrentTelemetry = useCallback((victory: boolean, reason: "death" | "victory" | "quit") => {
+    const g = gameRef.current;
+    if (!g) return;
+    const st = g.player.stats;
+    const fpsStats = fpsTrackerRef.current.getStats();
+    const durationSec = Math.max(1, Math.round((performance.now() - runStartTimeRef.current) / 1000));
+    const run: TelemetryRun = {
+      version: APP_VERSION_DISPLAY,
+      timestamp: Date.now(),
+      shipClass: g.player.shipClass,
+      route: g.activeRoute,
+      routeEffect: g.routeEffect,
+      wave: waveRef.current,
+      victory,
+      durationSec,
+      score: g.player.score,
+      kills: g.player.kills,
+      level: g.player.level,
+      chosenCards: g.player.upgrades.map(u => {
+        const def = ALL_UPGRADES.find(d => d.id === u.id);
+        return { id: u.id, level: u.level, rarity: def?.rarity ?? "common" };
+      }),
+      synergies: [...g.player.synergies],
+      evolutions: [...g.player.evolved],
+      damageDealt: st.damageDealt,
+      damageBySource: { ...st.damageBySource },
+      incomingDamage: st.incomingDamage,
+      incomingByType: { ...st.incomingByType },
+      fps: { p50: fpsStats.p50, p1: fpsStats.p1, samples: fpsStats.samples },
+      maxEntities: {
+        enemies: g.maxEnemies ?? g.enemies.length,
+        bullets: g.maxBullets ?? 0,
+        particles: g.maxParticles ?? 0,
+        xpOrbs: g.maxXpOrbs ?? 0,
+      },
+      purchases: [...metaRef.current.unlockedProducts],
+      revived: runRevivedRef.current,
+      reason,
+      adaptiveScale: g.adaptiveDifficulty,
+      powerRating: g.powerRating,
+      buildArchetype: g.player.buildArchetype,
+      deathCause: g.player.deathCause,
+    };
+    saveTelemetryRun(run);
+    setTelemetryRuns(loadTelemetryRuns());
+  }, []);
+
   const finalizeRun = useCallback((victory: boolean) => {
     if (runFinalizedRef.current) return;
     runFinalizedRef.current = true;
@@ -491,27 +624,34 @@ export default function App() {
     persistMeta(next);
     setMeta(next);
     pushShardEvent(victory ? "Победа · волна 50" : "Забег завершён", earned);
-  }, [persistMeta, pushShardEvent]);
+    saveCurrentTelemetry(victory, victory ? "victory" : "death");
+  }, [persistMeta, pushShardEvent, saveCurrentTelemetry]);
 
-  // ─── Sound Toggle ───────────────────────────────────────────────────────────
   const handleToggleSound = useCallback(() => {
     const muted = audio.toggleMute();
     setIsMuted(muted);
   }, []);
 
-  // ─── Start game with Ship Class ─────────────────────────────────────────────
-  const startGame = useCallback((shipClass: ShipClassId = selectedClass) => {
-    if (shipClass === "void_wraith" && !premiumUnlocked) return;
+  const startBuildSelect = useCallback((shipClass: ShipClassId) => {
+    setSelectedClass(shipClass);
+    // Roll 3 archetype choices
+    const shuffled = [...ARCHETYPES].sort(() => Math.random() - 0.5).slice(0, 3).map(a=>a.id);
+    setArchetypeChoices(shuffled);
+    phaseRef.current = "build_select";
+    setPhase("build_select");
+  }, []);
+
+  const handleChooseArchetype = useCallback((archId: ArchetypeId) => {
+    selectedArchetypeRef.current = archId;
+    setSelectedArchetype(archId);
     audio.resume();
     audio.startAmbientBGM();
 
-    const player = makeInitialPlayer(shipClass);
-    // v1.5.0: apply permanent meta upgrades + owned product bonuses to the run.
+    const player = makeInitialPlayer(selectedClass);
+    player.buildArchetype = archId;
     applyRunBonuses(player);
     const objects = makeInitialObjects(player);
-    // Premium «Немезида» opening: the ship materializes into the arena and
-    // starts with a Phase Shift already researched (synergy head-start).
-    if (shipClass === "void_wraith") {
+    if (selectedClass === "void_wraith") {
       if (!player.upgrades.some(u => u.id === "ghost")) {
         const ghostDef = ALL_UPGRADES.find(u => u.id === "ghost");
         if (ghostDef) {
@@ -524,7 +664,6 @@ export default function App() {
     const qualityTiers: Record<Exclude<QualityMode, "auto">, 0 | 1 | 2> = { low: 0, medium: 1, high: 2 };
     objects.performanceAuto = qualityMode === "auto";
     objects.performanceTier = qualityMode === "auto" ? detectPerformanceTier() : qualityTiers[qualityMode];
-    // Новый забег — новая привязка системы частиц (пул переиспользуется).
     bindParticleFrame(objects.particles, objects.performanceTier);
     const initialDifficulty = getAdaptiveDifficulty(player, 1);
     objects.powerRating = initialDifficulty.power;
@@ -536,6 +675,10 @@ export default function App() {
     bossIntroTimerRef.current = 0;
     waveTransitioningRef.current = false;
     frameRef.current = 0;
+    qualityControllerRef.current = new QualityController(objects.performanceTier);
+    fpsTrackerRef.current = new FpsTracker();
+    runStartTimeRef.current = performance.now();
+    frameTimeRef.current = performance.now();
     let needsTutorial = false;
     try { needsTutorial = !adminEnabled && localStorage.getItem("tutorial_complete") !== "1"; } catch { needsTutorial = !adminEnabled; }
     phaseRef.current = needsTutorial ? "tutorial" : "playing";
@@ -545,7 +688,6 @@ export default function App() {
     setTimeSlow(false);
     setReviveUsed(false);
     setAdPending(false);
-    // Free rerolls = base 3 + field_logistics meta + premium_pass bonus.
     const bonusRerolls = metaBonusRerolls(metaRef.current) + (metaRef.current.unlockedProducts.includes("premium_pass") ? 1 : 0);
     setRerollsLeft(3 + bonusRerolls);
     setBanishesLeft(1 + (metaRef.current.unlockedProducts.includes("starter_pack") ? 1 : 0));
@@ -563,14 +705,17 @@ export default function App() {
     setLastShardsEarned(0);
     comboTierRef.current = 0;
     syncUI();
-  }, [adminEnabled, premiumUnlocked, qualityMode, selectedClass, syncUI, applyRunBonuses]);
+  }, [adminEnabled, qualityMode, selectedClass, syncUI, applyRunBonuses]);
 
-  // ─── Wave advance ────────────────────────────────────────────────────────────
+  const startGame = useCallback((shipClass: ShipClassId = selectedClass) => {
+    if (shipClass === "void_wraith" && !premiumUnlocked) return;
+    // Go to build select first (P1.1)
+    startBuildSelect(shipClass);
+  }, [premiumUnlocked, selectedClass, startBuildSelect]);
+
   const advanceWave = useCallback((route: RouteId = "asteroids") => {
     const g = gameRef.current;
     if (!g || waveTransitioningRef.current) return;
-    // Damage from several projectiles can report the same final kill in one
-    // simulation frame. Lock the transition until that frame has completed.
     waveTransitioningRef.current = true;
     queueMicrotask(() => { waveTransitioningRef.current = false; });
     const newWave = waveRef.current + 1;
@@ -583,8 +728,6 @@ export default function App() {
     g.guardEventActive = false;
     const adaptive = getAdaptiveDifficulty(g.player, newWave);
     g.powerRating = adaptive.power;
-    // ⚔ ЭСКАЛАЦИЯ БЕЗДНЫ (v1.8.3): предупреждение о резком росте силы врагов
-    // после 60-й волны (требование 2.8 «нарастающая сложность» в endless).
     if (newWave > 60) {
       setSynergyNotice(`⚔ ЭСКАЛАЦИЯ БЕЗДНЫ ×${(adaptive.scale / 12).toFixed(1)} · ВОЛНА ${newWave}`);
       setTimeout(() => setSynergyNotice(null), 3200);
@@ -612,7 +755,6 @@ export default function App() {
     setWaveNotice(`МАРШРУТ: ${routeLabels[route]}`);
     g.adaptiveDifficulty = adaptive.scale * routeDifficulty;
 
-    // A modest recovery keeps attrition meaningful in long runs.
     const recovery = newWave <= 10 ? 15 : 8;
     g.player.hp = Math.min(g.player.maxHp, g.player.hp + recovery);
     if (g.player.shield) {
@@ -651,7 +793,6 @@ export default function App() {
         46: "НОВАЯ УГРОЗА: СИНГУЛЯРНОСТИ ИСКАЖАЮТ ПОЛЕ",
       };
       if (newThreats[newWave]) setWaveNotice(newThreats[newWave]);
-      // Warn about upcoming Black Cortege guard encounter
       const guardWaves = [20, 26, 32, 38, 44, 50, 56, 62, 68, 74, 80];
       const nextGuard = guardWaves.find(w => w > newWave);
       if (nextGuard && nextGuard - newWave <= 2 && g.player.level >= 12 && g.powerRating >= 80) {
@@ -664,12 +805,9 @@ export default function App() {
     advanceWave(route);
   }, [advanceWave]);
 
-  // ─── Level up handler ─────────────────────────────────────────────────────
   const handleLevelUp = useCallback((player: PlayerState) => {
     pendingLevelUpsRef.current++;
     if (phaseRef.current === "playing" && pendingLevelUpsRef.current === 1) {
-      // ✦ МИФИК: крайне редкий ролл (~0.5% после 8-го уровня, макс. 2 за забег,
-      // часть мификов требует собранного билда). Событие заменяет обычные карточки.
       const mythicId = rollMythicDrop(player);
       if (mythicId) {
         const def = ALL_UPGRADES.find(u => u.id === mythicId);
@@ -683,22 +821,24 @@ export default function App() {
           return;
         }
       }
-      const choices = rollPremiumUpgradeChoices(player, 3, [...banishedUpgradeIdsRef.current]);
-      upgradeChoicesRef.current = choices;
-      setUpgradeChoices(choices);
+      const banned = [...banishedUpgradeIdsRef.current, ...lastRerollChoicesRef.current];
+      const choices = rollWeightedUpgrades(player, 3, banned, selectedArchetypeRef.current);
+      // Fallback to premium if weighted fails
+      const finalChoices = choices.length >= 2 ? choices : rollPremiumUpgradeChoices(player, 3, banned);
+      upgradeChoicesRef.current = finalChoices;
+      setUpgradeChoices(finalChoices);
+      lastRerollChoicesRef.current = [];
       setBonusChoiceUsed(false);
       phaseRef.current = "upgrade";
       setPhase("upgrade");
     }
   }, []);
 
-  // ─── Choose upgrade ──────────────────────────────────────────────────────
   const handleChooseUpgrade = useCallback((u: UpgradeDef) => {
     const g = gameRef.current;
     if (!g) return;
     audio.playPowerup();
     applyUpgrade(g.player, u);
-    // Magnet: instantly pull all XP orbs on screen when picked
     if (u.id === "magnet") {
       for (const orb of g.xpOrbs) {
         orb.attracted = true;
@@ -712,8 +852,6 @@ export default function App() {
       setSynergyNotice(`${unlockedSynergies[0].icon} СИНЕРГИЯ: ${unlockedSynergies[0].name}`);
       setTimeout(() => setSynergyNotice(null), 3200);
     }
-    // v1.5.0: weapon/upgrade evolutions (super-synergies). Fires at most once
-    // per evolution per run (tracked in player.evolved).
     const triggered = checkEvolutions(g.player);
     if (triggered.length > 0) {
       runEvolutionsRef.current += triggered.length;
@@ -723,9 +861,11 @@ export default function App() {
     }
     pendingLevelUpsRef.current--;
     if (pendingLevelUpsRef.current > 0) {
-      const choices = rollPremiumUpgradeChoices(g.player, 3, [...banishedUpgradeIdsRef.current]);
-      upgradeChoicesRef.current = choices;
-      setUpgradeChoices(choices);
+      const banned = [...banishedUpgradeIdsRef.current];
+      const choices = rollWeightedUpgrades(g.player, 3, banned, selectedArchetypeRef.current);
+      const finalChoices = choices.length >= 2 ? choices : rollPremiumUpgradeChoices(g.player, 3, banned);
+      upgradeChoicesRef.current = finalChoices;
+      setUpgradeChoices(finalChoices);
       setBonusChoiceUsed(false);
     } else {
       phaseRef.current = "playing";
@@ -737,10 +877,13 @@ export default function App() {
     const g = gameRef.current;
     if (!g) return;
     const previousIds = upgradeChoicesRef.current.map(choice => choice.id);
-    const choices = rollPremiumUpgradeChoices(g.player, 3, [...banishedUpgradeIdsRef.current, ...previousIds]);
-    if (choices.length === 0) return;
-    upgradeChoicesRef.current = choices;
-    setUpgradeChoices(choices);
+    lastRerollChoicesRef.current = previousIds;
+    const banned = [...banishedUpgradeIdsRef.current, ...previousIds];
+    const choices = rollWeightedUpgrades(g.player, 3, banned, selectedArchetypeRef.current);
+    const finalChoices = choices.length > 0 ? choices : rollPremiumUpgradeChoices(g.player, 3, banned);
+    if (finalChoices.length === 0) return;
+    upgradeChoicesRef.current = finalChoices;
+    setUpgradeChoices(finalChoices);
     audio.playPowerup();
   }, []);
 
@@ -788,11 +931,15 @@ export default function App() {
     setBanishesLeft(value => value - 1);
     const targetLength = upgradeChoicesRef.current.length;
     const remaining = upgradeChoicesRef.current.filter(choice => choice.id !== upgrade.id);
-    const replacement = rollUpgrades(g.player, 1, [
+    const replacement = rollWeightedUpgrades(g.player, 1, [
+      ...banishedUpgradeIdsRef.current,
+      ...remaining.map(choice => choice.id),
+    ], selectedArchetypeRef.current);
+    const repl = replacement.length > 0 ? replacement : rollUpgrades(g.player, 1, [
       ...banishedUpgradeIdsRef.current,
       ...remaining.map(choice => choice.id),
     ]);
-    const choices = [...remaining, ...replacement].slice(0, targetLength);
+    const choices = [...remaining, ...repl].slice(0, targetLength);
     upgradeChoicesRef.current = choices;
     setUpgradeChoices(choices);
     setSynergyNotice(`❌ ИЗГНАНО: ${upgrade.name}`);
@@ -800,7 +947,6 @@ export default function App() {
     audio.playHit();
   }, [banishesLeft]);
 
-  // ─── Nuke ────────────────────────────────────────────────────────────────
   const handleNuke = useCallback(() => {
     const g = gameRef.current;
     if (!g || g.player.nukeCharges <= 0 || g.player.nukeCooldown > 0 || phaseRef.current !== "playing") return;
@@ -809,11 +955,9 @@ export default function App() {
     const survivors: Enemy[] = [];
     for (const e of g.enemies) {
       if (e.guardRole) {
-        // The Black Cortege cannot be screen-wiped; the nuke still deals a visible chunk.
         e.hp = Math.max(1, e.hp - e.maxHp * 0.12);
         survivors.push(e);
       } else if (e.isBoss) {
-        // A tactical nuke heavily damages a boss but cannot skip the boss encounter.
         e.hp = Math.max(1, e.hp - e.maxHp * 0.35);
         survivors.push(e);
       } else {
@@ -829,7 +973,6 @@ export default function App() {
     g.player.nukeCooldown = 180;
   }, []);
 
-  // ─── Time slow ───────────────────────────────────────────────────────────
   const handleTimeSlow = useCallback(() => {
     const g = gameRef.current;
     if (!g || !g.player.timeSlow) return;
@@ -842,14 +985,11 @@ export default function App() {
     setTimeSlow(true);
   }, []);
 
-  // ── Merchant (route-screen meta sink, v1.5.0) ───────────────────────────────
   const handleBuyMerchant = useCallback((buffId: string) => {
     const g = gameRef.current;
     const buff = MERCHANT_BUFFS.find(b => b.id === buffId);
     if (!g || !buff) return;
     if (merchantRollRef.current.bought.has(buffId)) return;
-    // Read current shards from the ref (not the state updater) so the deduction
-    // is synchronous and safe against React StrictMode double-invocation.
     const prev = metaRef.current;
     if (prev.shards < buff.cost) return;
     const next = { ...prev, shards: prev.shards - buff.cost };
@@ -858,7 +998,6 @@ export default function App() {
     persistMeta(next);
     merchantRollRef.current.bought.add(buffId);
     pushShardEvent(`Торговец · ${buff.name}`, -buff.cost);
-    // Apply the temporary in-run buff to the live player.
     const p = g.player;
     switch (buff.id) {
       case "multishot": p.multishot += 1; break;
@@ -871,7 +1010,6 @@ export default function App() {
     audio.playPowerup();
   }, [persistMeta, pushShardEvent]);
 
-  // ── Hangar handlers (v1.5.0) ────────────────────────────────────────────────
   const handleBuyMetaUpgrade = useCallback((id: string) => {
     const def = META_UPGRADES.find(d => d.id === id);
     if (!def) return;
@@ -913,7 +1051,6 @@ export default function App() {
     audio.resume();
     setPurchasePendingId(null);
     if (!purchased) return;
-    // Reflect ownership immediately and refresh catalog offers.
     const prev = metaRef.current;
     if (!prev.unlockedProducts.includes(id)) {
       const next = { ...prev, unlockedProducts: [...prev.unlockedProducts, id] };
@@ -934,8 +1071,6 @@ export default function App() {
     setPurchasePending(false);
     if (purchased) {
       setPremiumUnlocked(true);
-      // Keep the meta ownership + shop UI in sync immediately so the wraith_owner
-      // mission and the Hangar shop reflect the purchase without a reload.
       const prev = metaRef.current;
       if (!prev.unlockedProducts.includes("void_wraith")) {
         const next = { ...prev, unlockedProducts: [...prev.unlockedProducts, "void_wraith"] };
@@ -946,15 +1081,10 @@ export default function App() {
     }
   }, [premiumUnlocked, premiumOffer, purchasePending, persistMeta]);
 
-  // The purchase gate opens only when the console product is active (an offer
-  // was loaded); otherwise the premium ship stays unselectable and unpurchasable.
   const premiumGate = selectedClass === "void_wraith" && !premiumUnlocked;
   const premiumOfferReady = premiumCatalogChecked && premiumOffer !== null;
   const shipSelectButtonDisabled = purchasePending || (premiumGate && !premiumOfferReady);
 
-  // v1.5.0: completed-but-unclaimed mission rewards — surfaced as a badge on
-  // the Hangar button and as a hint on the death/victory screens so the shard
-  // rewards actually get discovered and claimed.
   const unclaimedMissionRewards = MISSIONS.reduce(
     (count, def) => (isMissionComplete(def, meta) && !meta.claimedMissions[def.id] ? count + 1 : count),
     0,
@@ -979,12 +1109,6 @@ export default function App() {
     );
     setAdPending(false);
     if (!rewarded || !gameRef.current) return;
-    // The death screen already finalized this run (instant shard feedback).
-    // Reviving re-opens it: roll the premature DEATH finalization back to the
-    // snapshot so the continued run is awarded once, in full, when it truly
-    // ends — and the «Без передышки» mission no longer completes on a run that
-    // was, in fact, revived. A victory finalization is never rolled back
-    // (endless mode continues on top of the awarded victory).
     if (runFinalizedRef.current && !runFinalizeVictoryRef.current && runFinalizeSnapshotRef.current) {
       const snapshot = runFinalizeSnapshotRef.current;
       persistMeta(snapshot);
@@ -1003,12 +1127,9 @@ export default function App() {
     audio.startAmbientBGM();
   }, [adPending, reviveUsed, persistMeta]);
 
-  // ─── Keyboard ─────────────────────────────────────────────────────────────
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       audio.resume();
-      // `code` identifies the physical key and therefore works with English,
-      // Russian and every other keyboard layout. Keep `key` for arrows/legacy.
       keysRef.current.add(e.code);
       keysRef.current.add(e.key);
       if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(e.code)) e.preventDefault();
@@ -1024,6 +1145,9 @@ export default function App() {
         phaseRef.current = "ship_select";
         setPhase("ship_select");
       }
+      if (!e.repeat && e.code === "KeyD" && e.ctrlKey) {
+        setDebugOverlay(v => !v);
+      }
     };
     const onKeyUp = (e: KeyboardEvent) => {
       keysRef.current.delete(e.code);
@@ -1034,7 +1158,6 @@ export default function App() {
     return () => { window.removeEventListener("keydown", onKeyDown); window.removeEventListener("keyup", onKeyUp); };
   }, [startGame, handleNuke, handleTimeSlow, handleToggleSound]);
 
-  // ─── Game loop (fixed 60 Hz simulation, independent from monitor refresh rate) ──
   useEffect(() => {
     const canvas = canvasRef.current!;
     const ctx = canvas.getContext("2d", { alpha: false })!;
@@ -1049,6 +1172,7 @@ export default function App() {
 
     function drawWorld(g: GameObjects, frame: number) {
       setRenderPerformanceTier(g.performanceTier);
+      setDisabledFeatures(qualityControllerRef.current.getState().disabled as any);
       if (PERF_DRAW_PROFILING) for (const key of Object.keys(perfDrawTimers)) perfDrawTimers[key] = 0;
       const stride = g.performanceTier === 0 ? 3 : g.performanceTier === 1 ? 2 : 1;
       perfTime("explosions", () => {
@@ -1078,17 +1202,12 @@ export default function App() {
         if (g.singularity) drawSingularity(ctx, g.singularity.pos, frame, 1 - g.singularity.timer / g.singularity.maxTimer);
         if (g.voidFractures.length > 0) drawVoidFractures(ctx, g.voidFractures, frame);
       });
-      // The Wraith's phase window tints the whole arena with void light.
       if (g.player.shipClass === "void_wraith" && g.player.ghostTimer > 0) {
         perfTime("vignette", () => drawVoidPhaseVignette(ctx, frame, g.player.ghostTimer / 120));
       }
       for (let i = frame % stride; i < g.floatingTexts.length; i += stride) drawFloatingText(ctx, g.floatingTexts[i]);
     }
 
-    // v1.8.0 анти-GC: объект StepInput и его 4 колбэка-замыкания создаются
-    // один раз на экземпляр игры, а не на каждый шаг симуляции (60/с × 5
-    // объектов = до 300 аллокаций/с раньше). frame/wave/timeSlow мутируются
-    // на переиспользуемом объекте.
     let stepInput: StepInput | null = null;
     let stepInputFor: GameObjects | null = null;
     function buildStepInput(g: GameObjects): StepInput {
@@ -1108,7 +1227,7 @@ export default function App() {
           audio.stopAmbientBGM();
           yandex.setGameplay(false);
           const hs = Math.max(g.player.score, hiscore);
-          try { localStorage.setItem("hs", String(hs)); } catch { /* storage may be blocked */ }
+          try { localStorage.setItem("hs", String(hs)); } catch { }
           setHiscore(hs);
           void yandex.saveHighScore(hs);
           finalizeRun(false);
@@ -1136,7 +1255,7 @@ export default function App() {
               audio.stopAmbientBGM();
               yandex.setGameplay(false);
               const hs = Math.max(g.player.score, hiscore);
-              try { localStorage.setItem("hs", String(hs)); } catch { /* optional */ }
+              try { localStorage.setItem("hs", String(hs)); } catch { }
               setHiscore(hs);
               void yandex.saveHighScore(hs);
               finalizeRun(true);
@@ -1163,12 +1282,33 @@ export default function App() {
       stepInput.wave = waveRef.current;
       stepInput.timeSlow = timeSlowRef.current;
       stepInput.frame = ++frameRef.current;
+      profilerRef.current.begin();
       stepGame(g, stepInput);
+      profilerRef.current.begin();
+      // simple profiler sample (we measure total via perf.now diff inside stepGame would be better, but approximate)
+      const now = performance.now();
+      const frameTime = now - frameTimeRef.current;
+      frameTimeRef.current = now;
+      // P0.1: frameTimeHistory push
+      if (g.frameTimeHistory.length > 300) g.frameTimeHistory.shift();
+      g.frameTimeHistory.push(frameTime);
+      fpsTrackerRef.current.addFrameTime(frameTime);
+      qualityControllerRef.current.addFrameTime(frameTime, now);
+      const qState = qualityControllerRef.current.update(now);
+      setQualityState(qState);
+      // Apply quality downgrade to performance tier if auto
+      if (g.performanceAuto) {
+        if (qState.disabled.has("shadows") && g.performanceTier > 0) {
+          g.performanceTier = 0;
+        } else if (qState.disabled.has("particles") && g.performanceTier > 1) {
+          g.performanceTier = 1;
+        }
+      }
+
       if (g.bossActive && g.enemies.length > 0) {
         g.boss = g.enemies.find(enemy => enemy.isBoss) || null;
         if (!g.boss) { g.bossActive = false; setBossActive(false); }
       }
-      // HUD at 6 Hz is responsive enough and avoids React work every few frames.
       if (++uiSyncCounter >= 10) { uiSyncCounter = 0; syncUI(); }
     }
 
@@ -1184,8 +1324,6 @@ export default function App() {
       const frame = Math.floor(timestamp / fixedStep);
       const currentPhase = phaseRef.current;
 
-      // Automatic quality controller: downgrade quickly under load, upgrade only
-      // after several healthy windows. It changes effects, never game speed.
       fpsFrames++;
       if (timestamp - fpsWindowStart >= 2000) {
         const fps = fpsFrames * 1000 / (timestamp - fpsWindowStart);
@@ -1206,12 +1344,10 @@ export default function App() {
         fpsWindowStart = timestamp;
       }
 
-      // ── Перф-замер кадра: симуляция отдельно, отрисовка отдельно ──
       const perfFrameStart = performance.now();
       const perfSimStart = performance.now();
       let perfSimMs = 0;
 
-      // Only active gameplay advances. Upgrade selection and pause now freeze combat.
       if (g && currentPhase === "playing") {
         while (steps-- > 0 && phaseRef.current === "playing") updateGame(g);
       } else if (currentPhase === "boss_intro") {
@@ -1233,15 +1369,13 @@ export default function App() {
       if (g?.guardEventActive) drawVoidEye(ctx, frame, g.player.pos);
       if (g) drawStars(ctx, g.stars);
 
-      if (!g || currentPhase === "menu" || currentPhase === "ship_select" || currentPhase === "dead") {
+      if (!g || currentPhase === "menu" || currentPhase === "ship_select" || currentPhase === "build_select" || currentPhase === "dead") {
         ctx.restore();
         return;
       }
 
       drawWorld(g, frame);
       if (import.meta.env.DEV || import.meta.env.VITE_PERF === "true") {
-        // sim фиксируем сразу после секции симуляции (она выше), draw — здесь.
-        // (perfSimMs выставлен сразу после while-цикла симуляции.)
         const perfCallbackMs = performance.now() - perfFrameStart;
         const drawMs = perfCallbackMs - perfSimMs;
         PERF_FRAME_HISTORY.push(Math.round(elapsed));
@@ -1263,9 +1397,6 @@ export default function App() {
           );
         }
       }
-      // Сердцебиение для watchdog-воркера: payload каждые 15 кадров,
-      // обычный beat — каждый кадр. Воркер заметит остановку > 3 c и сам
-      // пришлёт отчёт о зависании из отдельного потока.
       if (freezeBeatRef.current) {
         const beatPayload = frame % 15 === 0 && g ? {
           frame,
@@ -1303,16 +1434,13 @@ export default function App() {
     }
 
     rafRef.current = requestAnimationFrame(loop);
-    // Tell Yandex the game is visually ready now that the canvas and loop exist.
     yandex.markReady();
     return () => cancelAnimationFrame(rafRef.current);
   }, [advanceWave, handleLevelUp, hiscore, syncUI, bossName, finalizeRun]);
 
-  // ─── Mouse / Touch controls ───────────────────────────────────────────────
   const isMouseDownRef = useRef(false);
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     audio.resume();
-    // Right click = Dash
     if (e.button === 2) {
       if (gameRef.current && gameRef.current.player.dashCooldown <= 0) {
         keysRef.current.add("Shift");
@@ -1358,14 +1486,12 @@ export default function App() {
     touchRef.current = null;
   };
 
-  // Телеметрия админки живёт, пока панель открыта (2 Гц) — FPS/пулы/бюджеты.
   useEffect(() => {
     if (!adminOpen) return;
     const timer = window.setInterval(() => setAdminRefresh(v => v + 1), 500);
     return () => clearInterval(timer);
   }, [adminOpen]);
 
-  // ─── Development admin tools (excluded from the Yandex production build) ──
   const adminSetWave = useCallback((targetWave: number) => {
     const g = gameRef.current;
     if (!g) return;
@@ -1466,8 +1592,6 @@ export default function App() {
     syncUI();
   }, [syncUI]);
 
-  /** Полное МИФИК-событие: левел-ап с гарантированным мификом — чтобы
-   *  посмотреть анимацию выпадения карточки (вспышка, музыка, выбор). */
   const adminMythicLevelUp = useCallback(() => {
     const g = gameRef.current;
     if (!g) return;
@@ -1519,7 +1643,6 @@ export default function App() {
     syncUI();
   }, [syncUI]);
 
-  // ✦ QA-режим: все 6 мификов сразу (кап 2/забег игнорируется — только тут).
   const adminGiveAllMythics = useCallback(() => {
     const g = gameRef.current;
     if (!g) return;
@@ -1531,23 +1654,19 @@ export default function App() {
     syncUI();
   }, [syncUI]);
 
-  // ⚡ Все мифики — у порога срабатывания: события запустятся сами в первые
-  // секунды обычной игры (сверхновая, сингулярность, судный разряд,
-  // перегрузка, залп флота, конец материи) — визуальный тур за один забег.
   const adminChargeAllMythics = useCallback(() => {
     const g = gameRef.current;
     if (!g) return;
     const p = g.player;
-    p.novaCore = 99;          // следующее убийство → фитиль → СВЕРХНОВАЯ
-    p.collapseCharge = 49;    // следующее убийство → сингулярность
-    p.wrath = 9;              // следующий крит → Судный Разряд
-    p.overdriveCharge = 99.5; // пара кадров стрельбы → OVERDRIVE
-    p.fleetCharge = 99;       // следующий выстрел помощника → залп армады
-    p.entropy = 99;           // следующий бой → КОНЕЦ МАТЕРИИ
+    p.novaCore = 99;
+    p.collapseCharge = 49;
+    p.wrath = 9;
+    p.overdriveCharge = 99.5;
+    p.fleetCharge = 99;
+    p.entropy = 99;
     setAdminRefresh(v => v + 1);
   }, []);
 
-  // 🌊 Толпа смешанных врагов вокруг игрока (кольцами).
   const adminSpawnCrowd = useCallback((count: number) => {
     const g = gameRef.current;
     if (!g) return;
@@ -1568,7 +1687,6 @@ export default function App() {
     syncUI();
   }, [syncUI]);
 
-  // 👻 Комплект Немезиды: эксклюзивные синергии класса + полный запас душ.
   const adminWraithKit = useCallback(() => {
     const g = gameRef.current;
     if (!g) return;
@@ -1585,7 +1703,6 @@ export default function App() {
     syncUI();
   }, [syncUI]);
 
-  // 🧬 Все 7 эволюций: применяет требования и запускает каждую однократно.
   const adminTriggerAllEvolutions = useCallback(() => {
     const g = gameRef.current;
     if (!g) return;
@@ -1603,15 +1720,11 @@ export default function App() {
     syncUI();
   }, [syncUI]);
 
-  // ☠ РЕГРЕССИЯ v1.8.1: level-300 макс-билд × Чёрный кортеж — точный сценарий
-  // OOM «Фазового разряда». Пули в телеметрии должны остаться < 1000.
   const adminStressCortege300 = useCallback(() => {
     adminMaxBuild();
     adminSpawnCortege();
   }, [adminMaxBuild, adminSpawnCortege]);
 
-  // 🌊 АД ПЛОТНОСТИ: макс-билд (взрывы + цепная детонация) и 60 врагов —
-  // сценарий каскадных фризов v1.6.x, бюджеты частиц видны в телеметрии.
   const adminStressCrowd = useCallback(() => {
     adminMaxBuild();
     adminSpawnCrowd(60);
@@ -1641,7 +1754,7 @@ export default function App() {
   }, []);
 
   const playerStats = gameRef.current?.player.stats || {
-    damageDealt: 0, shotsFired: 0, shotsHit: 0, elitesKilled: 0, bossesKilled: 0, powerupsCollected: 0
+    damageDealt: 0, shotsFired: 0, shotsHit: 0, elitesKilled: 0, bossesKilled: 0, powerupsCollected: 0, damageBySource: {}, incomingDamage: 0, incomingByType: {}
   };
   const finalScore = gameRef.current?.player.score || 0;
   const finalWave  = waveRef.current;
@@ -1654,6 +1767,12 @@ export default function App() {
     setQualityMode(modes[(modes.indexOf(qualityMode) + 1) % modes.length]);
   };
 
+  const currentArchetypeDef = useMemo(() => selectedArchetype ? ARCHETYPES.find(a=>a.id===selectedArchetype) : undefined, [selectedArchetype]);
+  const adviceText = useMemo(() => {
+    if (!gameRef.current) return "";
+    return generateAdvice(gameRef.current.player, gameRef.current.player.deathCause, gameRef.current.player.stats.incomingByType);
+  }, [phase, finalWave]);
+
   return (
     <div className="flex min-h-[100dvh] w-screen items-center justify-center overflow-hidden bg-slate-950 font-sans">
       <div className="relative shrink-0" style={{ width: W * gameScale, height: H * gameScale }}>
@@ -1661,7 +1780,6 @@ export default function App() {
           className="absolute left-0 top-0 select-none overflow-hidden rounded-2xl shadow-2xl shadow-cyan-950/40 border border-slate-800"
           style={{ width: W, height: H, transform: `scale(${gameScale})`, transformOrigin: "top left" }}
         >
-        {/* Canvas */}
         <canvas
           ref={canvasRef}
           width={W}
@@ -1677,15 +1795,31 @@ export default function App() {
           onTouchEnd={handleTouchEnd}
         />
 
-        {/* Development-only admin panel */}
+        {/* Debug overlay P1.4 */}
+        {debugOverlay && gameRef.current && (
+          <div className="absolute top-3 left-3 z-40 rounded-lg border border-cyan-700 bg-black/85 p-2 font-mono text-[10px] text-cyan-200">
+            <div>FPS: {fpsRef.current} | p50: {fpsTrackerRef.current.getStats().p50} p1: {fpsTrackerRef.current.getStats().p1}</div>
+            <div>Quality: tier {qualityState.tier} disabled: {[...qualityState.disabled].join(",")||"none"} reason: {qualityState.reason}</div>
+            <div>Enemies: {gameRef.current.enemies.length}/{gameRef.current.maxEnemies} Bullets: {gameRef.current.bullets.length}/{gameRef.current.maxBullets}</div>
+            <div>Particles: {gameRef.current.particles.length}/{gameRef.current.maxParticles} XP: {gameRef.current.xpOrbs.length}</div>
+            <div>Power: {gameRef.current.powerRating.toFixed(0)} ×{gameRef.current.adaptiveDifficulty.toFixed(2)} Wave: {wave}</div>
+            <div>FrameTime p50: {qualityControllerRef.current.getRollingStats().p50.toFixed(1)}ms p1: {qualityControllerRef.current.getRollingStats().p1.toFixed(1)}ms</div>
+          </div>
+        )}
+
         {(import.meta.env.DEV || import.meta.env.VITE_PERF === "true") && (
           <div className="absolute bottom-3 left-3 z-50 font-mono text-[11px]">
-            <button
-              onClick={() => { setPerfText(getPerfLog()); setPerfOpen(true); }}
-              className="rounded-lg border border-cyan-400 bg-cyan-950/95 px-3 py-2 font-black text-cyan-100 shadow-lg cursor-pointer"
-            >
-              📊 PERF {PERF_LINES.length > 0 && <span className="text-amber-300">({PERF_LINES.length})</span>}
-            </button>
+            <div className="flex gap-1">
+              <button
+                onClick={() => { setPerfText(getPerfLog()); setPerfOpen(true); }}
+                className="rounded-lg border border-cyan-400 bg-cyan-950/95 px-3 py-2 font-black text-cyan-100 shadow-lg cursor-pointer"
+              >
+                📊 PERF {PERF_LINES.length > 0 && <span className="text-amber-300">({PERF_LINES.length})</span>}
+              </button>
+              <button onClick={() => setDebugOverlay(v=>!v)} className="rounded-lg border border-emerald-400 bg-emerald-950/95 px-2 py-2 font-black text-emerald-100 shadow-lg cursor-pointer">
+                🖥 FPS
+              </button>
+            </div>
             {perfOpen && (
               <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 p-6" onClick={() => setPerfOpen(false)}>
                 <div className="flex max-h-[80vh] w-full max-w-3xl flex-col gap-2 rounded-xl border border-cyan-700 bg-slate-950 p-4" onClick={e => e.stopPropagation()}>
@@ -1693,7 +1827,7 @@ export default function App() {
                     <span className="font-black text-cyan-200">ПЕРФ-ЛОГ · скопируй и пришли целиком</span>
                     <div className="flex gap-2">
                       <button
-                        onClick={async () => { try { await navigator.clipboard.writeText(perfText); } catch { /* iframe без прав — выделяем текст */ } }}
+                        onClick={async () => { try { await navigator.clipboard.writeText(perfText); } catch { } }}
                         className="rounded bg-cyan-700 px-3 py-1 font-black text-white cursor-pointer"
                       >📋 КОПИРОВАТЬ</button>
                       <button
@@ -1715,7 +1849,7 @@ export default function App() {
                     onFocus={e => e.currentTarget.select()}
                     className="h-[55vh] w-full resize-none rounded bg-slate-900 p-2 font-mono text-[10px] text-slate-300"
                   />
-                  <div className="text-[10px] text-slate-500">Логи и так автоматически уходят на dev-сервер при каждом медленном кадре и при зависании (watchdog) — этот экран просто для просмотра. Копирование может не работать в iframe: кликни по тексту (выделится всё) и Ctrl+C, либо скачай .txt.</div>
+                  <div className="text-[10px] text-slate-500">Логи и так автоматически уходят на dev-сервер при каждом медленном кадре и при зависании (watchdog) — этот экран просто для просмотра.</div>
                 </div>
               </div>
             )}
@@ -1731,49 +1865,68 @@ export default function App() {
               🛠 ADMIN {adminOpen ? "−" : "+"}
             </button>
             {adminOpen && (
-              <div className="mt-2 max-h-[680px] w-72 overflow-y-auto rounded-xl border border-fuchsia-700 bg-slate-950/95 p-3 text-slate-200 shadow-2xl backdrop-blur-md">
+              <div className="mt-2 max-h-[680px] w-80 overflow-y-auto rounded-xl border border-fuchsia-700 bg-slate-950/95 p-3 text-slate-200 shadow-2xl backdrop-blur-md">
                 <div className="mb-2 text-[10px] text-fuchsia-300">ТЕСТОВАЯ СБОРКА · НЕ ДЛЯ РЕЛИЗА</div>
                 {!gameRef.current ? (
-                  <button onClick={() => startGame(selectedClass)} className="admin-button bg-emerald-700">БЫСТРЫЙ СТАРТ</button>
+                  <button onClick={() => startGame(selectedClass)} className="admin-button bg-emerald-700 w-full rounded py-2 font-bold">БЫСТРЫЙ СТАРТ</button>
                 ) : (
                   <>
                     <div className="mb-2 rounded bg-slate-900 p-2 text-[10px] text-cyan-300">
                       СИЛА: {gameRef.current.powerRating} · ×{gameRef.current.adaptiveDifficulty.toFixed(2)} · FPS: {fpsRef.current}<br/>
-                      УРОВЕНЬ: {gameRef.current.player.level} · КАЧЕСТВО: {gameRef.current.performanceTier}<br/>
-                      ВРАГИ: {gameRef.current.enemies.length} · ПУЛИ: <span className={gameRef.current.bullets.length > 1000 ? "font-black text-rose-400" : ""}>{gameRef.current.bullets.length}</span><br/>
+                      УРОВЕНЬ: {gameRef.current.player.level} · КАЧЕСТВО: {gameRef.current.performanceTier} · QC: {qualityState.tier} [{[...qualityState.disabled].join(",")}]<br/>
+                      ВРАГИ: {gameRef.current.enemies.length}/{gameRef.current.maxEnemies} · ПУЛИ: <span className={gameRef.current.bullets.length > 1000 ? "font-black text-rose-400" : ""}>{gameRef.current.bullets.length}/{gameRef.current.maxBullets}</span><br/>
                       ЧАСТИЦЫ: {particleDebugStats().active}/{particleDebugStats().budget} · ПУЛ: {particleDebugStats().pooled} · +{particleDebugStats().spawnedThisFrame}/кадр<br/>
                       ПУЛЫ п/т/с/м: {Object.values(objectPoolStats()).join("/")}
                       {gameRef.current.bullets.length > 1000 && <div className="mt-1 font-black text-rose-400">⚠ ЦЕПНАЯ РЕАКЦИЯ ПУЛЬ — регрессия v1.8.1!</div>}
                     </div>
 
-                    <div className="mt-2 text-[9px] font-black tracking-widest text-fuchsia-300">ИГРОК И БИЛД</div>
-                    <button onClick={adminToggleGod} className={`admin-button ${adminGod ? "bg-emerald-700" : "bg-slate-700"}`}>БЕССМЕРТИЕ: {adminGod ? "ВКЛ" : "ВЫКЛ"}</button>
-                    <button onClick={adminLevelUp} className="admin-button bg-indigo-700">+1 УРОВЕНЬ / ВЫБОР</button>
-                    <button onClick={() => { for (let i = 0; i < 5; i++) adminLevelUp(); }} className="admin-button bg-indigo-800">+5 УРОВНЕЙ</button>
-                    <button onClick={adminGiveLegendary} className="admin-button bg-amber-700">+ СЛУЧАЙНОЕ ЛЕГЕНД.</button>
-                    <button onClick={adminGiveMythic} className="admin-button bg-gradient-to-r from-amber-500 to-yellow-400 text-black">✦ ДАТЬ МИФИК ({ownedMythicCount(gameRef.current?.player ?? { upgrades: [] } as never)}/{MAX_MYTHIC_PER_RUN})</button>
-                    <button onClick={adminMythicLevelUp} className="admin-button bg-gradient-to-r from-yellow-400 via-amber-300 to-yellow-400 text-black animate-pulse">✦ ЛЕВЕЛ С МИФИКОМ (показать событие)</button>
-                    <button onClick={adminCompleteSynergies} className="admin-button bg-fuchsia-800">ВСЕ 4 СИНЕРГИИ</button>
-                    <button onClick={adminMaxBuild} className="admin-button bg-red-800">МАКС. БИЛД · LVL 300</button>
-                    <button onClick={() => { const g = gameRef.current; if (g) { g.player.hp = 1; if (g.player.shield) g.player.shield.hp = 0; setAdminRefresh(v => v + 1); } }} className="admin-button bg-rose-950">HP = 1</button>
-                    <button onClick={() => { const g = gameRef.current; if (g) { g.player.hp = g.player.maxHp; if (g.player.shield) g.player.shield.hp = g.player.shield.maxHp; setAdminRefresh(v => v + 1); } }} className="admin-button bg-emerald-800">ПОЛНОЕ ЛЕЧЕНИЕ</button>
+                    <div className="mt-2 flex gap-1">
+                      <button onClick={() => setShowBalance(v=>!v)} className="rounded bg-cyan-800 px-2 py-1 font-bold hover:bg-cyan-600">📊 БАЛАНС</button>
+                      <button onClick={() => setShowTelemetry(v=>!v)} className="rounded bg-indigo-800 px-2 py-1 font-bold hover:bg-indigo-600">📈 ТЕЛЕМЕТРИЯ</button>
+                      <button onClick={() => { const txt = exportTelemetryJson(); const blob = new Blob([txt], {type:"application/json"}); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href=url; a.download="telemetry.json"; a.click(); URL.revokeObjectURL(url); }} className="rounded bg-slate-700 px-2 py-1 font-bold">💾 JSON</button>
+                    </div>
 
-                    <div className="mt-2 text-[9px] font-black tracking-widest text-emerald-300">⚡ МАССОВАЯ ПРОВЕРКА (всё сразу)</div>
-                    <button onClick={adminStressCortege300} className="admin-button bg-gradient-to-r from-purple-900 to-rose-900">☠ LVL 300 × ЧЁРНЫЙ КОРТЕЖ (регрессия OOM)</button>
-                    <button onClick={adminStressCrowd} className="admin-button bg-gradient-to-r from-orange-900 to-red-900">🌊 АД ПЛОТНОСТИ · МАКС-БИЛД + 60 ВРАГОВ</button>
-                    <button onClick={adminChargeAllMythics} className="admin-button bg-gradient-to-r from-amber-600 to-yellow-400 text-black">⚡ ЗАРЯДИТЬ ВСЕ МИФИКИ У ПОРОГА</button>
-                    <button onClick={adminGiveAllMythics} className="admin-button bg-gradient-to-r from-amber-500 to-yellow-400 text-black">✦ ВСЕ 6 МИФИКОВ СРАЗУ</button>
-                    <button onClick={adminTriggerAllEvolutions} className="admin-button bg-emerald-800">🧬 ВСЕ 7 ЭВОЛЮЦИЙ</button>
-                    <button onClick={adminWraithKit} className="admin-button bg-fuchsia-900">👻 КОМПЛЕКТ НЕМЕЗИДЫ (синергии + 20 душ)</button>
+                    {showBalance && (
+                      <div className="mt-2 rounded bg-slate-900 p-2 text-[9px]">
+                        <div className="font-black text-cyan-300 mb-1">Баланс: {balanceStats.totalRuns} забегов · win { (balanceStats.winRate*100).toFixed(1)}% · avg wave {balanceStats.avgWave.toFixed(1)}</div>
+                        <div className="mb-1">Корабли:</div>
+                        {Object.entries(balanceStats.winRateByShip).map(([k,v])=> <div key={k}>{k}: {v.wins}/{v.total} ({(v.rate*100).toFixed(0)}%)</div>)}
+                        <div className="mt-1 mb-1">Топ пики:</div>
+                        {Object.entries(balanceStats.pickRateByUpgrade).sort((a,b)=>b[1].rate-a[1].rate).slice(0,8).map(([k,v])=> <div key={k}>{k}: {(v.rate*100).toFixed(0)}% avg wave {v.avgDeathWave.toFixed(1)}</div>)}
+                      </div>
+                    )}
+                    {showTelemetry && (
+                      <div className="mt-2 rounded bg-slate-900 p-2 text-[9px] max-h-40 overflow-y-auto">
+                        {telemetryRuns.slice(0,5).map((r,i)=><div key={i} className="mb-1 border-b border-slate-800 pb-1">[{new Date(r.timestamp).toLocaleTimeString()}] {r.shipClass} {r.buildArchetype} W{r.wave} {r.victory?"WIN":"DEATH"} FPS p50:{r.fps.p50} p1:{r.fps.p1} maxE:{r.maxEntities.enemies}</div>)}
+                      </div>
+                    )}
+
+                    <div className="mt-2 text-[9px] font-black tracking-widest text-fuchsia-300">ИГРОК И БИЛД</div>
+                    <button onClick={adminToggleGod} className={`admin-button w-full rounded py-1 font-bold mt-1 ${adminGod ? "bg-emerald-700" : "bg-slate-700"}`}>БЕССМЕРТИЕ: {adminGod ? "ВКЛ" : "ВЫКЛ"}</button>
+                    <button onClick={adminLevelUp} className="admin-button w-full rounded py-1 bg-indigo-700 mt-1">+1 УРОВЕНЬ / ВЫБОР</button>
+                    <button onClick={() => { for (let i = 0; i < 5; i++) adminLevelUp(); }} className="admin-button w-full rounded py-1 bg-indigo-800 mt-1">+5 УРОВНЕЙ</button>
+                    <button onClick={adminGiveLegendary} className="admin-button w-full rounded py-1 bg-amber-700 mt-1">+ СЛУЧАЙНОЕ ЛЕГЕНД.</button>
+                    <button onClick={adminGiveMythic} className="admin-button w-full rounded py-1 bg-gradient-to-r from-amber-500 to-yellow-400 text-black mt-1">✦ ДАТЬ МИФИК ({ownedMythicCount(gameRef.current?.player ?? { upgrades: [] } as never)}/{MAX_MYTHIC_PER_RUN})</button>
+                    <button onClick={adminMythicLevelUp} className="admin-button w-full rounded py-1 bg-gradient-to-r from-yellow-400 via-amber-300 to-yellow-400 text-black animate-pulse mt-1">✦ ЛЕВЕЛ С МИФИКОМ</button>
+                    <button onClick={adminCompleteSynergies} className="admin-button w-full rounded py-1 bg-fuchsia-800 mt-1">ВСЕ 4 СИНЕРГИИ</button>
+                    <button onClick={adminMaxBuild} className="admin-button w-full rounded py-1 bg-red-800 mt-1">МАКС. БИЛД · LVL 300</button>
+
+                    <div className="mt-2 text-[9px] font-black tracking-widest text-emerald-300">⚡ МАССОВАЯ ПРОВЕРКА</div>
+                    <button onClick={adminStressCortege300} className="admin-button w-full rounded py-1 bg-gradient-to-r from-purple-900 to-rose-900 mt-1">☠ LVL 300 × ЧЁРНЫЙ КОРТЕЖ</button>
+                    <button onClick={adminStressCrowd} className="admin-button w-full rounded py-1 bg-gradient-to-r from-orange-900 to-red-900 mt-1">🌊 АД ПЛОТНОСТИ · МАКС-БИЛД + 60</button>
+                    <button onClick={adminChargeAllMythics} className="admin-button w-full rounded py-1 bg-gradient-to-r from-amber-600 to-yellow-400 text-black mt-1">⚡ ЗАРЯДИТЬ ВСЕ МИФИКИ</button>
+                    <button onClick={adminGiveAllMythics} className="admin-button w-full rounded py-1 bg-gradient-to-r from-amber-500 to-yellow-400 text-black mt-1">✦ ВСЕ 6 МИФИКОВ СРАЗУ</button>
+                    <button onClick={adminTriggerAllEvolutions} className="admin-button w-full rounded py-1 bg-emerald-800 mt-1">🧬 ВСЕ 7 ЭВОЛЮЦИЙ</button>
+                    <button onClick={adminWraithKit} className="admin-button w-full rounded py-1 bg-fuchsia-900 mt-1">👻 КОМПЛЕКТ НЕМЕЗИДЫ</button>
 
                     <div className="mt-2 text-[9px] font-black tracking-widest text-fuchsia-300">СОБЫТИЯ И БОССЫ</div>
-                    <button onClick={adminSpawnCortege} className="admin-button bg-purple-900">👁 ПРИЗВАТЬ ЧЁРНЫЙ КОРТЕЖ</button>
-                    <button onClick={() => adminSetWave(50)} className="admin-button bg-red-950">Ω ПРИЗВАТЬ ОМЕГУ</button>
+                    <button onClick={adminSpawnCortege} className="admin-button w-full rounded py-1 bg-purple-900 mt-1">👁 ПРИЗВАТЬ ЧЁРНЫЙ КОРТЕЖ</button>
+                    <button onClick={() => adminSetWave(50)} className="admin-button w-full rounded py-1 bg-red-950 mt-1">Ω ПРИЗВАТЬ ОМЕГУ</button>
                     <div className="mt-1 grid grid-cols-3 gap-1">
                       {[0.74, 0.49, 0.24].map((ratio, index) => <button key={ratio} onClick={() => adminBossHp(ratio)} className="rounded bg-orange-900 px-1 py-1.5 font-bold hover:bg-orange-700 cursor-pointer">Ф{index + 2}</button>)}
                     </div>
-                    <button onClick={() => { const g = gameRef.current; if (g) g.enemies.forEach(enemy => { enemy.shieldHp = 0; enemy.hp = 0; }); }} className="admin-button bg-rose-800">УНИЧТОЖИТЬ ВСЕХ</button>
-                    <button onClick={() => { const g = gameRef.current; if (g) g.bullets = g.bullets.filter(b => b.fromPlayer); }} className="admin-button bg-cyan-800">ОЧИСТИТЬ ВРАЖ. ПУЛИ</button>
+                    <button onClick={() => { const g = gameRef.current; if (g) g.enemies.forEach(enemy => { enemy.shieldHp = 0; enemy.hp = 0; }); }} className="admin-button w-full rounded py-1 bg-rose-800 mt-1">УНИЧТОЖИТЬ ВСЕХ</button>
+                    <button onClick={() => { const g = gameRef.current; if (g) g.bullets = g.bullets.filter(b => b.fromPlayer); }} className="admin-button w-full rounded py-1 bg-cyan-800 mt-1">ОЧИСТИТЬ ВРАЖ. ПУЛИ</button>
                     <div className="mt-1 grid grid-cols-3 gap-1">
                       {[10, 30, 60].map(count => (
                         <button key={count} onClick={() => adminSpawnCrowd(count)} className="rounded bg-teal-900 px-1 py-1.5 font-bold hover:bg-teal-700 cursor-pointer"> ТОЛПА ×{count}</button>
@@ -1781,7 +1934,7 @@ export default function App() {
                     </div>
 
                     <div className="mt-2 text-[9px] font-black tracking-widest text-fuchsia-300">КАЧЕСТВО РЕНДЕРА</div>
-                    <div className="grid grid-cols-3 gap-1">
+                    <div className="grid grid-cols-3 gap-1 mt-1">
                       {([0, 1, 2] as const).map(tier => <button key={tier} onClick={() => adminSetQuality(tier)} className="rounded bg-slate-700 px-1 py-1.5 font-bold hover:bg-slate-600 cursor-pointer">Q{tier}</button>)}
                     </div>
 
@@ -1791,6 +1944,15 @@ export default function App() {
                         <button key={target} onClick={() => adminSetWave(target)} className="rounded bg-rose-900 px-1 py-1.5 font-bold hover:bg-rose-700 cursor-pointer">В{target}</button>
                       ))}
                     </div>
+
+                    <div className="mt-2 text-[9px] font-black tracking-widest text-cyan-300">META MIGRATION</div>
+                    <div className="mt-1 rounded bg-slate-900 p-1 text-[9px]">
+                      <div>Backup: {getBackupInfo().exists ? "есть" : "нет"} {getBackupInfo().timestamp ? new Date(getBackupInfo().timestamp!).toLocaleString() : ""}</div>
+                      <div className="flex gap-1 mt-1">
+                        <button onClick={() => { const txt = exportMeta(); const blob = new Blob([txt], {type:"application/json"}); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href=url; a.download="meta_export.json"; a.click(); URL.revokeObjectURL(url); }} className="rounded bg-slate-700 px-2 py-1">Экспорт</button>
+                        <button onClick={() => { const r = restoreBackup(); if(r) setMeta(normalizeMetaState(r as any)); }} className="rounded bg-amber-800 px-2 py-1">Восстановить бэкап</button>
+                      </div>
+                    </div>
                   </>
                 )}
               </div>
@@ -1798,7 +1960,6 @@ export default function App() {
           </div>
         )}
 
-        {/* Audio Mute Button */}
         <button
           onClick={handleToggleSound}
           className="absolute top-3 right-3 px-3 py-1.5 bg-slate-900/80 hover:bg-slate-800 border border-slate-700 text-slate-300 rounded-lg text-xs font-mono font-bold z-30 transition-all cursor-pointer backdrop-blur-sm"
@@ -1807,14 +1968,12 @@ export default function App() {
           {isMuted ? "🔇 ЗВУК: ВЫКЛ" : "🔊 ЗВУК: ВКЛ"}
         </button>
 
-        {/* Wave Banner Notification */}
         {waveNotice && (
           <div className="absolute top-20 left-1/2 -translate-x-1/2 px-6 py-2 bg-emerald-900/90 border border-emerald-400 text-emerald-100 font-mono text-sm font-black rounded-full shadow-xl shadow-emerald-950/60 backdrop-blur-sm z-20 animate-bounce">
             ✨ {waveNotice} ✨
           </div>
         )}
 
-        {/* HUD */}
         {(phase === "playing" || phase === "upgrade" || phase === "boss_intro") && gameRef.current && (
           <HUD
             player={gameRef.current.player}
@@ -1829,8 +1988,6 @@ export default function App() {
           />
         )}
 
-        {/* Upgrade panel */}
-        {/* ✦ МИФИЧЕСКОЕ СОБЫТИЕ: специальная последовательность вместо карточек */}
         {phase === "upgrade" && pendingMythic && gameRef.current && (
           <MythicReveal
             mythic={pendingMythic}
@@ -1856,10 +2013,10 @@ export default function App() {
             onDecline={() => {
               const g = gameRef.current;
               if (!g) return;
-              // Отказ: показать обычную панель этого уровня.
-              const choices = rollPremiumUpgradeChoices(g.player, 3, [...banishedUpgradeIdsRef.current]);
-              upgradeChoicesRef.current = choices;
-              setUpgradeChoices(choices);
+              const choices = rollWeightedUpgrades(g.player, 3, [...banishedUpgradeIdsRef.current], selectedArchetypeRef.current);
+              const finalChoices = choices.length >=2 ? choices : rollPremiumUpgradeChoices(g.player, 3, [...banishedUpgradeIdsRef.current]);
+              upgradeChoicesRef.current = finalChoices;
+              setUpgradeChoices(finalChoices);
               setBonusChoiceUsed(false);
               pendingMythicDefRef.current = null;
               setPendingMythic(null);
@@ -1868,7 +2025,6 @@ export default function App() {
           />
         )}
 
-        {/* ✦ MYTHIC ACQUIRED: краткий баннер с названием и описанием силы */}
         {mythicBanner && (
           <div className="pointer-events-none absolute left-1/2 top-1/4 z-50 w-[560px] max-w-[90vw] -translate-x-1/2 text-center" style={{ animation: "mythicBanner 4.2s ease-out forwards" }}>
             <div className="rounded-2xl border-2 border-amber-300/80 bg-black/90 px-8 py-5 shadow-[0_0_40px_rgba(253,224,71,0.45)]">
@@ -1898,38 +2054,86 @@ export default function App() {
           />
         )}
 
-        {/* Route choice between waves */}
+        {/* Build Select Phase P1.1 */}
+        {phase === "build_select" && (
+          <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/92 p-6 backdrop-blur-md overflow-y-auto">
+            <div className="mb-1 text-xs font-black tracking-[0.3em] text-cyan-400">ПЛАН БИЛДА</div>
+            <h2 className="mb-1 text-3xl font-black text-white">ВЫБЕРИТЕ АРХЕТИП</h2>
+            <p className="mb-4 text-xs text-slate-400 text-center max-w-xl">Архетип подсвечивает связанные карты и повышает шанс собрать синергию. Не гарантирует мифик/легендарку. После 6 уровня — усиленный вес недостающих синергий.</p>
+            <div className="grid w-full max-w-4xl grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {ARCHETYPES.filter(a=>archetypeChoices.includes(a.id)).map(arch => {
+                const isSelected = selectedArchetype === arch.id;
+                return (
+                  <button key={arch.id} onClick={() => setSelectedArchetype(arch.id)} className={`group rounded-2xl border-2 p-4 text-left transition-all hover:scale-[1.02] cursor-pointer ${isSelected ? "border-cyan-400 bg-slate-900 scale-[1.02] shadow-xl" : "border-slate-700 bg-slate-900/70 hover:border-slate-600"}`} style={{ borderColor: isSelected ? arch.color : undefined }}>
+                    <div className="mb-2 flex items-center gap-2">
+                      <div className="text-3xl">{arch.icon}</div>
+                      <div className="font-black text-white" style={{ color: isSelected ? arch.color : undefined }}>{arch.name}</div>
+                    </div>
+                    <div className="mb-2 text-[11px] text-slate-400 leading-snug">{arch.description}</div>
+                    <div className="mb-1 text-[10px] font-mono text-slate-500">Карт: {arch.upgrades.length} · Синергий: {arch.synergies.length}</div>
+                    <div className="flex flex-wrap gap-1">
+                      {arch.upgrades.slice(0,6).map(id=> <span key={id} className="rounded bg-slate-800 px-1 py-0.5 text-[9px] text-slate-300">{id}</span>)}
+                      {arch.upgrades.length>6 && <span className="text-[9px] text-slate-500">+{arch.upgrades.length-6}</span>}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="mt-4 flex gap-3">
+              <button onClick={() => { phaseRef.current = "ship_select"; setPhase("ship_select"); }} className="rounded-full bg-slate-800 px-6 py-2.5 text-sm font-bold text-slate-300 hover:bg-slate-700 cursor-pointer">НАЗАД</button>
+              <button disabled={!selectedArchetype} onClick={() => selectedArchetype && handleChooseArchetype(selectedArchetype)} className="rounded-full bg-gradient-to-r from-cyan-500 to-indigo-600 px-10 py-3 font-black text-white disabled:opacity-40 hover:brightness-110 cursor-pointer">
+                В БОЙ С АРХЕТИПОМ {currentArchetypeDef ? currentArchetypeDef.icon : ""} 🚀
+              </button>
+              <button onClick={() => handleChooseArchetype("barrage")} className="rounded-full bg-slate-700 px-4 py-2.5 text-xs font-bold text-slate-400 hover:bg-slate-600 cursor-pointer">Пропустить</button>
+            </div>
+          </div>
+        )}
+
+        {/* Route choice with transparency P1.3 */}
         {phase === "route" && gameRef.current && (
-          <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/88 p-6 backdrop-blur-md">
+          <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/88 p-4 backdrop-blur-md overflow-y-auto">
             <div className="mb-1 text-xs font-black tracking-[0.3em] text-cyan-400">МАРШРУТ СЛЕДУЮЩЕЙ ВОЛНЫ</div>
-            <h2 className="mb-2 text-4xl font-black text-white">КУДА ДАЛЬШЕ?</h2>
-            <p className="mb-6 text-sm text-slate-400">Выберите риск. Решение действует одну волну.</p>
-            <div className="grid w-full max-w-4xl grid-cols-3 gap-4">
+            <h2 className="mb-1 text-3xl font-black text-white">КУДА ДАЛЬШЕ?</h2>
+            <p className="mb-3 text-xs text-slate-400">Выберите риск. Решение действует одну волну. Адаптивная сложность ×{gameRef.current.adaptiveDifficulty.toFixed(2)} сила {gameRef.current.powerRating}</p>
+            <div className="grid w-full max-w-5xl grid-cols-1 sm:grid-cols-3 gap-3">
               {ROUTES.map(route => (
-                <button key={route.id} onClick={() => handleChooseRoute(route.id)} className="group rounded-2xl border-2 border-slate-700 bg-gradient-to-b from-slate-800 to-slate-950 p-5 text-left transition-all hover:scale-105 hover:border-cyan-400 cursor-pointer">
-                  <div className="mb-3 text-4xl">{route.icon}</div>
-                  <div className="mb-2 text-lg font-black text-white">{route.name}</div>
-                  <div className="mb-4 min-h-10 text-xs text-slate-400">{route.description}</div>
-                  <div className="mb-1 rounded bg-red-950/70 px-3 py-2 text-xs font-bold text-red-300">⚠ {route.risk}</div>
-                  <div className="rounded bg-emerald-950/70 px-3 py-2 text-xs font-bold text-emerald-300">✦ {route.reward}</div>
+                <button key={route.id} onClick={() => handleChooseRoute(route.id)} className="group rounded-2xl border-2 border-slate-700 bg-gradient-to-b from-slate-800 to-slate-950 p-4 text-left transition-all hover:scale-[1.02] hover:border-cyan-400 cursor-pointer">
+                  <div className="mb-2 flex items-center gap-2">
+                    <div className="text-3xl">{route.icon}</div>
+                    <div className="text-[13px] font-black text-white leading-tight">{route.name}</div>
+                  </div>
+                  <div className="mb-2 min-h-8 text-[11px] text-slate-400 leading-snug">{route.description}</div>
+                  <div className="space-y-1 text-[10px] font-mono">
+                    <div className="rounded bg-slate-900/80 px-2 py-1 flex justify-between"><span>Врагов:</span><span className={route.enemyMul>1?"text-red-300":"text-emerald-300"}>{route.enemyMul>1?`+${((route.enemyMul-1)*100).toFixed(0)}%`:`${((route.enemyMul-1)*100).toFixed(0)}%`} ×{route.enemyMul}</span></div>
+                    <div className="rounded bg-slate-900/80 px-2 py-1 flex justify-between"><span>Элиты:</span><span className="text-amber-300">{(route.eliteChance*100).toFixed(0)}%</span></div>
+                    <div className="rounded bg-slate-900/80 px-2 py-1 flex justify-between"><span>XP множ:</span><span className="text-cyan-300">×{route.xpMul}</span></div>
+                    <div className="rounded bg-slate-900/80 px-2 py-1 flex justify-between"><span>Очки множ:</span><span className="text-fuchsia-300">×{route.scoreMul}</span></div>
+                    <div className="rounded bg-slate-900/80 px-2 py-1"><span className="text-slate-500">Правило:</span> <span className="text-white">{route.rule}</span></div>
+                    <div className="rounded bg-slate-900/80 px-2 py-1 flex justify-between"><span>Адаптив:</span><span className="text-white">×{route.adaptiveMul} → ×{(gameRef.current!.adaptiveDifficulty * route.adaptiveMul).toFixed(2)}</span></div>
+                  </div>
+                  <div className="mt-2 flex gap-1">
+                    <div className="rounded bg-red-950/70 px-2 py-1 text-[10px] font-bold text-red-300 flex-1">⚠ {route.risk}</div>
+                    <div className="rounded bg-emerald-950/70 px-2 py-1 text-[10px] font-bold text-emerald-300 flex-1">✦ {route.reward}</div>
+                  </div>
                 </button>
               ))}
             </div>
             {merchantRollRef.current.available && (
-              <div className="mt-5 w-full max-w-4xl rounded-2xl border border-fuchsia-700 bg-fuchsia-950/30 p-4">
+              <div className="mt-4 w-full max-w-5xl rounded-2xl border border-fuchsia-700 bg-fuchsia-950/30 p-3">
                 <div className="mb-2 flex items-center justify-between">
-                  <span className="font-black text-fuchsia-200">🛒 ТОРГОВЕЦ ОСКОЛКОВ</span>
+                  <span className="font-black text-fuchsia-200 text-sm">🛒 ТОРГОВЕЦ ОСКОЛКОВ</span>
                   <span className="font-mono text-xs text-fuchsia-300">✨ {meta.shards.toLocaleString()} доступно</span>
                 </div>
-                <p className="mb-3 text-xs text-slate-400">Потратьте постоянные осколки на временный бонус этого забега. Риск: валюта тратится даже при гибели.</p>
+                <p className="mb-2 text-[11px] text-slate-400">Потратьте постоянные осколки на временный бонус этого забега. Риск: валюта тратится даже при гибели.</p>
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                   {MERCHANT_BUFFS.map(buff => {
                     const bought = merchantRollRef.current.bought.has(buff.id);
                     const afford = meta.shards >= buff.cost;
                     return (
                       <button key={buff.id} onClick={() => handleBuyMerchant(buff.id)} disabled={bought || !afford} className={`rounded-xl border p-2 text-left transition ${bought?"border-emerald-700 bg-emerald-950/50 opacity-60":afford?"border-fuchsia-600 bg-slate-900/70 hover:border-fuchsia-400 cursor-pointer":"border-slate-800 bg-slate-950/50 opacity-50 cursor-not-allowed"}`}>
-                        <div className="text-xl">{buff.icon}</div>
+                        <div className="text-lg">{buff.icon}</div>
                         <div className="text-[11px] font-black text-white leading-tight">{buff.name}</div>
+                        <div className="text-[9px] text-slate-400">{buff.desc}</div>
                         <div className="text-[9px] text-fuchsia-300 font-mono">✨ {buff.cost}</div>
                       </button>
                     );
@@ -1958,39 +2162,39 @@ export default function App() {
           </div>
         )}
 
-        {/* First-run tutorial: simulation is paused until confirmation. */}
         {phase === "tutorial" && (
           <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/92 p-6 backdrop-blur-md">
             <div className="w-full max-w-2xl rounded-3xl border border-cyan-700 bg-slate-950/95 p-7 text-center shadow-2xl shadow-cyan-950">
               <div className="mb-2 text-5xl">🚀</div>
               <h2 className="mb-2 text-3xl font-black text-white">ПЕРЕД ВЫЛЕТОМ</h2>
-              <p className="mb-5 text-sm text-slate-400">Орудия стреляют автоматически. Ваша задача — двигаться, уклоняться и собирать опыт.</p>
+              <p className="mb-5 text-sm text-slate-400">Орудия стреляют автоматически. Ваша задача — двигаться, уклоняться и собирать опыт. Выбранный архетип {currentArchetypeDef?.icon} {currentArchetypeDef?.name} подсветит нужные карты.</p>
               <div className="mb-6 grid grid-cols-2 gap-3 text-left font-mono text-sm">
                 <div className="rounded-xl bg-slate-900 p-3"><b className="text-cyan-300">WASD / СВАЙП</b><br/><span className="text-slate-400">Движение корабля</span></div>
                 <div className="rounded-xl bg-slate-900 p-3"><b className="text-indigo-300">SHIFT</b><br/><span className="text-slate-400">Рывок и очистка пуль</span></div>
                 <div className="rounded-xl bg-slate-900 p-3"><b className="text-red-300">X</b><br/><span className="text-slate-400">Ядерный заряд</span></div>
                 <div className="rounded-xl bg-slate-900 p-3"><b className="text-cyan-300">C</b><br/><span className="text-slate-400">Замедление времени</span></div>
               </div>
-              <button onClick={() => { try { localStorage.setItem("tutorial_complete", "1"); } catch { /* optional */ } audio.resume(); phaseRef.current = "playing"; setPhase("playing"); }} className="rounded-full bg-gradient-to-r from-cyan-500 to-indigo-600 px-12 py-3.5 text-lg font-black text-white hover:brightness-110 cursor-pointer">
+              <button onClick={() => { try { localStorage.setItem("tutorial_complete", "1"); } catch { } audio.resume(); phaseRef.current = "playing"; setPhase("playing"); }} className="rounded-full bg-gradient-to-r from-cyan-500 to-indigo-600 px-12 py-3.5 text-lg font-black text-white hover:brightness-110 cursor-pointer">
                 ПОНЯТНО — В БОЙ
               </button>
             </div>
           </div>
         )}
 
-        {/* Paused overlay */}
         {phase === "paused" && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/85 backdrop-blur-md z-30">
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/85 backdrop-blur-md z-30 p-4">
             <div className="text-6xl font-black text-white mb-2">⏸</div>
-            <h2 className="text-4xl font-black text-white mb-6">ПАУЗА</h2>
-            <div className="text-slate-300 font-mono text-sm mb-6 space-y-1.5 text-center bg-slate-900/80 p-5 rounded-2xl border border-slate-700">
+            <h2 className="text-4xl font-black text-white mb-4">ПАУЗА</h2>
+            <div className="text-slate-300 font-mono text-sm mb-4 space-y-1.5 text-center bg-slate-900/80 p-4 rounded-2xl border border-slate-700 max-w-md">
               <p>Управление: <span className="text-sky-400 font-bold">WASD / Стрелки / Зажатие Мыши</span></p>
               <p>Тактический рывок: <span className="text-indigo-400 font-bold">Shift / Правый клик мыши</span></p>
               <p>Оружие: <span className="text-emerald-400 font-bold">Авто-огонь с доводкой до цели</span></p>
               <p>Ядерный заряд: <span className="text-red-400 font-bold">X</span> | Замедление времени: <span className="text-cyan-400 font-bold">C</span> | Звук: <span className="text-yellow-400 font-bold">M</span></p>
+              <p>Архетип: <span className="text-cyan-300 font-bold">{currentArchetypeDef?.icon} {currentArchetypeDef?.name ?? "—"}</span></p>
             </div>
-            <div className="mb-3 flex items-center gap-3 rounded-xl border border-slate-700 bg-slate-950/85 p-2 font-mono text-[10px]">
-              <button onClick={cycleQuality} className="rounded border border-cyan-800 bg-cyan-950 px-3 py-2 font-black text-cyan-200 cursor-pointer">⚙ {qualityLabels[qualityMode]}</button>
+            <div className="mb-3 flex flex-wrap items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-950/85 p-2 font-mono text-[10px]">
+              <button onClick={cycleQuality} className="rounded border border-cyan-800 bg-cyan-950 px-3 py-2 font-black text-cyan-200 cursor-pointer">⚙ {qualityLabels[qualityMode]} QC:{qualityState.tier}</button>
+              <button onClick={() => setDebugOverlay(v=>!v)} className="rounded border border-emerald-800 bg-emerald-950 px-3 py-2 font-black text-emerald-200 cursor-pointer">🖥 DEBUG {debugOverlay?"ВКЛ":"ВЫКЛ"}</button>
               <label className="text-slate-400">🎵 {musicVolume}% <input aria-label="Громкость музыки" type="range" min="0" max="100" step="5" value={musicVolume} onChange={event => setMusicVolume(Number(event.target.value))} className="w-20 align-middle accent-fuchsia-500" /></label>
               <label className="text-slate-400">💥 {sfxVolume}% <input aria-label="Громкость эффектов" type="range" min="0" max="100" step="5" value={sfxVolume} onChange={event => setSfxVolume(Number(event.target.value))} className="w-20 align-middle accent-cyan-500" /></label>
             </div>
@@ -2014,70 +2218,75 @@ export default function App() {
           </div>
         )}
 
-        {/* Main Menu */}
         {phase === "menu" && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/85 backdrop-blur-md z-30">
-            <div className="text-center max-w-xl px-6">
-              <div className="text-8xl mb-2 animate-pulse">🚀</div>
-              <h1 className="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-sky-300 via-blue-400 to-indigo-400 tracking-tight mb-1">
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/85 backdrop-blur-md z-30 p-4 overflow-y-auto">
+            <div className="text-center max-w-xl px-4 w-full">
+              <div className="text-7xl mb-2 animate-pulse">🚀</div>
+              <h1 className="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-r from-sky-300 via-blue-400 to-indigo-400 tracking-tight mb-1">
                 Космический Штурм: Ультра
               </h1>
-              <p className="text-blue-300/80 font-mono text-xs tracking-widest mb-6">КОСМИЧЕСКИЙ РОГАЛИК · СИНТЕЗАТОР ЗВУКА · 90 УЛУЧШЕНИЙ</p>
+              <p className="text-blue-300/80 font-mono text-[11px] tracking-widest mb-4">КОСМИЧЕСКИЙ РОГАЛИК · СИНТЕЗАТОР ЗВУКА · 90 УЛУЧШЕНИЙ · АРХЕТИПЫ</p>
 
-              <div className="grid grid-cols-2 gap-3 text-xs mb-5 font-mono">
-                <div className="bg-slate-900/80 rounded-xl p-3 border border-slate-700 text-left">
-                  <div className="text-slate-400 text-[10px] mb-1 font-bold">ПОЛЁТ И РЫВОК</div>
+              <div className="grid grid-cols-2 gap-2 text-[11px] mb-4 font-mono">
+                <div className="bg-slate-900/80 rounded-xl p-2.5 border border-slate-700 text-left">
+                  <div className="text-slate-400 text-[9px] mb-1 font-bold">ПОЛЁТ И РЫВОК</div>
                   <div className="text-sky-400 font-bold">WASD / Стрелки + [SHIFT]</div>
                 </div>
-                <div className="bg-slate-900/80 rounded-xl p-3 border border-slate-700 text-left">
-                  <div className="text-slate-400 text-[10px] mb-1 font-bold">ОРУДИЯ</div>
+                <div className="bg-slate-900/80 rounded-xl p-2.5 border border-slate-700 text-left">
+                  <div className="text-slate-400 text-[9px] mb-1 font-bold">ОРУДИЯ</div>
                   <div className="text-emerald-400 font-bold">Авто-огонь с доводкой пуль</div>
                 </div>
-                <div className="bg-slate-900/80 rounded-xl p-3 border border-slate-700 text-left">
-                  <div className="text-slate-400 text-[10px] mb-1 font-bold">ЯДЕРНЫЙ УДАР</div>
+                <div className="bg-slate-900/80 rounded-xl p-2.5 border border-slate-700 text-left">
+                  <div className="text-slate-400 text-[9px] mb-1 font-bold">ЯДЕРНЫЙ УДАР</div>
                   <div className="text-red-400 font-bold">Клавиша [X] (Зачистка экрана)</div>
                 </div>
-                <div className="bg-slate-900/80 rounded-xl p-3 border border-slate-700 text-left">
-                  <div className="text-slate-400 text-[10px] mb-1 font-bold">ХРОНО-ЗАМЕДЛЕНИЕ</div>
+                <div className="bg-slate-900/80 rounded-xl p-2.5 border border-slate-700 text-left">
+                  <div className="text-slate-400 text-[9px] mb-1 font-bold">ХРОНО-ЗАМЕДЛЕНИЕ</div>
                   <div className="text-cyan-400 font-bold">Клавиша [C] (Замедление пуль)</div>
                 </div>
               </div>
 
-              <div className="bg-slate-900/60 rounded-xl p-3 border border-slate-700 mb-6 text-xs font-mono text-slate-300">
-                ⭐ <span className="text-purple-400 font-bold">Опыт притягивается автоматически</span> · Собирайте бонусы (💊⚡🛡️🧲💣) · 6 грандиозных боссов
+              <div className="bg-slate-900/60 rounded-xl p-2.5 border border-slate-700 mb-4 text-[11px] font-mono text-slate-300">
+                ⭐ <span className="text-purple-400 font-bold">Опыт притягивается автоматически</span> · Собирайте бонусы (💊⚡🛡️🧲💣) · 6 боссов · 5 архетипов · P1.4 динамическое качество
               </div>
 
               {hiscore > 0 && (
-                <div className="text-yellow-400 font-mono text-sm mb-3 font-bold">🏆 Рекорд очков: {hiscore.toLocaleString()}</div>
+                <div className="text-yellow-400 font-mono text-sm mb-2 font-bold">🏆 Рекорд очков: {hiscore.toLocaleString()}</div>
               )}
 
-              <div className="mb-4 flex items-center justify-center gap-3 rounded-xl border border-slate-800 bg-slate-950/75 p-2 font-mono text-[10px]">
+              <div className="mb-3 flex flex-wrap items-center justify-center gap-2 rounded-xl border border-slate-800 bg-slate-950/75 p-2 font-mono text-[10px]">
                 <button onClick={cycleQuality} className="rounded-lg border border-cyan-800 bg-cyan-950 px-3 py-2 font-black text-cyan-200 cursor-pointer">⚙ КАЧЕСТВО: {qualityLabels[qualityMode]}</button>
-                <label className="text-slate-400">🎵 {musicVolume}%<input aria-label="Громкость музыки" type="range" min="0" max="100" step="5" value={musicVolume} onChange={event => setMusicVolume(Number(event.target.value))} className="ml-2 w-20 align-middle accent-fuchsia-500" /></label>
-                <label className="text-slate-400">💥 {sfxVolume}%<input aria-label="Громкость эффектов" type="range" min="0" max="100" step="5" value={sfxVolume} onChange={event => setSfxVolume(Number(event.target.value))} className="ml-2 w-20 align-middle accent-cyan-500" /></label>
+                <button onClick={() => setDebugOverlay(v=>!v)} className="rounded-lg border border-emerald-800 bg-emerald-950 px-3 py-2 font-black text-emerald-200 cursor-pointer">🖥 DEBUG</button>
+                <label className="text-slate-400">🎵 {musicVolume}%<input aria-label="Громкость музыки" type="range" min="0" max="100" step="5" value={musicVolume} onChange={event => setMusicVolume(Number(event.target.value))} className="ml-2 w-16 align-middle accent-fuchsia-500" /></label>
+                <label className="text-slate-400">💥 {sfxVolume}%<input aria-label="Громкость эффектов" type="range" min="0" max="100" step="5" value={sfxVolume} onChange={event => setSfxVolume(Number(event.target.value))} className="ml-2 w-16 align-middle accent-cyan-500" /></label>
               </div>
 
               <button
                 onClick={() => { audio.resume(); phaseRef.current = "ship_select"; setPhase("ship_select"); }}
-                className="px-14 py-4 bg-gradient-to-r from-sky-500 via-blue-600 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white font-black text-2xl rounded-full shadow-2xl shadow-blue-900/60 transition-all active:scale-95 cursor-pointer"
+                className="px-12 py-3.5 bg-gradient-to-r from-sky-500 via-blue-600 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white font-black text-xl rounded-full shadow-2xl shadow-blue-900/60 transition-all active:scale-95 cursor-pointer w-full max-w-sm"
               >
                 ВЫБРАТЬ КОРАБЛЬ И В БОЙ
               </button>
-              <div className="text-slate-500 font-mono text-xs mt-3">или нажмите ПРОБЕЛ / ENTER</div>
+              <div className="text-slate-500 font-mono text-xs mt-2">или нажмите ПРОБЕЛ / ENTER · Ctrl+D для дебага</div>
+              {telemetryRuns.length>0 && (
+                <div className="mt-3 rounded-xl border border-slate-800 bg-slate-950/60 p-2 text-[10px] font-mono text-slate-400">
+                  <div className="flex justify-between"><span>Забегов: {balanceStats.totalRuns} · Win {(balanceStats.winRate*100).toFixed(1)}% · Avg wave {balanceStats.avgWave.toFixed(1)}</span><button onClick={()=>{ const txt=exportTelemetryJson(); const blob=new Blob([txt],{type:"application/json"}); const url=URL.createObjectURL(blob); const a=document.createElement("a"); a.href=url; a.download="telemetry_last20.json"; a.click(); URL.revokeObjectURL(url); }} className="rounded bg-slate-800 px-2 py-0.5 text-cyan-300 cursor-pointer">Экспорт 20</button></div>
+                </div>
+              )}
             </div>
-            <div className="absolute bottom-3 right-4 font-mono text-[10px] text-slate-600">v1.0.0 · RELEASE</div>
+            <div className="absolute bottom-3 right-4 font-mono text-[10px] text-slate-500">{APP_VERSION_DISPLAY} · RELEASE</div>
+            <div className="absolute bottom-3 left-4 font-mono text-[9px] text-slate-600">Телема: {telemetryRuns.length} · FPS p50 {telemetryRuns[0]?.fps.p50 ?? "-"} p1 {telemetryRuns[0]?.fps.p1 ?? "-"}</div>
           </div>
         )}
 
-        {/* Ship Select Screen */}
         {phase === "ship_select" && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 backdrop-blur-md z-30 p-6">
-            <h2 className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-sky-400 to-indigo-300 mb-1">
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 backdrop-blur-md z-30 p-4 overflow-y-auto">
+            <h2 className="text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-sky-400 to-indigo-300 mb-1">
               ВЫБОР БОЕВОГО КОРАБЛЯ
             </h2>
-            <p className="text-slate-400 font-mono text-xs mb-6">Выберите класс судна и специализацию вооружения</p>
+            <p className="text-slate-400 font-mono text-[11px] mb-4">Выберите класс судна и специализацию вооружения</p>
 
-            <div className="grid grid-cols-5 gap-2.5 max-w-[930px] w-full mb-5">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 max-w-[930px] w-full mb-4">
               {SHIP_CLASSES.map((sc) => {
                 const isSelected = selectedClass === sc.id;
                 return (
@@ -2085,26 +2294,26 @@ export default function App() {
                     key={sc.id}
                     onClick={() => { audio.playHit(); setSelectedClass(sc.id); }}
                     className={`
-                      p-3 rounded-xl border-2 text-left transition-all duration-200 cursor-pointer relative overflow-hidden flex flex-col justify-between
-                      ${isSelected ? `bg-slate-900/90 shadow-xl scale-105 ring-2 ring-sky-400` : "border-slate-800 bg-slate-950/70 hover:border-slate-700 hover:scale-102"}
+                      p-2.5 rounded-xl border-2 text-left transition-all duration-200 cursor-pointer relative overflow-hidden flex flex-col justify-between min-h-[180px]
+                      ${isSelected ? `bg-slate-900/90 shadow-xl scale-[1.02] ring-2 ring-sky-400` : "border-slate-800 bg-slate-950/70 hover:border-slate-700 hover:scale-[1.01]"}
                     `}
                     style={{ borderColor: isSelected ? sc.color : undefined }}
                   >
                     {sc.premium && (
-                      <div className={`absolute right-2 top-2 rounded-full px-2 py-0.5 text-[9px] font-black text-white ${
+                      <div className={`absolute right-1.5 top-1.5 rounded-full px-2 py-0.5 text-[8px] font-black text-white ${
                         premiumUnlocked || (premiumCatalogChecked && premiumOffer !== null) ? "bg-fuchsia-600" : "bg-slate-600"
                       }`}>
                         {premiumUnlocked ? "КУПЛЕН" : premiumCatalogChecked && !premiumOffer ? "НЕДОСТУПЕН" : "ПРЕМИУМ"}
                       </div>
                     )}
                     <div>
-                      <div className="text-4xl mb-2">{sc.icon}</div>
-                      <div className="font-black text-white text-base leading-tight">{sc.name}</div>
-                      <div className="text-[11px] font-mono text-sky-400 mb-2">{sc.subtitle}</div>
-                      <div className="text-xs text-slate-400 mb-3 leading-snug">{sc.description}</div>
+                      <div className="text-3xl mb-1">{sc.icon}</div>
+                      <div className="font-black text-white text-[13px] leading-tight">{sc.name}</div>
+                      <div className="text-[10px] font-mono text-sky-400 mb-1">{sc.subtitle}</div>
+                      <div className="text-[11px] text-slate-400 mb-2 leading-snug line-clamp-3">{sc.description}</div>
                     </div>
-                    <div className="space-y-1 border-t border-slate-800/80 pt-2 font-mono text-[10px]">
-                      {sc.perks.map((p, idx) => (
+                    <div className="space-y-0.5 border-t border-slate-800/80 pt-1.5 font-mono text-[9px]">
+                      {sc.perks.slice(0,3).map((p, idx) => (
                         <div key={idx} className="text-slate-300 flex items-center gap-1">
                           <span className="text-emerald-400">✔</span> {p}
                         </div>
@@ -2115,31 +2324,29 @@ export default function App() {
               })}
             </div>
 
-            <div className="flex gap-4">
+            <div className="flex flex-wrap gap-3 justify-center">
               <button
                 onClick={() => { phaseRef.current = "menu"; setPhase("menu"); }}
-                className="px-8 py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-sm rounded-full transition-all cursor-pointer"
+                className="px-6 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-sm rounded-full transition-all cursor-pointer"
               >
                 НАЗАД
               </button>
               <button
                 onClick={() => {
-                  if (!premiumGate) { startGame(selectedClass); return; }
+                  if (!premiumGate) { startBuildSelect(selectedClass); return; }
                   if (premiumOfferReady) void handlePremiumPurchase();
                 }}
                 disabled={shipSelectButtonDisabled}
-                className="px-12 py-3.5 bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 disabled:opacity-50 text-white font-black text-lg rounded-full shadow-xl shadow-blue-900/50 transition-all active:scale-95 cursor-pointer"
+                className="px-10 py-3 bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 disabled:opacity-50 text-white font-black text-base rounded-full shadow-xl shadow-blue-900/50 transition-all active:scale-95 cursor-pointer"
               >
                 {!premiumGate
-                  ? "НАЧАТЬ МИССИЮ 🚀"
+                  ? "ДАЛЕЕ К БИЛДУ →"
                   : purchasePending
                     ? "ОТКРЫВАЕМ МАГАЗИН…"
                     : !premiumCatalogChecked
                       ? "ПРОВЕРЯЕМ МАГАЗИН…"
                       : premiumOffer
                         ? (
-                          // The numeric price and the portal currency (icon + code)
-                          // always come from the SDK catalog (Requirements §1.13.2).
                           <span className="inline-flex items-center justify-center gap-2">
                             <span>ОТКРЫТЬ «НЕМЕЗИДУ»</span>
                             {premiumOffer.currencyIconUrl && (
@@ -2150,16 +2357,15 @@ export default function App() {
                         )
                         : "СЕЙЧАС НЕДОСТУПНО"}
               </button>
-
-              {/* v1.5.0: Hangar — permanent upgrades, missions, shop. */}
-              <button
-                onClick={() => { audio.resume(); phaseRef.current = "hangar"; setPhase("hangar"); }}
-                className="mt-3 w-full py-3 bg-gradient-to-r from-fuchsia-600 to-purple-700 hover:from-fuchsia-500 hover:to-purple-600 text-white font-black text-base rounded-full shadow-xl transition-all active:scale-95 cursor-pointer"
-              >
-                🛰️ АНГАР {meta.shards > 0 && <span className="font-mono text-fuchsia-200">· ✨{meta.shards.toLocaleString()}</span>}
-                {unclaimedMissionRewards > 0 && <span className="ml-2 rounded-full bg-amber-500 px-2 py-0.5 font-mono text-xs text-black">🎖 {unclaimedMissionRewards}</span>}
-              </button>
             </div>
+
+            <button
+              onClick={() => { audio.resume(); phaseRef.current = "hangar"; setPhase("hangar"); }}
+              className="mt-3 py-2.5 bg-gradient-to-r from-fuchsia-600 to-purple-700 hover:from-fuchsia-500 hover:to-purple-600 text-white font-black text-sm rounded-full shadow-xl transition-all active:scale-95 cursor-pointer px-8"
+            >
+              🛰️ АНГАР {meta.shards > 0 && <span className="font-mono text-fuchsia-200">· ✨{meta.shards.toLocaleString()}</span>}
+              {unclaimedMissionRewards > 0 && <span className="ml-2 rounded-full bg-amber-500 px-2 py-0.5 font-mono text-xs text-black">🎖 {unclaimedMissionRewards}</span>}
+            </button>
           </div>
         )}
 
@@ -2178,15 +2384,14 @@ export default function App() {
           />
         )}
 
-        {/* Victory after the wave-50 Omega; endless mode remains optional. */}
         {phase === "victory" && gameRef.current && (
-          <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/92 p-6 backdrop-blur-md">
+          <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/92 p-4 backdrop-blur-md overflow-y-auto">
             <div className="w-full max-w-xl text-center">
               <div className="mb-2 text-6xl">🏆</div>
-              <h2 className="text-4xl font-black text-amber-300">СИСТЕМА ОМЕГА УНИЧТОЖЕНА</h2>
-              <p className="mb-5 font-mono text-sm text-cyan-300">ОСНОВНАЯ МИССИЯ ЗАВЕРШЕНА</p>
+              <h2 className="text-3xl font-black text-amber-300">СИСТЕМА ОМЕГА УНИЧТОЖЕНА</h2>
+              <p className="mb-3 font-mono text-sm text-cyan-300">ОСНОВНАЯ МИССИЯ ЗАВЕРШЕНА · {APP_VERSION_DISPLAY}</p>
               {lastShardsEarned > 0 && (
-                <div className="mb-5 rounded-xl border border-fuchsia-700 bg-fuchsia-950/50 px-4 py-2.5 text-center">
+                <div className="mb-3 rounded-xl border border-fuchsia-700 bg-fuchsia-950/50 px-4 py-2.5 text-center">
                   <span className="font-mono text-xs text-fuchsia-300">ЗАРАБОТАНО</span>
                   <div className="font-black text-2xl text-fuchsia-200">✨ +{lastShardsEarned} осколков</div>
                   {unclaimedMissionRewards > 0 && (
@@ -2194,32 +2399,37 @@ export default function App() {
                   )}
                 </div>
               )}
-              <div className="mb-5 grid grid-cols-4 gap-2 rounded-2xl border border-amber-700/60 bg-slate-950/90 p-4 font-mono">
+              <div className="mb-3 grid grid-cols-4 gap-2 rounded-2xl border border-amber-700/60 bg-slate-950/90 p-3 font-mono text-xs">
                 <div><div className="text-[10px] text-slate-500">СЧЁТ</div><b className="text-white">{finalScore.toLocaleString()}</b></div>
                 <div><div className="text-[10px] text-slate-500">ВОЛНА</div><b className="text-white">{finalWave}</b></div>
                 <div><div className="text-[10px] text-slate-500">УБИЙСТВА</div><b className="text-red-300">{finalKills}</b></div>
                 <div><div className="text-[10px] text-slate-500">СИНЕРГИИ</div><b className="text-fuchsia-300">{gameRef.current.player.synergies.length}</b></div>
               </div>
+              <div className="mb-3 rounded-xl border border-slate-700 bg-slate-900/80 p-3 text-left font-mono text-[11px]">
+                <div className="font-black text-cyan-300 mb-1">БИЛД: {currentArchetypeDef?.icon} {currentArchetypeDef?.name ?? gameRef.current.player.buildArchetype}</div>
+                <div className="text-slate-400">Карт: {gameRef.current.player.upgrades.length} · Синергий: {gameRef.current.player.synergies.join(", ") || "нет"} · Эволюций: {gameRef.current.player.evolved.join(", ") || "нет"}</div>
+                <div className="mt-1 text-slate-300">Урон по источникам: {Object.entries(gameRef.current.player.stats.damageBySource).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([k,v])=>`${k}:${Math.round(v)}`).join(" ")}</div>
+                <div className="mt-1 text-emerald-300">FPS p50:{fpsTrackerRef.current.getStats().p50} p1:{fpsTrackerRef.current.getStats().p1} · Max врагов:{gameRef.current.maxEnemies} пуль:{gameRef.current.maxBullets}</div>
+              </div>
               <div className="flex justify-center gap-3">
-                <button onClick={() => { audio.resume(); audio.startAmbientBGM(); phaseRef.current = "route"; setPhase("route"); }} className="rounded-full bg-fuchsia-700 px-8 py-3 font-black text-white hover:bg-fuchsia-600 cursor-pointer">♾️ ПРОДОЛЖИТЬ БЕСКОНЕЧНО</button>
-                <button onClick={() => { phaseRef.current = "ship_select"; setPhase("ship_select"); gameRef.current = null; }} className="rounded-full bg-gradient-to-r from-amber-500 to-orange-600 px-8 py-3 font-black text-white cursor-pointer">НОВЫЙ ЗАБЕГ</button>
+                <button onClick={() => { audio.resume(); audio.startAmbientBGM(); phaseRef.current = "route"; setPhase("route"); }} className="rounded-full bg-fuchsia-700 px-6 py-2.5 font-black text-white hover:bg-fuchsia-600 cursor-pointer text-sm">♾️ ПРОДОЛЖИТЬ БЕСКОНЕЧНО</button>
+                <button onClick={() => { phaseRef.current = "ship_select"; setPhase("ship_select"); gameRef.current = null; }} className="rounded-full bg-gradient-to-r from-amber-500 to-orange-600 px-6 py-2.5 font-black text-white cursor-pointer text-sm">НОВЫЙ ЗАБЕГ</button>
               </div>
             </div>
           </div>
         )}
 
-        {/* Death screen with comprehensive stats */}
-        {phase === "dead" && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 backdrop-blur-md z-30 p-6">
+        {phase === "dead" && gameRef.current && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 backdrop-blur-md z-30 p-4 overflow-y-auto">
             <div className="text-center max-w-lg w-full">
-              <div className="text-6xl mb-2 animate-bounce">💀</div>
-              <h2 className="text-4xl font-black text-red-400 mb-1">КОРАБЛЬ УНИЧТОЖЕН</h2>
-              <p className="text-slate-400 font-mono text-xs mb-5">Ваше судно было сбито в глубоком космосе</p>
+              <div className="text-5xl mb-1 animate-bounce">💀</div>
+              <h2 className="text-3xl font-black text-red-400 mb-1">КОРАБЛЬ УНИЧТОЖЕН</h2>
+              <p className="text-slate-400 font-mono text-[11px] mb-3">Причина: {gameRef.current.player.deathCause ?? "неизвестно"} · Последний босс-атака: {gameRef.current.lastBossAttack ?? "—"} · {APP_VERSION_DISPLAY}</p>
 
               {lastShardsEarned > 0 && (
-                <div className="mb-4 rounded-xl border border-fuchsia-700 bg-fuchsia-950/50 px-4 py-2.5 text-center">
+                <div className="mb-3 rounded-xl border border-fuchsia-700 bg-fuchsia-950/50 px-4 py-2 text-center">
                   <span className="font-mono text-xs text-fuchsia-300">ЗАРАБОТАНО</span>
-                  <div className="font-black text-2xl text-fuchsia-200">✨ +{lastShardsEarned} осколков</div>
+                  <div className="font-black text-xl text-fuchsia-200">✨ +{lastShardsEarned} осколков</div>
                   {unclaimedMissionRewards > 0 ? (
                     <span className="font-mono text-[10px] text-amber-300">🎖 Награды за задания ждут в Ангаре: {unclaimedMissionRewards}</span>
                   ) : (
@@ -2228,38 +2438,47 @@ export default function App() {
                 </div>
               )}
 
-              <div className="bg-slate-900/90 rounded-2xl border border-slate-700 p-5 mb-5 space-y-2.5 font-mono text-sm">
+              <div className="bg-slate-900/90 rounded-2xl border border-slate-700 p-3 mb-3 space-y-2 font-mono text-xs">
                 <div className="flex justify-between items-center pb-2 border-b border-slate-800">
                   <span className="text-slate-400">Итоговый счёт</span>
-                  <span className="text-white font-black text-2xl">{finalScore.toLocaleString()}</span>
+                  <span className="text-white font-black text-xl">{finalScore.toLocaleString()}</span>
                 </div>
-                <div className="grid grid-cols-3 gap-2 text-center py-2 border-b border-slate-800">
+                <div className="grid grid-cols-3 gap-2 text-center py-1 border-b border-slate-800">
                   <div className="bg-slate-950/70 p-2 rounded-lg">
-                    <div className="text-slate-500 text-[10px]">ДОСТИГНУТА ВОЛНА</div>
-                    <div className="text-white font-bold text-lg">{finalWave}</div>
+                    <div className="text-slate-500 text-[9px]">ДОСТИГНУТА ВОЛНА</div>
+                    <div className="text-white font-bold text-base">{finalWave}</div>
                   </div>
                   <div className="bg-slate-950/70 p-2 rounded-lg">
-                    <div className="text-slate-500 text-[10px]">УБИТО ВРАГОВ</div>
-                    <div className="text-red-400 font-bold text-lg">{finalKills}</div>
+                    <div className="text-slate-500 text-[9px]">УБИТО ВРАГОВ</div>
+                    <div className="text-red-400 font-bold text-base">{finalKills}</div>
                   </div>
                   <div className="bg-slate-950/70 p-2 rounded-lg">
-                    <div className="text-slate-500 text-[10px]">МАКС. УРОВЕНЬ</div>
-                    <div className="text-purple-400 font-bold text-lg">{finalLevel}</div>
+                    <div className="text-slate-500 text-[9px]">МАКС. УРОВЕНЬ</div>
+                    <div className="text-purple-400 font-bold text-base">{finalLevel}</div>
                   </div>
                 </div>
-                <div className="grid grid-cols-3 gap-2 text-center pt-1 text-xs">
+                <div className="grid grid-cols-3 gap-2 text-center pt-1 text-[11px]">
                   <div>
-                    <div className="text-slate-500 text-[10px]">МЕТКОСТЬ</div>
+                    <div className="text-slate-500 text-[9px]">МЕТКОСТЬ</div>
                     <div className="text-emerald-400 font-bold">{accuracy}%</div>
                   </div>
                   <div>
-                    <div className="text-slate-500 text-[10px]">ЭЛИТНЫЕ ВРАГИ</div>
+                    <div className="text-slate-500 text-[9px]">ЭЛИТНЫЕ ВРАГИ</div>
                     <div className="text-yellow-400 font-bold">{playerStats.elitesKilled}</div>
                   </div>
                   <div>
-                    <div className="text-slate-500 text-[10px]">БОССЫ</div>
+                    <div className="text-slate-500 text-[9px]">БОССЫ</div>
                     <div className="text-sky-400 font-bold">{playerStats.bossesKilled}</div>
                   </div>
+                </div>
+                <div className="pt-2 border-t border-slate-800 text-left">
+                  <div className="text-[10px] font-black text-cyan-300">БИЛД: {currentArchetypeDef?.icon} {currentArchetypeDef?.name ?? gameRef.current.player.buildArchetype ?? "—"} · Карт {gameRef.current.player.upgrades.length} · Синергий {gameRef.current.player.synergies.length} · Эволюций {gameRef.current.player.evolved.length}</div>
+                  <div className="text-[10px] text-slate-400 mt-1">Урон: {Object.entries(playerStats.damageBySource as Record<string,number>).sort((a,b)=>b[1]-a[1]).slice(0,4).map(([k,v])=>`${k}:${Math.round(v)}`).join(" ")}</div>
+                  <div className="text-[10px] text-rose-300 mt-1">Входящий: {Object.entries(playerStats.incomingByType as Record<string,number>).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([k,v])=>`${k}:${Math.round(v)}`).join(" ") || "нет"} · Причина смерти: {gameRef.current.player.deathCause}</div>
+                  <div className="text-[10px] text-emerald-300 mt-1">FPS p50:{fpsTrackerRef.current.getStats().p50} p1:{fpsTrackerRef.current.getStats().p1} · Max: врагов {gameRef.current.maxEnemies} пуль {gameRef.current.maxBullets} частиц {gameRef.current.maxParticles}</div>
+                </div>
+                <div className="pt-2 border-t border-slate-800 text-left">
+                  <div className="text-[10px] font-black text-amber-300">💡 СОВЕТ: {adviceText}</div>
                 </div>
               </div>
 
@@ -2267,22 +2486,22 @@ export default function App() {
                 <button
                   onClick={handleRevive}
                   disabled={adPending}
-                  className="w-full mb-3 py-3 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 disabled:opacity-50 text-white font-black text-base rounded-full shadow-xl transition-all active:scale-95 cursor-pointer"
+                  className="w-full mb-2 py-2.5 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 disabled:opacity-50 text-white font-black text-sm rounded-full shadow-xl transition-all active:scale-95 cursor-pointer"
                 >
                   {adPending ? "ЗАГРУЗКА ВИДЕО…" : "🎬 ЭКСТРЕННЫЙ РЕМОНТ · +50% HP"}
                 </button>
               )}
 
-              <div className="flex gap-3">
+              <div className="flex gap-2">
                 <button
                   onClick={() => { phaseRef.current = "ship_select"; setPhase("ship_select"); }}
-                  className="flex-1 py-3.5 bg-gradient-to-r from-red-600 via-orange-600 to-amber-600 hover:from-red-500 hover:to-amber-500 text-white font-black text-base rounded-full shadow-xl transition-all active:scale-95 cursor-pointer"
+                  className="flex-1 py-3 bg-gradient-to-r from-red-600 via-orange-600 to-amber-600 hover:from-red-500 hover:to-amber-500 text-white font-black text-sm rounded-full shadow-xl transition-all active:scale-95 cursor-pointer"
                 >
                   ПОВТОРИТЬ МИССИЮ
                 </button>
                 <button
                   onClick={handleReturnToMenu}
-                  className="px-6 py-3.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-sm rounded-full transition-all cursor-pointer"
+                  className="px-5 py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs rounded-full transition-all cursor-pointer"
                 >
                   ГЛАВНОЕ МЕНЮ
                 </button>

@@ -303,6 +303,9 @@ export interface PlayerState {
   kills: number;
   combo: number;
   comboTimer: number;
+  buildArchetype?: string;
+  lastDamageSource?: string;
+  deathCause?: string;
   stats: {
     damageDealt: number;
     shotsFired: number;
@@ -310,6 +313,9 @@ export interface PlayerState {
     elitesKilled: number;
     bossesKilled: number;
     powerupsCollected: number;
+    damageBySource: Record<string, number>;
+    incomingDamage: number;
+    incomingByType: Record<string, number>;
   };
 }
 
@@ -328,4 +334,4 @@ export interface Mine {
   radius: number;
 }
 
-export type GamePhase = "menu" | "ship_select" | "tutorial" | "playing" | "upgrade" | "route" | "boss_intro" | "paused" | "dead" | "victory" | "hangar";
+export type GamePhase = "menu" | "ship_select" | "build_select" | "tutorial" | "playing" | "upgrade" | "route" | "boss_intro" | "paused" | "dead" | "victory" | "hangar";

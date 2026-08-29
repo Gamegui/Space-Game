@@ -86,6 +86,11 @@ test("интеграция: кортеж на волне 90 на порядок 
       performanceTier: 2, performanceAuto: false, waveStartedFrame: 0,
       guardSpawnedThisWave: false, fastClearStreak: 0, guardEventActive: true,
       singularity: null, voidFractures: [],
+      maxEnemies: 0,
+      maxBullets: 0,
+      maxParticles: 0,
+      maxXpOrbs: 0,
+      frameTimeHistory: [],
     };
     spawnAdaptiveGuard(obj, wave);
     const total = obj.enemies.reduce((a, e) => a + e.maxHp, 0);

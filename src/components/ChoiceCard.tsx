@@ -3,6 +3,8 @@ import type { UpgradeDef, PlayerState } from "../game/types";
 import { applyUpgrade, calculatePlayerPower, getUpgradeLevel } from "../game/upgrades";
 import { SYNERGIES } from "../game/synergies";
 import { EVOLUTIONS } from "../game/evolutions";
+import { forecastUpgrade, forecastLabel } from "../game/cardForecast";
+import { ARCHETYPES } from "../game/archetypes";
 
 export interface CardStyle {
   bg: string;
@@ -45,6 +47,8 @@ export default memo(function ChoiceCard({ u, style, player, hotkey, onChoose }: 
       return calculatePlayerPower(clone) - calculatePlayerPower(player);
     } catch { return 0; }
   }, [player, u]);
+  const forecast = useMemo(() => forecastUpgrade(u, player), [u, player]);
+  const archetypeTags = useMemo(() => ARCHETYPES.filter(a => a.upgrades.includes(u.id)).map(a => a.shortName), [u.id]);
   const maxLevel = u.maxLevel;
   const visiblePips = Math.min(maxLevel, 8);
   const stars = Array.from({ length: visiblePips }, (_, i) => i < Math.min(currentLevel, visiblePips));
@@ -139,7 +143,21 @@ export default memo(function ChoiceCard({ u, style, player, hotkey, onChoose }: 
       )}
 
       {/* Description */}
-      <div className="text-xs opacity-85 leading-relaxed mb-4 min-h-[38px]">{u.description}</div>
+      <div className="text-xs opacity-85 leading-relaxed mb-2 min-h-[38px]">{u.description}</div>
+
+      {/* P1.2 forecast: single-target, clear, survivability, control */}
+      <div className="mb-2 rounded-lg bg-black/30 p-2 text-[9px] font-mono leading-tight">
+        <div className="grid grid-cols-2 gap-x-2 gap-y-0.5">
+          <div>🎯 Сингл: {forecastLabel(forecast.singleTarget)}</div>
+          <div>💥 Зачистка: {forecastLabel(forecast.clear)}</div>
+          <div>🛡️ Живуч: {forecastLabel(forecast.survivability)}</div>
+          <div>❄️ Контр: {forecastLabel(forecast.control)}</div>
+        </div>
+        {archetypeTags.length>0 && <div className="mt-1 text-[8px] text-cyan-300">Билд: {archetypeTags.join(", ")}</div>}
+        {forecast.activation && <div className="mt-1 text-[8px] text-amber-200">{forecast.activation}</div>}
+        {forecast.downsides.length>0 && <div className="mt-1 text-[8px] text-rose-300">⚠ {forecast.downsides[0]}</div>}
+        {forecast.conflicts.length>0 && <div className="mt-1 text-[8px] text-slate-400">⛔ {forecast.conflicts[0]}</div>}
+      </div>
 
       {/* Level indicator */}
       <div className="flex items-center gap-1.5 border-t border-white/10 pt-2.5">

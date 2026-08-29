@@ -32,6 +32,11 @@ function makeObjects(player: ReturnType<typeof makeInitialPlayer>): GameObjects 
     guardSpawnedThisWave: false, fastClearStreak: 0, guardEventActive: false,
   singularity: null,
   voidFractures: [],
+      maxEnemies: 0,
+      maxBullets: 0,
+      maxParticles: 0,
+      maxXpOrbs: 0,
+      frameTimeHistory: [],
   };
 }
 

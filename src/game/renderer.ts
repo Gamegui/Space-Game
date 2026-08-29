@@ -16,6 +16,18 @@ export function setRenderPerformanceTier(tier: 0 | 1 | 2) {
   renderPerformanceTier = tier;
 }
 
+// P1.4 dynamic quality disabled features
+let disabledFeatures: Set<string> = new Set();
+export function setDisabledFeatures(features: Set<string>): void {
+  disabledFeatures = new Set(features);
+}
+export function isFeatureDisabled(feat: string): boolean {
+  return disabledFeatures.has(feat);
+}
+export function getDisabledFeatures(): Set<string> {
+  return new Set(disabledFeatures);
+}
+
 // ─── Sprite cache (render hot-path optimization) ─────────────────────────────
 // shadowBlur is by far the most expensive Canvas2D operation. The premium
 // Wraith used to pay for it up to ~40× per frame (echo clone + double-exposure
@@ -104,7 +116,10 @@ export function drawVoidEye(ctx: CanvasRenderingContext2D, frame: number, target
 
 // ─── Stars ────────────────────────────────────────────────────────────────────
 export function drawStars(ctx: CanvasRenderingContext2D, stars: Star[]) {
-  for (const s of stars) {
+  if (disabledFeatures.has("stars")) return;
+  const limit = disabledFeatures.has("particles") ? Math.floor(stars.length * 0.3) : stars.length;
+  for (let i=0;i<limit;i++) {
+    const s = stars[i];
     const brightness = Math.min(s.z / 4, 1);
     ctx.globalAlpha = brightness * 0.8;
     ctx.fillStyle = s.z > 2.5 ? "#ffe8b2" : "#ffffff";
@@ -1119,10 +1134,11 @@ function getParticleSprite(color: string): HTMLCanvasElement {
 }
 
 export function drawParticle(ctx: CanvasRenderingContext2D, p: Particle) {
+  if (disabledFeatures.has("particles")) return;
   const alpha = (p.life / p.maxLife);
   const r = p.size * alpha;
   ctx.globalAlpha = alpha;
-  if (renderPerformanceTier > 0 && p.glow) {
+  if (renderPerformanceTier > 0 && p.glow && !disabledFeatures.has("shadows")) {
     // Спрайт свечения: диаметр ≈ 4× радиуса частицы (эффект blur 8).
     const glow = r * 4;
     ctx.drawImage(getParticleSprite(p.color), p.pos.x - glow / 2, p.pos.y - glow / 2, glow, glow);
@@ -1166,13 +1182,14 @@ export function drawXpOrb(ctx: CanvasRenderingContext2D, orb: XpOrb, frame: numb
 
 // ─── Floating Text ────────────────────────────────────────────────────────────
 export function drawFloatingText(ctx: CanvasRenderingContext2D, ft: FloatingText) {
+  if (disabledFeatures.has("floatingText")) return;
   const alpha = ft.life / ft.maxLife;
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.font = ft.isCrit ? `bold ${ft.size}px monospace` : `bold ${ft.size}px monospace`;
   ctx.fillStyle = ft.color;
   // Обычные числа урона — без тени (их сотни за кадр), криты — с лёгкой.
-  ctx.shadowBlur = renderPerformanceTier === 2 && ft.isCrit ? 6 : 0;
+  ctx.shadowBlur = !disabledFeatures.has("shadows") && renderPerformanceTier === 2 && ft.isCrit ? 6 : 0;
   ctx.shadowColor = ft.color;
   ctx.textAlign = "center";
   ctx.fillText(ft.text, ft.pos.x, ft.pos.y);

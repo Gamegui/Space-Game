@@ -26,8 +26,8 @@ export const SYNERGIES: SynergyDef[] = [
   },
   {
     id: "autonomous_fleet", name: "АВТОНОМНЫЙ ФЛОТ", icon: "🛰️",
-    description: "Дроны и спутники получают боевой уровень и дополнительного помощника.",
-    requires: ["satellite_1", "drone_1", "drone_link"],
+    description: "Дроны и спутники синхронизируются: +2 уровня и дополнительный дрон. Требует полный рой.",
+    requires: ["satellite_1", "drone_1", "drone_link", "drone_swarm"],
     apply: player => {
       player.satellites.forEach(satellite => satellite.level += 2);
       player.drones.forEach(drone => drone.level += 2);
@@ -36,9 +36,9 @@ export const SYNERGIES: SynergyDef[] = [
   },
   {
     id: "void_engine", name: "СЕРДЦЕ БЕЗДНЫ", icon: "🌑",
-    description: "Фазовая защита, усиленное пробитие и самонаведение объединяются.",
-    requires: ["ghost", "quantum_tunnel", "singularity_rounds"],
-    apply: player => { player.ghostMode = true; player.piercing += 3; player.homing = true; player.homingStrength += 0.04; },
+    description: "Фаза + квантовый тоннель + фазовые боеприпасы + разряд: пробитие, самонаведение и фазовая защита.",
+    requires: ["ghost", "quantum_tunnel", "phase_ammo", "phase_discharge"],
+    apply: player => { player.ghostMode = true; player.piercing += 3; player.homing = true; player.homingStrength += 0.04; player.phaseDischarge = true; player.phaseDischargeCount += 1; },
   },
   // ─── Эксклюзивные синергии премиального «Призрака «Немезида»» ──────────────
   // Только 2 штуки — отдельного дерева эксклюзивных предметов не создаём.

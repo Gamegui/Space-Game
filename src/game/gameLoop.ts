@@ -116,6 +116,9 @@ export function makeInitialPlayer(shipClass: ShipClassId = "interceptor"): Playe
     overload: false, overloadDamage: 0, overloadTimer: 0,
     score: 0, kills: 0,
     combo: 0, comboTimer: 0,
+    buildArchetype: undefined,
+    lastDamageSource: undefined,
+    deathCause: undefined,
     stats: {
       damageDealt: 0,
       shotsFired: 0,
@@ -123,6 +126,9 @@ export function makeInitialPlayer(shipClass: ShipClassId = "interceptor"): Playe
       elitesKilled: 0,
       bossesKilled: 0,
       powerupsCollected: 0,
+      damageBySource: {},
+      incomingDamage: 0,
+      incomingByType: {},
     },
   };
 
@@ -550,6 +556,19 @@ export function overdriveCritBonus(player: PlayerState): { chance: number; multi
   return { chance: OVERDRIVE_CRIT_CHANCE_BONUS, multiplier: OVERDRIVE_CRIT_MULTIPLIER_BONUS };
 }
 
+function addDamageBySource(player: PlayerState, source: string, amount: number): void {
+  if (amount <= 0) return;
+  player.stats.damageDealt += amount;
+  player.stats.damageBySource[source] = (player.stats.damageBySource[source] ?? 0) + amount;
+}
+
+function addIncomingDamage(player: PlayerState, type: string, amount: number): void {
+  if (amount <= 0) return;
+  player.stats.incomingDamage += amount;
+  player.stats.incomingByType[type] = (player.stats.incomingByType[type] ?? 0) + amount;
+  player.lastDamageSource = type;
+}
+
 /**
  * Начислить опыт вне сбора сфер (мифик «Сингулярность», v1.8.0) с тем же
  * циклом повышений уровня, что и при сборе сфер.
@@ -627,7 +646,7 @@ function triggerSupernova(obj: GameObjects): void {
     else if (e.isElite) dmg = player.bulletDamage * 25;
     else dmg = player.bulletDamage * 25; // обычные слабые умирают от масштаба
     damageEnemy(e, dmg, 0, enemies);
-    player.stats.damageDealt += dmg;
+    addDamageBySource(player, "nova", dmg);
   }
   // Визуал: одно большое кольцо + бюджетный залп частиц (лимиты соблюдаются).
   explosions.push({ id: uid(), pos: { ...player.pos }, radius: NOVA_RADIUS, progress: 0 });
@@ -670,7 +689,7 @@ export function triggerJudgement(obj: GameObjects, source: Enemy, baseDamage: nu
     if (!nearest) break;
     lightnings.push(makeLightning(current.pos, nearest.pos, 18));
     const applied = damageEnemy(nearest, damage, 0, enemies);
-    player.stats.damageDealt += applied;
+    addDamageBySource(player, "judgement", applied);
     struck.add(nearest.id);
     // Эскалация: +8% за каждое уничтожение в цепи (до +80%).
     if (nearest.hp <= 0) damage = Math.min(damage * 1.08, damageCap);
@@ -741,6 +760,13 @@ export interface GameObjects {
   singularity: { pos: Vec2; timer: number; maxTimer: number; absorbed: number } | null;
   /** 👁️ МИФИК «Конец Материи»: разрывы пространства (макс. 8, живут 3 c). */
   voidFractures: { pos: Vec2; life: number }[];
+  /** Telemetry tracking */
+  maxEnemies: number;
+  maxBullets: number;
+  maxParticles: number;
+  maxXpOrbs: number;
+  frameTimeHistory: number[];
+  lastBossAttack?: string;
 }
 
 export interface StepInput {
@@ -955,7 +981,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         if (dx * dx + dy * dy > SINGULARITY_RADIUS * SINGULARITY_RADIUS) continue;
         const dmg = e.isBoss ? Math.min(sg.absorbed, e.maxHp * 0.08) : sg.absorbed;
         const applied = damageEnemy(e, dmg, frame, enemies);
-        player.stats.damageDealt += applied;
+        addDamageBySource(player, "singularity", applied);
       }
       obj.explosions.push({ id: uid(), pos: { ...sg.pos }, radius: SINGULARITY_RADIUS, progress: 0 });
       emitBurst(particles, sg.pos, "#a78bfa", 24, true, 3);
@@ -1157,7 +1183,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         const dx = e.pos.x - player.pos.x, dy = e.pos.y - player.pos.y;
         if (dx * dx + dy * dy < auraR * auraR) {
           const auraDamage = damageEnemy(e, player.auraDamage * timeScale, frame, enemies);
-          player.stats.damageDealt += auraDamage;
+          addDamageBySource(player, "aura", auraDamage);
           emitBurst(particles, { x: e.pos.x, y: e.pos.y }, "#fde047", 1);
         }
       }
@@ -1174,7 +1200,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         const dx = e.pos.x - player.pos.x, dy = e.pos.y - player.pos.y;
         if (dx * dx + dy * dy < novaR * novaR) {
           const novaDmg = damageEnemy(e, player.overloadDamage * player.bulletDamage, frame, enemies);
-          player.stats.damageDealt += novaDmg;
+          addDamageBySource(player, "overload", novaDmg);
         }
       }
       emitBurst(particles, player.pos, "#f97316", 20, true);
@@ -1197,7 +1223,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       const dx = e.pos.x - mine.pos.x, dy = e.pos.y - mine.pos.y;
       if (dx * dx + dy * dy < mine.radius * mine.radius) {
         const mineDamage = damageEnemy(e, 6 * player.bulletDamage, frame, enemies);
-        player.stats.damageDealt += mineDamage;
+        addDamageBySource(player, "mine", mineDamage);
         emitBurst(particles, mine.pos, "#f59e0b", 20, true);
         obj.explosions.push({ id: uid(), pos: { ...mine.pos }, radius: mine.radius * 1.5, progress: 0 });
         obj.screenShake = Math.max(obj.screenShake, 5);
@@ -1229,7 +1255,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
           e.pos.y += (dy / dist) * 3 * timeScale;
           if (dist < 25) {
             const gravityDamage = damageEnemy(e, 3 * timeScale, frame, enemies);
-            player.stats.damageDealt += gravityDamage;
+            addDamageBySource(player, "black_hole", gravityDamage);
           }
         }
       }
@@ -1269,7 +1295,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         const ddx = other.pos.x - enemy.pos.x, ddy = other.pos.y - enemy.pos.y;
         if (ddx * ddx + ddy * ddy < detRadius * detRadius) {
           const detDmg = damageEnemy(other, player.bulletDamage * 2.5, frame, enemies);
-          player.stats.damageDealt += detDmg;
+          addDamageBySource(player, "chain_detonation", detDmg);
         }
       }
       obj.explosions.push({ id: uid(), pos: { ...enemy.pos }, radius: detRadius, progress: 0 });
@@ -1798,7 +1824,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         // 👁️ КОНЕЦ МАТЕРИИ: враги уязвимее (+25% урона).
         if (player.voidTimer > 0) dmg *= 1.25;
         const appliedDamage = damageEnemy(e, dmg, frame, enemies);
-        player.stats.damageDealt += appliedDamage;
+        addDamageBySource(player, "bullet", appliedDamage);
 
         // Status effects
         if (Math.random() < player.burnChance)   { e.burning  = Math.max(e.burning,  180); emitBurst(particles, b.pos, "#f97316", 3); }
@@ -1928,7 +1954,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
               const ddx = other.pos.x - e.pos.x, ddy = other.pos.y - e.pos.y;
               if (ddx * ddx + ddy * ddy < detRadius * detRadius) {
                 const detDmg = damageEnemy(other, player.bulletDamage * 2.5, frame, enemies);
-                player.stats.damageDealt += detDmg;
+                addDamageBySource(player, "chain_detonation", detDmg);
                 // Don't add to enemiesToRemove — prevents cascade chain reactions
               }
             }
@@ -2000,7 +2026,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
       if (dx * dx + dy * dy < (18 + b.size) * (18 + b.size)) {
         releaseBullet(b);
         bullets.splice(i, 1);
-        takeDamage(player, b.damage * 8.5, particles, obj, input.onDeath);
+        takeDamage(player, b.damage * 8.5, particles, obj, input.onDeath, `bullet_${b.color ?? "enemy"}`);
         break; // invulnerability starts immediately; do not stack hits in one tick
       }
     }
@@ -2013,7 +2039,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         if (dx * dx + dy * dy < (size + 16) * (size + 16)) {
           const baseContactDamage = (e.isBoss ? 28 + wave * 0.8 : 11 + wave * 0.18) * enemyDamageFactor(obj.adaptiveDifficulty);
           const contactDamage = baseContactDamage * (e.guardRole ? 0.65 : 1);
-          takeDamage(player, contactDamage, particles, obj, input.onDeath);
+          takeDamage(player, contactDamage, particles, obj, input.onDeath, e.isBoss ? `boss_${e.type}` : `contact_${e.type}`);
           if (e.type === "leecher") e.hp = Math.min(e.maxHp, e.hp + contactDamage * 2);
           break;
         }
@@ -2152,6 +2178,20 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
 
   // Keep rendering and collision costs bounded even for extreme end-game builds.
   enforceObjectBudgets(obj);
+
+  // Telemetry: track maxima
+  obj.maxEnemies = Math.max(obj.maxEnemies ?? 0, obj.enemies.length);
+  obj.maxBullets = Math.max(obj.maxBullets ?? 0, obj.bullets.length);
+  obj.maxParticles = Math.max(obj.maxParticles ?? 0, obj.particles.length);
+  obj.maxXpOrbs = Math.max(obj.maxXpOrbs ?? 0, obj.xpOrbs.length);
+
+  // Boss attack telegraph tracking for fairness
+  for (const e of enemies) {
+    if (e.isBoss && e.shootTimer < 15 && e.shootTimer > 0) {
+      // Track last boss attack pattern for advice
+      obj.lastBossAttack = `${e.type}_phase${e.phase}`;
+    }
+  }
 
   // ─── Wave completion / adaptive guard response ─────────────────────────────
   if (obj.waveEnemyQueue.length === 0 && enemies.length === 0 && !obj.bossActive) {
@@ -2578,7 +2618,7 @@ function explodeArea(pos: Vec2, radius: number, enemies: Enemy[], toRemove: Set<
     const dx = e.pos.x - pos.x, dy = e.pos.y - pos.y;
     if (dx * dx + dy * dy < radius * radius) {
       const blastDamage = damageEnemy(e, player.bulletDamage * 3, frame, enemies);
-      player.stats.damageDealt += blastDamage;
+      addDamageBySource(player, "explosion", blastDamage);
       if (e.hp <= 0) toRemove.add(e.id);
     }
   }
@@ -2589,9 +2629,11 @@ function explodeArea(pos: Vec2, radius: number, enemies: Enemy[], toRemove: Set<
   emitBurst(particles, pos, "#f97316", Math.ceil(10 * visualScale), true, 1);
 }
 
-function takeDamage(player: PlayerState, amount: number, particles: Particle[], obj: GameObjects, onDeath: () => void) {
+function takeDamage(player: PlayerState, amount: number, particles: Particle[], obj: GameObjects, onDeath: () => void, sourceType = "unknown") {
   audio.playShieldBreak();
   obj.screenShake = Math.max(obj.screenShake, 8);
+  addIncomingDamage(player, sourceType, amount);
+  player.deathCause = sourceType;
 
   if (player.shield && player.shield.hp > 0) {
     player.shield.hp -= amount;

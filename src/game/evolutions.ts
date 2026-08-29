@@ -57,30 +57,32 @@ export const EVOLUTIONS: EvolutionDef[] = [
   },
   {
     id: "drone_swarm",
-    name: "РОЙ ДРОНОВ",
+    name: "АРМАДА",
     icon: "🛸",
-    description: "Сателлит + дрон + связь дронов → автономный флот усиливается.",
-    requires: ["satellite_1", "drone_1", "drone_link"],
+    description: "Турель + спутник + урон спутников + дрон → тяжёлый автономный флот: турели и спутники 4 уровня, дополнительный дрон-носитель.",
+    requires: ["satellite_1", "drone_1", "auto_turret", "satellite_damage"],
     apply: p => {
       p.satellites.forEach(sat => { sat.level += 3; });
       p.drones.forEach(drone => { drone.level += 3; });
-      if (p.drones.length < 5) {
+      if (p.drones.length < 6) {
         p.drones.push({ id: Math.random(), pos: { ...p.pos }, angle: 0, orbitAngle: 0, orbitRadius: 150, speed: 3, shootTimer: 0, level: 4 });
+        p.drones.push({ id: Math.random(), pos: { ...p.pos }, angle: Math.PI, orbitAngle: Math.PI, orbitRadius: 170, speed: 2.8, shootTimer: 0, level: 4 });
       }
     },
   },
   {
     id: "phase_reaper",
-    name: "ЖНЕЦ ФАЗ",
+    name: "ЖНЕЦ БЕЗДНЫ",
     icon: "🌑",
-    description: "Призрак + квантовый тоннель + сингулярные снаряды → фазовая неуязвимость усиливается.",
-    requires: ["ghost", "quantum_tunnel", "singularity_rounds"],
+    description: "Призрак + квантовый тоннель + сингулярность + арсенал Бездны → фазовый жнец: неуязвимость, пробитие, самонаведение и +20% урона.",
+    requires: ["ghost", "quantum_tunnel", "singularity_rounds", "void_arsenal"],
     apply: p => {
       p.ghostMode = true;
-      p.piercing += 3;
+      p.piercing += 4;
       p.homing = true;
       p.homingStrength += 0.05;
-      p.bulletDamage *= 1.2;
+      p.bulletDamage *= 1.25;
+      p.voidSouls = Math.min(p.voidSouls + 2, 20);
     },
   },
   {

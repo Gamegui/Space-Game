@@ -1,14 +1,86 @@
 // ─── Web Audio API Procedural Sound Engine ─────────────────────────────────────
 // Rich atmospheric space drone synth with soft, balanced, satisfying laser SFX.
 
+// ─── Procedural soundtrack themes (v2.8.0) ───────────────────────────────────
+// «Несколько подходящих саундтреков»: каждая тема — 16-шаговый паттерн
+// (восьмые) с басом, мелодией и хэтами, сыгранный look-ahead-планировщиком
+// поверх WebAudio. Всё через musicGain: ползунок громкости и дакинг работают.
+
+export type MusicTheme = "menu" | "combat" | "boss" | null;
+
+type ThemeDef = {
+  bpm: number;
+  bass: (number | null)[];
+  lead: (number | null)[];
+  hats: boolean[];
+  bassWave: OscillatorType;
+  leadWave: OscillatorType;
+  bassVol: number;
+  leadVol: number;
+  leadLowpass: number;
+  /** Static chord pad (menu only). */
+  pad?: number[];
+};
+
+const THEMES: Record<Exclude<MusicTheme, null>, ThemeDef> = {
+  // «Звёздная гавань» — меню/ангар: спокойное арпеджио над дрон-аккордом.
+  menu: {
+    bpm: 72,
+    bass: [110, null, null, null, null, null, null, null, 87.31, null, null, null, null, null, null, null],
+    lead: [220, 261.63, 329.63, 440, 392, 329.63, 261.63, 329.63, 220, 261.63, 329.63, 440, 523.25, 440, 329.63, 261.63],
+    hats: new Array<boolean>(16).fill(false),
+    bassWave: "sine",
+    leadWave: "triangle",
+    bassVol: 0.05,
+    leadVol: 0.045,
+    leadLowpass: 2400,
+    pad: [110, 164.81, 246.94],
+  },
+  // «Погоня в пустоте» — волны: двигательный бас + арпеджио, ля-минор.
+  combat: {
+    bpm: 132,
+    bass: [110, 110, 110, 98, 110, 110, 130.81, 98, 110, 110, 110, 98, 110, 110, 130.81, 98],
+    lead: [440, 523.25, 659.25, 523.25, 587.33, 523.25, 659.25, 523.25, 440, 523.25, 659.25, 523.25, 587.33, 659.25, 783.99, 659.25],
+    hats: [true, false, true, false, true, false, true, false, true, false, true, false, true, false, true, true],
+    bassWave: "sawtooth",
+    leadWave: "triangle",
+    bassVol: 0.05,
+    leadVol: 0.042,
+    leadLowpass: 2600,
+  },
+  // «Пробуждение титана» — босс: мрачный ре-минор с тритоном, плотный драйв.
+  boss: {
+    bpm: 148,
+    bass: [73.42, 73.42, 73.42, 77.78, 73.42, 73.42, 65.41, 77.78, 73.42, 73.42, 73.42, 77.78, 73.42, 73.42, 65.41, 77.78],
+    lead: [293.66, 349.23, 440, 349.23, 293.66, 415.3, 440, 415.3, 293.66, 349.23, 440, 349.23, 587.33, 415.3, 440, 415.3],
+    hats: new Array<boolean>(16).fill(true),
+    bassWave: "sawtooth",
+    leadWave: "sawtooth",
+    bassVol: 0.055,
+    leadVol: 0.038,
+    leadLowpass: 1500,
+  },
+};
+
 class SoundEngine {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
   private musicGain: GainNode | null = null;
   private sfxGain: GainNode | null = null;
   private isMuted: boolean = false;
-  private isMusicPlaying: boolean = false;
-  private musicOscillators: OscillatorNode[] = [];
+  // ─── Procedural soundtrack engine (v2.8.0) ────────────────────────────────
+  // Several composed themes (menu / combat / boss) driven by a lookahead
+  // step sequencer, plus one-shot victory / defeat jingles. Everything goes
+  // through musicGain, so the music volume slider and ducking keep working.
+  private theme: MusicTheme = null;
+  private schedulerId: ReturnType<typeof setInterval> | null = null;
+  private nextStepTime = 0;
+  private stepIndex = 0;
+  private padOscillators: OscillatorNode[] = [];
+  /** Base music gain from the volume slider — ducking must return to THIS
+   *  value, not to 1.0 (pre-v2.8.0 bug: mythic sting left music at full). */
+  private musicBaseGain = 0.084;
+  private musicDucked = false;
   private noiseBuffer: AudioBuffer | null = null;
   private xpPitchCounter: number = 0;
   private lastXpTime: number = 0;
@@ -81,7 +153,10 @@ class SoundEngine {
 
   public setMusicVolume(percent: number) {
     this.init();
-    if (this.musicGain && this.ctx) this.musicGain.gain.setValueAtTime(0.24 * Math.max(0, Math.min(1, percent / 100)), this.ctx.currentTime);
+    this.musicBaseGain = 0.24 * Math.max(0, Math.min(1, percent / 100));
+    if (this.musicGain && this.ctx && !this.musicDucked) {
+      this.musicGain.gain.setTargetAtTime(this.musicBaseGain, this.ctx.currentTime, 0.05);
+    }
   }
 
   public setSfxVolume(percent: number) {
@@ -335,12 +410,14 @@ class SoundEngine {
     if (!this.ctx || !this.sfxGain) return;
     const t = this.ctx.currentTime;
 
-    // Приглушить обычную музыку, вернуть через 3.2 c.
+    // Приглушить тему, вернуть через 3.2 c к пользовательской громкости.
     try {
       if (this.musicGain) {
+        this.musicDucked = true;
         this.musicGain.gain.cancelScheduledValues(t);
-        this.musicGain.gain.setTargetAtTime(0.08, t, 0.12);
-        this.musicGain.gain.setTargetAtTime(1, t + 3.2, 0.8);
+        this.musicGain.gain.setTargetAtTime(Math.min(0.08, this.musicBaseGain), t, 0.12);
+        this.musicGain.gain.setTargetAtTime(this.musicBaseGain, t + 3.2, 0.8);
+        window.setTimeout(() => { this.musicDucked = false; }, 4200);
       }
     } catch { /* музыка не играет — не критично */ }
 
@@ -577,45 +654,176 @@ class SoundEngine {
     osc.stop(t + 0.22);
   }
 
-  // ─── Rich Cosmic Drone Ambient BGM ──────────────────────────────────────────
-  public startAmbientBGM() {
-    if (this.isMusicPlaying || !this.ctx || !this.musicGain) return;
-    this.isMusicPlaying = true;
+  // ─── Procedural soundtrack engine (v2.8.0) ──────────────────────────────────
+  /** Switch the looping theme. Idempotent; `null` stops the music entirely.
+   *  Safe before the first user gesture: the scheduler waits for a running
+   *  AudioContext and picks the theme up on the next resume(). */
+  public setMusicTheme(theme: MusicTheme) {
+    this.init();
+    if (this.theme === theme) return;
+    const restarting = this.theme === null;
+    this.theme = theme;
+    if (theme === null) {
+      this.stopMusicScheduler();
+      this.stopPad();
+      return;
+    }
+    if (restarting) this.stepIndex = 0; // fresh start — begin at the bar
+    this.syncPad(theme);
+    this.ensureMusicScheduler();
+  }
 
-    // Quiet, airy three-note pad. Sine/triangle voices avoid the tiring buzz of
-    // the previous five sawtooth oscillators, while slight detune adds movement.
-    const chord = [110, 164.81, 246.94];
+  public getMusicTheme(): MusicTheme {
+    return this.theme;
+  }
+
+  private ensureMusicScheduler() {
+    if (this.schedulerId !== null) return;
+    this.schedulerId = setInterval(() => this.musicTick(), 90);
+  }
+
+  private stopMusicScheduler() {
+    if (this.schedulerId !== null) {
+      clearInterval(this.schedulerId);
+      this.schedulerId = null;
+    }
+  }
+
+  private musicTick() {
+    if (!this.ctx || this.theme === null || this.ctx.state !== "running") return;
+    const def = THEMES[this.theme];
+    const stepDur = 60 / def.bpm / 2; // eighth notes
+    const now = this.ctx.currentTime;
+    // After a suspend (tab hidden / ad / pause) the clock froze — re-anchor
+    // instead of dumping a pile of missed notes at once.
+    if (this.nextStepTime < now - 0.25) this.nextStepTime = now + 0.06;
+    while (this.nextStepTime < now + 0.3) {
+      this.scheduleMusicStep(def, this.stepIndex, this.nextStepTime, stepDur);
+      this.stepIndex = (this.stepIndex + 1) % 16;
+      this.nextStepTime += stepDur;
+    }
+  }
+
+  private scheduleMusicStep(def: ThemeDef, step: number, at: number, stepDur: number) {
+    if (!this.ctx || !this.musicGain) return;
+    const bassFreq = def.bass[step % def.bass.length];
+    if (bassFreq !== null && bassFreq !== undefined) {
+      this.playMusicNote(bassFreq, at, stepDur * 0.92, def.bassVol, def.bassWave, 700);
+    }
+    const leadFreq = def.lead[step % def.lead.length];
+    if (leadFreq !== null && leadFreq !== undefined) {
+      this.playMusicNote(leadFreq, at, stepDur * 0.85, def.leadVol, def.leadWave, def.leadLowpass);
+    }
+    if (def.hats[step % def.hats.length]) {
+      this.playMusicHat(at, step === 0 ? 0.028 : 0.016);
+    }
+  }
+
+  /** One short synth note into the music bus (osc → lowpass → envelope). */
+  private playMusicNote(freq: number, at: number, dur: number, vol: number, wave: OscillatorType, lowpass: number) {
+    if (!this.ctx || !this.musicGain) return;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    const filter = this.ctx.createBiquadFilter();
+    osc.type = wave;
+    osc.frequency.setValueAtTime(freq, at);
+    filter.type = "lowpass";
+    filter.frequency.setValueAtTime(lowpass, at);
+    gain.gain.setValueAtTime(0.0001, at);
+    gain.gain.exponentialRampToValueAtTime(vol, at + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0008, at + dur);
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.musicGain);
+    osc.start(at);
+    osc.stop(at + dur + 0.02);
+  }
+
+  /** Quiet noise tick for rhythmic drive (reuses the shared noise buffer). */
+  private playMusicHat(at: number, vol: number) {
+    if (!this.ctx || !this.musicGain || !this.noiseBuffer) return;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.noiseBuffer;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = "highpass";
+    filter.frequency.setValueAtTime(6500, at);
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(vol, at);
+    gain.gain.exponentialRampToValueAtTime(0.0008, at + 0.04);
+    src.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.musicGain);
+    src.start(at, 0, 0.05);
+    src.stop(at + 0.05);
+  }
+
+  /** Menu pad — the classic airy drone chord under the arpeggio. */
+  private syncPad(theme: Exclude<MusicTheme, null>) {
+    const def = THEMES[theme];
+    if (!def.pad || !this.ctx || !this.musicGain) {
+      this.stopPad();
+      return;
+    }
+    if (this.padOscillators.length > 0) return; // pad already running
     const t = this.ctx.currentTime;
-
-    this.musicOscillators = chord.map((freq, i) => {
+    this.padOscillators = def.pad.map((freq, i) => {
       const osc = this.ctx!.createOscillator();
       const gain = this.ctx!.createGain();
       const filter = this.ctx!.createBiquadFilter();
-
       osc.type = i === 1 ? "triangle" : "sine";
       osc.frequency.setValueAtTime(freq, t);
       osc.detune.setValueAtTime((i - 1) * 5, t);
-
       filter.type = "lowpass";
       filter.frequency.setValueAtTime(190 + i * 80, t);
-
-      gain.gain.setValueAtTime(0.028, t);
-
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.setTargetAtTime(0.028, t, 0.8);
       osc.connect(filter);
       filter.connect(gain);
       gain.connect(this.musicGain!);
-
       osc.start(t);
       return osc;
     });
   }
 
-  public stopAmbientBGM() {
-    this.musicOscillators.forEach(osc => {
+  private stopPad() {
+    for (const osc of this.padOscillators) {
       try { osc.stop(); osc.disconnect(); } catch {}
+    }
+    this.padOscillators = [];
+  }
+
+  // ─── One-shot jingles (victory / defeat) ────────────────────────────────────
+  /** Победа (~3 с): восходящий мажорный забег-фанфар + аккорд. */
+  public playVictoryJingle() {
+    if (this.isMuted) return;
+    this.resume();
+    if (!this.ctx || !this.musicGain) return;
+    const t = this.ctx.currentTime;
+    // Быстрый забег вверх.
+    [523.25, 587.33, 659.25, 783.99].forEach((freq, i) => {
+      this.playMusicNote(freq, t + i * 0.11, 0.22, 0.07, "triangle", 3200);
     });
-    this.musicOscillators = [];
-    this.isMusicPlaying = false;
+    // Торжественное трезвучие с сустейном.
+    for (const [freq, delay] of [[523.25, 0.5], [659.25, 0.5], [783.99, 0.5], [1046.5, 0.62]] as const) {
+      this.playMusicNote(freq, t + delay, 2.2, 0.05, "triangle", 3200);
+    }
+    // Низкий удар-финал.
+    this.playMusicNote(130.81, t + 0.5, 1.6, 0.07, "sine", 400);
+  }
+
+  /** Поражение (~2.5 с): нисходящая фраза в ля-миноре + тяжёлый обрыв. */
+  public playGameOverSting() {
+    if (this.isMuted) return;
+    this.resume();
+    if (!this.ctx || !this.musicGain) return;
+    const t = this.ctx.currentTime;
+    const descend: [number, number][] = [[440, 0], [392, 0.3], [329.63, 0.6], [349.23, 0.9]];
+    for (const [freq, delay] of descend) {
+      this.playMusicNote(freq, t + delay, 0.55, 0.055, "sine", 1800);
+    }
+    // Спад в низ.
+    this.playMusicNote(220, t + 1.25, 0.5, 0.05, "triangle", 900);
+    this.playMusicNote(110, t + 1.55, 1.4, 0.08, "sine", 400);
   }
 }
 

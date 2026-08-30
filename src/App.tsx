@@ -302,8 +302,14 @@ export default function App() {
 
   // Yandex Games lifecycle, cloud record and automatic pause when the tab is hidden.
   useEffect(() => {
-    void yandex.init().then(async () => {
-      setAdsAvailable(yandex.isAvailable());
+    // One deferred re-check per session when the purchase list could not be
+    // fetched at startup (a transient network failure must not lock a paying
+    // player out of the bought ship until a full reload).
+    let ownershipRetried = false;
+    /** (Re)load cloud meta, hi-score, product ownership and catalog offers.
+     *  force=true runs after the platform account-selection dialog closed:
+     *  the chosen account's cloud state wins even when it is empty. */
+    const loadCloudState = async (force = false) => {
       // Cloud meta state (permanent upgrades, shards, missions). Falls back to
       // the localStorage snapshot when the SDK is absent or the player is a guest.
       const cloudMeta = await yandex.loadData<unknown>(META_KEY);
@@ -311,49 +317,65 @@ export default function App() {
         const normalized = normalizeMetaState(cloudMeta);
         try { localStorage.setItem("meta_v1", JSON.stringify(normalized)); } catch { /* storage blocked */ }
         setMeta(normalized);
+      } else if (force) {
+        // Account switch: the chosen account has no cloud meta — start it
+        // fresh instead of leaking the previous player's local snapshot.
+        const fresh = defaultMetaState();
+        try { localStorage.setItem("meta_v1", JSON.stringify(fresh)); } catch { /* storage blocked */ }
+        setMeta(fresh);
       }
-      // Product catalog-parity: fetch ownership + offers for every known product
-      // (void_wraith + the new premium_pass / starter_pack). Absent products are
-      // hidden from purchase UI (Game Requirements §1.13).
+      // Product catalog-parity: ONE getPurchases() + ONE getCatalog() call for
+      // every product (void_wraith + premium_pass / starter_pack). Absent
+      // products are hidden from purchase UI (Game Requirements §1.13.6).
       const productIds = PRODUCTS.map(p => p.id);
-      const [cloudScore, catalogOffer, ...ownershipChecks] = await Promise.all([
+      const [cloudScore, ownedIds, catalog] = await Promise.all([
         yandex.loadHighScore(),
-        yandex.getCatalogOffer("void_wraith"),
-        ...productIds.map(id => yandex.hasPermanentPurchase(id)),
+        yandex.getOwnedProducts(),
+        yandex.getCatalogOffers(),
       ]);
       if (cloudScore !== null) setHiscore(current => Math.max(current, cloudScore));
-      // Outside the Yandex catalogue the ship is unlocked for development and QA.
-      const ownsPremiumShip = Boolean(ownershipChecks[0]) || !yandex.isPlatformAvailable();
-      setPremiumUnlocked(ownsPremiumShip);
-      // When the product is inactive in the console the purchase must be
-      // absent from the game, so the offer stays null and the CTA never shows.
-      setPremiumOffer(catalogOffer);
-      setPremiumCatalogChecked(true);
-      // Sync meta.unlockedProducts from real ownership, then fetch offers.
+      else if (force) {
+        setHiscore(0);
+        try { localStorage.setItem("hs", "0"); } catch { /* storage blocked */ }
+      }
+      // Outside the Yandex catalogue everything is unlocked for development and QA.
       const devOwned = !yandex.isPlatformAvailable();
-      const ownedSet = new Set<string>();
-      productIds.forEach((id, i) => {
-        if (Boolean(ownershipChecks[i]) || devOwned) ownedSet.add(id);
-      });
+      const ownedSet = new Set<string>(ownedIds ?? []);
+      if (devOwned) productIds.forEach(id => ownedSet.add(id));
+      setPremiumUnlocked(ownedSet.has("void_wraith"));
+      // When a product is inactive in the console the purchase must be
+      // absent from the game, so the offer stays null and the CTA never shows.
+      setPremiumOffer(catalog?.get("void_wraith") ?? null);
+      setPremiumCatalogChecked(true);
+      // Sync meta.unlockedProducts from real ownership.
       setMeta(prev => {
         const owned = new Set(prev.unlockedProducts);
         ownedSet.forEach(id => owned.add(id));
         if (owned.size === prev.unlockedProducts.length) return prev;
         return { ...prev, unlockedProducts: [...owned] };
       });
-      const offerList = await Promise.all(
-        productIds.map(id => (ownedSet.has(id) ? Promise.resolve(null) : yandex.getCatalogOffer(id))),
-      );
       const statuses: Record<string, ProductStatus> = {};
       const offers: Record<string, StoreOffer | null> = {};
-      productIds.forEach((id, i) => {
+      productIds.forEach(id => {
         const owned = ownedSet.has(id);
-        offers[id] = owned ? null : offerList[i];
-        statuses[id] = owned ? { state: "owned" } : offerList[i] ? { state: "available" } : { state: "absent" };
+        const offer = owned ? null : catalog?.get(id) ?? null;
+        offers[id] = offer;
+        statuses[id] = owned ? { state: "owned" } : offer ? { state: "available" } : { state: "absent" };
       });
       setProductStatuses(statuses);
       setProductOffers(offers);
+      if (ownedIds === null && !devOwned && !ownershipRetried) {
+        ownershipRetried = true;
+        window.setTimeout(() => { void loadCloudState(); }, 10_000);
+      }
+    };
+    void yandex.init().then(() => {
+      setAdsAvailable(yandex.isAvailable());
+      void loadCloudState();
     });
+    // The platform account dialog can swap the underlying player: reload the
+    // cloud state for the newly selected account (sdk-events).
+    const unsubscribeAccountSwitch = yandex.onAccountSwitch(() => { void loadCloudState(true); });
     const pauseForFocusLoss = () => {
       // Yandex checks focus loss independently of document.visibilityState. Some
       // browsers fire blur while the document is still visible, so always stop
@@ -372,9 +394,21 @@ export default function App() {
     };
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("blur", pauseForFocusLoss);
+    // Platform pause/resume events (sdk-events): the platform shows a
+    // fullscreen ad automatically at game start and fires game_api_pause /
+    // game_api_resume around ads, the purchase window and tab switches.
+    // Pause mirrors focus loss (requirements §1.3, §4.7); resume deliberately
+    // does NOT auto-unpause — gameplay resumes through the game's own UI.
+    const unsubscribePlatformPause = yandex.onPlatformPause(pauseForFocusLoss);
+    const unsubscribePlatformResume = yandex.onPlatformResume(() => {
+      keysRef.current.clear();
+    });
     return () => {
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("blur", pauseForFocusLoss);
+      unsubscribePlatformPause();
+      unsubscribePlatformResume();
+      unsubscribeAccountSwitch();
       yandex.setGameplay(false);
     };
   }, []);
@@ -383,6 +417,17 @@ export default function App() {
     yandex.setGameplay(phase === "playing");
     if (phase !== "playing") keysRef.current.clear();
   }, [phase]);
+
+  // ─── Soundtrack direction (v2.8.0) ─────────────────────────────────────────
+  // Тема выбирается по фазе и наличию босса: меню — «Звёздная гавань», бой —
+  // «Погоня в пустоте», босс — «Пробуждение титана»; смерть/победа глушат
+  // тему (джинглы играются обработчиками событий). «upgrade»/«paused» тему не
+  // меняют — музыка забега продолжает играть.
+  useEffect(() => {
+    if (phase === "playing" || phase === "boss_intro") audio.setMusicTheme(bossActive ? "boss" : "combat");
+    else if (phase === "menu" || phase === "ship_select" || phase === "tutorial" || phase === "route" || phase === "hangar") audio.setMusicTheme("menu");
+    else if (phase === "dead" || phase === "victory") audio.setMusicTheme(null);
+  }, [phase, bossActive]);
 
   useEffect(() => {
     audio.setMusicVolume(musicVolume);
@@ -430,10 +475,13 @@ export default function App() {
   // ── Meta-progression persistence & run finalisation (v1.5.0) ───────────────
   // Writes the meta state to localStorage immediately (instant UI on reload)
   // and mirrors it to the Yandex Player Data cloud (best-effort, async).
-  const persistMeta = useCallback((next: MetaState) => {
+  // critical=true (default) flushes the cloud write immediately — run results
+  // and purchases must survive the player quitting right away; paced UI
+  // writers may pass false to ride the platform write-budget throttle.
+  const persistMeta = useCallback((next: MetaState, critical = true) => {
     metaRef.current = next;
     try { localStorage.setItem("meta_v1", JSON.stringify(next)); } catch { /* storage blocked */ }
-    void yandex.saveData(META_KEY, next);
+    void yandex.saveData(META_KEY, next, critical);
   }, []);
 
   const pushShardEvent = useCallback((label: string, amount: number) => {
@@ -503,7 +551,7 @@ export default function App() {
   const startGame = useCallback((shipClass: ShipClassId = selectedClass) => {
     if (shipClass === "void_wraith" && !premiumUnlocked) return;
     audio.resume();
-    audio.startAmbientBGM();
+    // Тему боя включит музыкальный эффект по phase → «combat».
 
     const player = makeInitialPlayer(shipClass);
     // v1.5.0: apply permanent meta upgrades + owned product bonuses to the run.
@@ -676,7 +724,7 @@ export default function App() {
         if (def) {
           pendingMythicDefRef.current = def;
           setPendingMythic(def);
-          audio.stopAmbientBGM();
+          audio.setMusicTheme(null);
           audio.playMythicSting();
           phaseRef.current = "upgrade";
           setPhase("upgrade");
@@ -1000,7 +1048,7 @@ export default function App() {
     runRevivedRef.current = true;
     phaseRef.current = "playing";
     setPhase("playing");
-    audio.startAmbientBGM();
+    // Музыка боя вернётся музыкальным эффектом по phase.
   }, [adPending, reviveUsed, persistMeta]);
 
   // ─── Keyboard ─────────────────────────────────────────────────────────────
@@ -1105,7 +1153,8 @@ export default function App() {
             g.player.invincTimer = 120;
             return;
           }
-          audio.stopAmbientBGM();
+          audio.setMusicTheme(null);
+          audio.playGameOverSting();
           yandex.setGameplay(false);
           const hs = Math.max(g.player.score, hiscore);
           try { localStorage.setItem("hs", String(hs)); } catch { /* storage may be blocked */ }
@@ -1133,7 +1182,8 @@ export default function App() {
             g.boss = null;
             setBossActive(false);
             if (waveRef.current >= 50) {
-              audio.stopAmbientBGM();
+              audio.setMusicTheme(null);
+              audio.playVictoryJingle();
               yandex.setGameplay(false);
               const hs = Math.max(g.player.score, hiscore);
               try { localStorage.setItem("hs", String(hs)); } catch { /* optional */ }
@@ -1480,7 +1530,7 @@ export default function App() {
     pendingLevelUpsRef.current++;
     pendingMythicDefRef.current = def;
     setPendingMythic(def);
-    audio.stopAmbientBGM();
+    audio.setMusicTheme(null);
     audio.playMythicSting();
     phaseRef.current = "upgrade";
     setPhase("upgrade");
@@ -1850,7 +1900,7 @@ export default function App() {
               pendingLevelUpsRef.current = Math.max(0, pendingLevelUpsRef.current - 1);
               phaseRef.current = "playing";
               setPhase("playing");
-              audio.startAmbientBGM();
+              // Тему боя вернёт музыкальный эффект по phase.
               syncUI();
             }}
             onDecline={() => {
@@ -1863,7 +1913,8 @@ export default function App() {
               setBonusChoiceUsed(false);
               pendingMythicDefRef.current = null;
               setPendingMythic(null);
-              audio.startAmbientBGM();
+              // Фаза остаётся «upgrade» — вернуть тему забега вручную.
+              audio.setMusicTheme(bossActive ? "boss" : "combat");
             }}
           />
         )}
@@ -2006,7 +2057,7 @@ export default function App() {
               <div className="rounded-xl border border-red-800 bg-red-950/90 p-3 text-center">
                 <div className="mb-2 text-sm font-black text-red-200">Завершить забег? Осколки за текущий забег будут начислены.</div>
                 <div className="flex justify-center gap-2">
-                  <button onClick={() => { setConfirmExit(false); audio.stopAmbientBGM(); yandex.setGameplay(false); finalizeRun(false); phaseRef.current = "menu"; setPhase("menu"); gameRef.current = null; }} className="rounded-lg bg-red-700 px-5 py-2 text-xs font-black text-white cursor-pointer">ДА, ВЫЙТИ</button>
+                  <button onClick={() => { setConfirmExit(false); audio.setMusicTheme(null); yandex.setGameplay(false); finalizeRun(false); phaseRef.current = "menu"; setPhase("menu"); gameRef.current = null; }} className="rounded-lg bg-red-700 px-5 py-2 text-xs font-black text-white cursor-pointer">ДА, ВЫЙТИ</button>
                   <button onClick={() => setConfirmExit(false)} className="rounded-lg bg-slate-700 px-5 py-2 text-xs font-black text-white cursor-pointer">ОТМЕНА</button>
                 </div>
               </div>
@@ -2201,7 +2252,7 @@ export default function App() {
                 <div><div className="text-[10px] text-slate-500">СИНЕРГИИ</div><b className="text-fuchsia-300">{gameRef.current.player.synergies.length}</b></div>
               </div>
               <div className="flex justify-center gap-3">
-                <button onClick={() => { audio.resume(); audio.startAmbientBGM(); phaseRef.current = "route"; setPhase("route"); }} className="rounded-full bg-fuchsia-700 px-8 py-3 font-black text-white hover:bg-fuchsia-600 cursor-pointer">♾️ ПРОДОЛЖИТЬ БЕСКОНЕЧНО</button>
+                <button onClick={() => { audio.resume(); phaseRef.current = "route"; setPhase("route"); }} className="rounded-full bg-fuchsia-700 px-8 py-3 font-black text-white hover:bg-fuchsia-600 cursor-pointer">♾️ ПРОДОЛЖИТЬ БЕСКОНЕЧНО</button>
                 <button onClick={() => { phaseRef.current = "ship_select"; setPhase("ship_select"); gameRef.current = null; }} className="rounded-full bg-gradient-to-r from-amber-500 to-orange-600 px-8 py-3 font-black text-white cursor-pointer">НОВЫЙ ЗАБЕГ</button>
               </div>
             </div>

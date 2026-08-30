@@ -1,7 +1,7 @@
 // ─── Product registry (v1.5.0) ────────────────────────────────────────────────
 // Central registry of permanent in-app purchases. The Yandex SDK purchase flow
-// (yandex.ts: purchasePermanent / hasPermanentPurchase / getCatalogOffer) is
-// already product-agnostic — this registry only describes them for the UI and
+// (yandex.ts: purchasePermanent / getOwnedProducts / getCatalogOffers) is
+// product-agnostic — this registry only describes them for the UI and
 // catalog-parity checks. New products must also be created in the Yandex Games
 // console with the EXACT id below.
 

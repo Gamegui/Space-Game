@@ -55,26 +55,32 @@ VITE_ADMIN=true npm run dev -- --port 5174
 
 ## Yandex Games configuration
 
-The official SDK is loaded from `https://yandex.ru/games/sdk/v2`.
+The official SDK is loaded from the **relative path** `/sdk.js` (the current
+requirement for games hosted on Yandex's server — see sdk-about). The legacy
+absolute `https://yandex.ru/games/sdk/v2` loader must NOT be used: the debug
+panel would show `IF` (old loader) and moderation rejects it.
 
 Required console entries:
 
 - Leaderboard technical name: `highscore`
-- Permanent, non-consumable in-app product ID: `void_wraith`
+- Permanent, non-consumable in-app product ID: `void_wraith` (optional: `premium_pass`, `starter_pack` — auto-hidden when absent)
+- Draft option «Игра использует облачные сохранения» is ON (requirement §1.11 — the game writes progress to Player Data)
+- Monetization connected (requirement §1.12)
 - Supported language in the console: Russian
 - Orientation: landscape
 - Platforms: desktop and mobile
 
 Integrated APIs:
 
-- LoadingAPI
-- GameplayAPI
+- LoadingAPI (§1.19.2)
+- GameplayAPI (§1.19.3)
+- Platform events `game_api_pause` / `game_api_resume` (startup ad, purchase window, tab switches)
 - Player Data / cloud high score
-- Leaderboards
+- Leaderboards via the current `ysdk.leaderboards.setScore()` (the deprecated `getLeaderboards()` stays as an older-SDK fallback)
 - Rewarded ads
-- Fullscreen ads
+- Fullscreen ads (one-shot resume guard; cooldown applies only when the ad really opened)
 - Permanent purchases and purchase restoration (`getPurchases()` on every launch — the documented permanent-product flow)
-- Store catalog (`getCatalog()`): the purchase CTA shows the numeric price and the portal currency name/icon straight from the SDK (Game Requirements §1.13.2 and §1.13.4), and the purchase is hidden whenever the product is absent or inactive in the console (§1.13, catalog parity)
+- Store catalog (`getCatalog()`): the purchase CTA shows the numeric price and the portal currency name/icon straight from the SDK (Game Requirements §1.13.2 and §1.13.4), and the purchase is hidden whenever the product is absent or inactive in the console (§1.13.6, catalog parity)
 
 Real advertisements, purchases and leaderboard writes must be tested in a Yandex Games draft; local development safely falls back when the SDK is unavailable.
 
@@ -148,6 +154,198 @@ Before clicking Publish in Yandex Games, manually verify in the platform draft:
 8. One clean run through wave 50 and Omega
 
 Do not add more large systems before release. Future changes should be limited to reproducible bug fixes and measured balance adjustments.
+
+## BACKLOG (запрос владельца, 2026-08-29): ПЕРЕДЕЛАТЬ БОССОВ — они скучные
+
+Владелец прямо сказал: «боссы скучные, нужно переделать». Следующей игровой
+сессии взяться за это ПЕРВОЙ (до новых крупных систем). Диагноз и направления:
+
+**Почему скучно сейчас:**
+- босс каждые 5 волн — это в основном «мешок HP» с большим здоровьем: та же
+  схема «уклоняйся и стреляй», различия между боссами в основном косметические
+  (модель/цвет/цифры), уникальных механик почти нет;
+- единственное исключение — Омега (волна 50) с четырьмя формами; остальным
+  боссам этого подхода не хватило;
+- атаки мало телеграфируются: игрок не читает, ЧТО сейчас произойдёт, и
+  реагирует тупым дожимом, а не тактикой.
+
+**Что сделать (по убыванию эффекта):**
+1. Уникальная механика каждому боссу волн 5/10/15/…/45 (по примеру Омеги):
+   фазы по порогам HP (75/50/25%) со сменой схемы атак на каждой фазе.
+2. Телеграфы: 0.6–1.0 с предупреждения (зона/линия/вспышка) до тяжёлых атак —
+   читаемость вместо рандомного урона.
+3. Арена-модификаторы: движущиеся зоны опасности, гравитационные колодцы,
+   периодическое сжатие арены — босс должен менять само пространство боя.
+4. Адды и окна урона: призыв мелких врагов + фаза уязвимости после большой
+   атаки (ритм «выжил — наказал» вместо непрерывного дожима).
+5. Связка с музыкой: босс-тема «Пробуждение титана» уже в игре (v2.8.0),
+   148 BPM, 16 шагов — тайминги фаз/телеграфов можно метрономить по такту.
+6. Промежуточные награды за фазу (осколки/опыт), чтобы длинный бой ощущал
+   прогресс, а не только финальный дроп.
+
+Проверка после переделки: ручной прогон волн 5→50, замер длительности боёв
+(цель 45–120 с на босса), `npm test` (cortege/perf-стрессы не должны упасть),
+`npm run package:yandex` + запись в этот handoff.
+
+## v2.8.0 — Саундтрек-система: 3 темы + джинглы победы/поражения; фикс громкости — 2026-08-29
+
+**Контекст:** запрос владельца — финальная доработка + «написать несколько
+подходящих саундтреков» + запись в handoff о переделке боссов (см. BACKLOG
+выше). Поднята версия 2.8.0.
+
+**Что изменено:**
+
+1. `src/game/audio.ts` — процедурная саундтрек-система вместо одного
+   статичного дрона:
+   - «Звёздная гавань» (меню/ангар/выбор корабля, 72 BPM) — арпеджио над
+     классическим дрон-аккордом (пад сохранён);
+   - «Погоня в пустоте» (волны, 132 BPM) — двигательный бас + арпеджио,
+     ля-минор, хэты;
+   - «Пробуждение титана» (босс, 148 BPM) — ре-минор с тритоном, плотный
+     драйв;
+   - джингл победы (~3 с) и стинг поражения (~2.5 с) — one-shot;
+   - look-ahead-планировщик (интервал 90 мс, горизонт 0.3 с), всё через
+     `musicGain`: ползунок громкости действует на темы; после suspend
+     (реклама/пауза/сворачивание) планировщик перенацеливается, не вываливая
+     кучу пропущенных нот разом;
+   - запуск до первого жеста безопасен: планировщик ждёт running-контекст и
+     подхватывает тему на следующем `resume()`.
+2. Фикс старого бага громкости: `playMythicSting` возвращал musicGain к 1.0
+   вместо пользовательского уровня — после мифик-дропа музыка ревела на
+   полной. Теперь дакинг возвращается к `musicBaseGain` (уровень ползунка),
+   `setMusicVolume` обновляет базу.
+3. `src/App.tsx` — музыкальный эффект `[phase, bossActive]` выбирает тему
+   (playing/boss_intro → бой/босс; меню/ангар/выбор/обучение/маршрут → меню;
+   dead/victory → тишина+джингл; upgrade/paused тему не меняют). Все 10 прямых
+   вызовов `startAmbientBGM`/`stopAmbientBGM` заменены на новый API;
+   мифик-ревил глушит тему, отказ/принятие восстанавливает тему забега.
+4. `README.md` — ноты про саундтрек; `package.json` → 2.8.0;
+   `space-shooter-yandex.zip` пересобран.
+
+**Почему:** один статичный дрон на все состояния — главная оставшаяся
+«дешёвость» подачи; босс-файты без собственной музыки не ощущались событием.
+
+**Как проверено:** `npm run typecheck` (чисто); `npm test` 62/62; ручной
+смоук в dev-превью: смена тем меню→бой→босс→победа/смерть, дакинг мифик-стинга
+возвращается к уровню ползунка; `npm run package:yandex`.
+
+**Новые внешние проверки:** в черновике Яндекса убедиться, что при показе
+рекламы темы ставятся на паузу вместе с контекстом и корректно возобновляются.
+
+## v2.7.11 — Фикс всех оставшихся пунктов аудита по документации Яндекса — 2026-08-29
+
+**Контекст:** «нужно все исправить» — закрыты все пункты раздела 2 отчёта
+`YANDEX_DOCS_AUDIT.md` (2.1–2.7). Версия пакета поднята до 2.7.11.
+
+**Что изменено:**
+
+1. `src/platform/yandex.ts`:
+   - `getOwnedProducts()` — ОДИН `getPurchases()` на запуск вместо трёх, с
+     ретраем через 1,5 с при сетевом сбое; возвращает `string[] | null`
+     (null = список недоступен), а не «ложное не куплено» (пункты 2.1, 2.2);
+   - `getCatalogOffers()` — ОДИН `getCatalog()` на запуск →
+     `Map<productId, StoreOffer>`; покомпонентные `hasPermanentPurchase` /
+     `getCatalogOffer` удалены (2.2);
+   - бюджет записи Player Data (2.3, sdk-player: ≤100 запросов/5 мин, ≤200 КБ
+     на игрока): записи сливаются по ключам в один пакет, отправка не чаще
+     раза в 5 с; `critical=true` (результаты забега/покупки/рекорд) —
+     немедленно; гард размера 180 КБ с предупреждением; неудачный пакет
+     возвращается в очередь и ретраится;
+   - `setScore` — гард документированного лимита 1 запрос/с с накоплением
+     максимума и отложенной отправкой; перед отправкой — документированная
+     проверка `ysdk.isAvailableMethod("leaderboards.setScore")`, гости
+     пропускаются молча (2.3, 2.5);
+   - события `ACCOUNT_SELECTION_DIALOG_OPENED/CLOSED` (имена из
+     `ysdk.EVENTS` с fallback на литералы): на время диалога облачная запись
+     приостановлена; после закрытия `Player` перечитывается, очередь записей и
+     отложенный рекорд предыдущего игрока сбрасываются (гонка «запись в
+     полёте» закрыта счётчиком поколений `saveGeneration`), приложение
+     перезагружает облачное состояние через `onAccountSwitch` (2.4).
+2. `src/App.tsx`:
+   - init-эффект рефакторен в `loadCloudState(force)`: один `getPurchases()` +
+     один `getCatalog()`; при неизвестном владении — один фоновый ре-чек через
+     10 с на сессию; после смены аккаунта (force) облачное состояние выбранного
+     аккаунта побеждает целиком, включая сброс локального снапшота при пустом
+     облаке (раньше локальная мета предыдущего игрока «протекала» в новый
+     аккаунт);
+   - `persistMeta(next, critical=true)` — явный флаг критичности облачной
+     записи (семантика вызовов не изменилась).
+3. `test/perf.smoke.test.mts`: три тайминг-теста получают `{ retry: 2 }` от
+   node:test (в типах @types/node поля нет — опции приведены типом напрямую);
+   пороги не ослаблены, детерминированные провалы по-прежнему падают.
+   `test/cortege_level300.test.mts` + `gameLoop.ts`: настоящий источник флаков
+   найден — тест ассертил общее число живых осколков `< 80`, а инвариант
+   движка — бюджет рождения 40/кадр (осколки живут до вылета за экран,
+   Math.random легитимно даёт ~85). `MAX_DISCHARGE_SHARDS_PER_FRAME`
+   экспортирован, порог теста = 10 бюджетов кадра: цепной взрыв (тысячи)
+   по-прежнему ловится, ложных срабатываний нет (2.7).
+4. `README.md`, `YANDEX_DOCS_AUDIT.md`, `package.json` (2.7.11) обновлены;
+   `space-shooter-yandex.zip` пересобран.
+
+**Почему:** владелец попросил исправить всё из аудита; оставшиеся пункты —
+надёжность (сбой покупки при старте), соблюдение лимитов платформы (риск
+молчаливого отвержения записей), корректная смена аккаунта (запись данных
+чужого игрока) и доверие к `npm test` в CI.
+
+**Как проверено:** `npm run typecheck` (чисто); `npm test` 62/62 несколько
+прогонов, включая параллельно с `vite build`; `npm run package:yandex` (архив
+пересобран); grep — покомпонентные методы больше не используются; новые пути
+обёрнуты в try/catch и опциональные типы (старые SDK/локально — no-op).
+
+**Новые внешние проверки (в черновике Яндекса):** смена аккаунта в диалоге
+платформы перезагружает прогресс без утечки меты; при обрыве сети на старте
+купленный корабль появляется после ~10 с; повторные смерти подряд не дают
+ошибок лимита лидерборда в консоли.
+
+## v2.7.10 — Аудит по официальной документации Яндекса: лидерборды, события платформы, реклама — 2026-08-29
+
+**Контекст:** запрос владельца — прогнать проект по актуальной документации
+Яндекс Игр (yandex.ru/dev/games/doc/ru/) и найти дыры и баги. Полный отчёт —
+`YANDEX_DOCS_AUDIT.md`.
+
+**Что изменено:**
+
+1. `src/platform/yandex.ts`:
+   - лидерборды переведены с устаревшего `ysdk.getLeaderboards().setLeaderboardScore()`
+     на актуальный `ysdk.leaderboards.setScore()` (старый путь — fallback для
+     старых SDK; документация sdk-leaderboard помечает getLeaderboards устаревшим);
+   - из типов убран устаревший `player.getMode()`; `getPlayer()` вызывается без
+     легаси-параметра `scopes`;
+   - подписка на события платформы `game_api_pause`/`game_api_resume` (sdk-events)
+     с регистрацией `onPlatformPause/onPlatformResume`; покрывает автоматическую
+     стартовую рекламу платформы, окно покупки, сворачивание (§1.3, §4.7, §1.19.4);
+   - `showFullscreenAdv`: одноshot-гард резюма (документация: onClose вызывается
+     и после onError, и при отказе по частоте — раньше onResume звался дважды);
+   - 3-минутный кулдаун interstitial теперь фиксируется в `onOpen` (не сжигается
+     при непоказанной рекламе — при ошибке/лимите платформы).
+2. `src/App.tsx`: регистрация платформенных pause/resume (pause зеркалит потерю
+   фокуса; resume консервативный — не снимает пользовательскую паузу).
+3. `README.md`: чек-лист публикации дополнен обязательными шагами — включить
+   «Игра использует облачные сохранения» (§1.11), подключить монетизацию
+   (§1.12), создать опциональные продукты `premium_pass`/`starter_pack`
+   (§1.13.6), проверка лоадера `IT` через `?debug-mode=16`.
+4. `PROJECT_HANDOFF.md`: секция конфигурации — SDK подключается относительным
+   `/sdk.js` (не `yandex.ru/games/sdk/v2`); номера требований приведены к
+   редакции от 18.08.2026 (`LoadingAPI.ready` — §1.19.2, паритет каталога —
+   §1.13.6; «§1.23» теперь про запрет ИИ). Исторические записи журнала не
+   переписывались.
+5. `space-shooter-yandex.zip` пересобран (`npm run package:yandex`).
+
+**Почему:** расхождения с документацией: устаревший API лидербордов (риск
+отказа после удаления метода), отсутствие обработки стартовой рекламы
+платформы, латентный двойной резюм в interstitial, пустая трата кулдауна,
+дыры в чек-листе публикации (модерационные §1.11/§1.12), дрейф номеров
+требований и URL SDK в текстах проекта.
+
+**Как проверено:** `npm run typecheck` (чисто), `npm test` (62/62),
+`npm run package:yandex` (архив пересобран, index.html в корне, `/sdk.js`),
+grep по сборке — абсолютных URL на S3 Яндекса нет (§1.7). Новые API обёрнуты
+в try/catch и опциональные типы: на старых SDK и локально всё деградирует
+в no-op, как раньше.
+
+**Новые внешние проверки (в черновике Яндекса):** стартовая реклама без звука
+игры; interstitial при ошибке возвращает в меню ровно один раз; рекорд
+доходит до `highscore` у авторизованного игрока.
 
 ## v1.8.0 — Оптимизация + переработка Ангара + усиление мификов — 2026-08-29
 

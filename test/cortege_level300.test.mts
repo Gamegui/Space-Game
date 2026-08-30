@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  stepGame, makeInitialPlayer, makeStars, spawnAdaptiveGuard,
+  stepGame, makeInitialPlayer, makeStars, spawnAdaptiveGuard, MAX_DISCHARGE_SHARDS_PER_FRAME,
   type GameObjects, type StepInput,
 } from "../src/game/gameLoop";
 import { spawnEnemy } from "../src/game/enemies";
@@ -155,7 +155,16 @@ test("⚔️ РЕГРЕССИЯ «Фазовый разряд» × КОРТЕЖ:
     obj.enemies = obj.enemies.filter(e => e.hp > 0);
     assert.ok(obj.bullets.length < 600, `пули ограничены (${obj.bullets.length} на кадре ${k})`);
     const shards = obj.bullets.filter(b => b.shardBorn).length;
-    assert.ok(shards < 80, `осколков за кадр в пределах бюджета (${shards})`);
+    // Инвариант движка — бюджет на КАДР РОЖДЕНИЯ (MAX_DISCHARGE_SHARDS_PER_FRAME,
+    // см. gameLoop): общее число живых осколков легитимно выше (осколки живут
+    // до вылета за экран, а времена жизни случайны), поэтому регрессионный
+    // порог — 10 бюджетов кадра. Цепной взрыв v1.8.0 давал тысячи осколков
+    // за кадр, так что запас в 10× ловит регрессию и не даёт ложных
+    // срабатываний на легитимных значениях.
+    assert.ok(
+      shards <= MAX_DISCHARGE_SHARDS_PER_FRAME * 10,
+      `осколки не растут цепно (${shards} на кадре ${k})`,
+    );
     if (obj.enemies.length === 0) break;
   }
   // Осколочные пули помечены: второе поколение невозможно по построению.

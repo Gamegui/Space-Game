@@ -26,7 +26,7 @@ function makeObjects(player: ReturnType<typeof makeInitialPlayer>): GameObjects 
     routeXpMultiplier: 1, routeScoreMultiplier: 1, activeRoute: "warzone", routeEffect: "none",
     performanceTier: 2, performanceAuto: false, waveStartedFrame: 0,
     guardSpawnedThisWave: false, fastClearStreak: 0, guardEventActive: false,
-    singularity: null, voidFractures: [],
+    singularity: null, voidFractures: [], hazards: [],
   };
 }
 

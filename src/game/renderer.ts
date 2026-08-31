@@ -1,6 +1,6 @@
 import type {
   Bullet, Enemy, Particle, Star, PlayerState, XpOrb, Mine,
-  Lightning, FloatingText, PowerupItem
+  Lightning, FloatingText, PowerupItem, ArenaHazard,
 } from "./types";
 import { getEnemyColors, getEnemySize } from "./enemies";
 
@@ -596,6 +596,26 @@ export function drawEnemy(ctx: CanvasRenderingContext2D, e: Enemy, frame: number
     ctx.stroke();
     ctx.globalAlpha = 1;
     if (renderPerformanceTier > 0) { ctx.shadowBlur = 12; ctx.shadowColor = roleColor; }
+  }
+
+  if (e.isBoss && (e.telegraphTimer ?? 0) > 0) {
+    const pulse = 0.35 + 0.35 * Math.sin(frame * 0.45);
+    ctx.strokeStyle = `rgba(251,191,36,${pulse})`;
+    ctx.lineWidth = 3;
+    ctx.setLineDash([8, 6]);
+    ctx.beginPath();
+    ctx.arc(0, 0, size + 22 + Math.sin(frame * 0.3) * 4, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  if (e.isBoss && (e.vulnerableTimer ?? 0) > 0) {
+    ctx.strokeStyle = "rgba(250,204,21,0.85)";
+    ctx.lineWidth = 3;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.arc(0, 0, size + 18, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
   }
 
   // Freeze tint
@@ -1299,4 +1319,53 @@ export function drawExplosion(ctx: CanvasRenderingContext2D, pos: { x: number; y
   ctx.arc(pos.x, pos.y, radius * progress, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
+}
+
+export function drawHazards(ctx: CanvasRenderingContext2D, hazards: ArenaHazard[], frame: number) {
+  for (const h of hazards) {
+    const warning = h.warn > 0;
+    const pulse = warning
+      ? 0.25 + 0.35 * Math.sin(frame * 0.4)
+      : 0.55 + 0.2 * Math.sin(frame * 0.12);
+    ctx.save();
+    ctx.strokeStyle = warning ? `rgba(251,191,36,${pulse})` : `rgba(244,63,94,${pulse})`;
+    ctx.fillStyle = warning ? `rgba(251,191,36,${pulse * 0.18})` : `rgba(244,63,94,${pulse * 0.22})`;
+    ctx.lineWidth = warning ? 2 : 3;
+    if (warning) ctx.setLineDash([8, 6]);
+    switch (h.kind) {
+      case "circle":
+      case "well":
+      case "ring": {
+        ctx.beginPath();
+        ctx.arc(h.x, h.y, h.r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        if (h.kind === "ring") {
+          ctx.beginPath();
+          ctx.arc(h.x, h.y, Math.max(8, h.r * 0.55), 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        break;
+      }
+      case "beam": {
+        ctx.beginPath();
+        ctx.moveTo(h.x, h.y);
+        ctx.lineTo(h.x2 ?? h.x, h.y2 ?? h.y);
+        ctx.stroke();
+        break;
+      }
+      case "band": {
+        const hw = (h.w ?? 80) / 2, hh = (h.h ?? 40) / 2;
+        if (warning) ctx.strokeRect(h.x - hw, h.y - hh, hw * 2, hh * 2);
+        else {
+          ctx.globalAlpha = pulse * 0.32;
+          ctx.fillRect(h.x - hw, h.y - hh, hw * 2, hh * 2);
+          ctx.globalAlpha = pulse;
+          ctx.strokeRect(h.x - hw, h.y - hh, hw * 2, hh * 2);
+        }
+        break;
+      }
+    }
+    ctx.restore();
+  }
 }

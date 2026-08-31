@@ -71,7 +71,7 @@ export default function UpgradePanel({
         ) : null}
         {adAvailable && !bonusChoiceUsed && level >= 7 && choices.length < 4 && (
           <button onClick={onAdBonusChoice} disabled={adPending} className="rounded-lg border border-amber-500 bg-amber-950/90 px-4 py-2 font-black text-amber-100 hover:bg-amber-800 disabled:opacity-50 cursor-pointer">
-            🎬 +4-Й ЭПИЧЕСКИЙ ИЛИ ЛЕГЕНДАРНЫЙ
+            🎬 +4-Й ЭПИК/ЛЕГЕНДА ЗА РЕКЛАМУ
           </button>
         )}
         {banishesLeft > 0 && (

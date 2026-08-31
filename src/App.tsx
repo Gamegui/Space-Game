@@ -4,14 +4,15 @@ import type { GameObjects, StepInput } from "./game/gameLoop";
 import { stepGame, makeStars, makeInitialPlayer, makeMaterializeBurst, devourSoul, getNextLevelXp, spawnAdaptiveGuard, bindParticleFrame, particleDebugStats, objectPoolStats, VOID_SOUL_MAX, W, H, uid } from "./game/gameLoop";
 import { ALL_UPGRADES, rollUpgrades, rollPremiumUpgradeChoices, rollHighRarityUpgrade, applyUpgrade, getUpgradeLevel, getAdaptiveDifficulty } from "./game/upgrades";
 import { getWaveComposition, isBossWave, spawnBoss, getBossName, spawnEnemy } from "./game/enemies";
+import { getBossPhaseLabel, getBossMechanicHint } from "./game/bosses";
 import type { EnemyType } from "./game/types";
 import { SHIP_CLASSES } from "./game/shipClasses";
-import { audio } from "./game/audio";
+import { audio, musicThemeForBoss } from "./game/audio";
 import { SYNERGIES, unlockAvailableSynergies } from "./game/synergies";
 import { yandex, type StoreOffer } from "./platform/yandex";
 import {
   drawBackground, drawStars, drawPlayer, drawEnemy, drawBullet, drawSingularity, drawVoidFractures, drawMythicAuras,
-  drawParticle, drawXpOrb, drawMine, drawLightning, drawBlackHole, drawExplosion,
+  drawParticle, drawXpOrb, drawMine, drawLightning, drawBlackHole, drawExplosion, drawHazards,
   drawFloatingText, drawPowerup, drawVoidEye, drawVoidPhaseVignette, setRenderPerformanceTier
 } from "./game/renderer";
 import UpgradePanel from "./components/UpgradePanel";
@@ -65,7 +66,10 @@ function perfLogSlowFrame(line: string): void {
 // Замер слоёв отрисовки нужен только в dev/диагностической сборке. В релизе
 // обёртка — прозрачный вызов: минус 11 замыканий и 22 вызова performance.now()
 // на каждый кадр (v1.8.0).
-const PERF_DRAW_PROFILING = import.meta.env.DEV || import.meta.env.VITE_PERF === "true";
+// Перф-оверлей и [perf]-логи — ТОЛЬКО диагностическая сборка (VITE_PERF=true).
+// Обычный `npm run dev` и релизный `vite preview` идут без логов, как у игрока.
+const PERF_ENABLED = import.meta.env.VITE_PERF === "true";
+const PERF_DRAW_PROFILING = PERF_ENABLED;
 
 function perfTime(key: string, fn: () => void): void {
   if (!PERF_DRAW_PROFILING) { fn(); return; }
@@ -112,6 +116,7 @@ function makeInitialObjects(player: PlayerState): GameObjects {
     guardEventActive: false,
   singularity: null,
   voidFractures: [],
+  hazards: [],
   };
 }
 
@@ -264,7 +269,7 @@ export default function App() {
   // отчёт о зависании из отдельного потока, когда главный уже заблокирован.
   const freezeBeatRef = useRef<((payload: Record<string, unknown>, hidden: boolean) => void) | null>(null);
   useEffect(() => {
-    if (!(import.meta.env.DEV || import.meta.env.VITE_PERF === "true")) return;
+    if (import.meta.env.VITE_PERF !== "true") return;
     reportSessionStart();
     const recovered = recoverPerfMirror();
     for (const line of recovered) PERF_LINES.push(`ПРЕД. СЕАНС: ${line.slice(0, 400)}`);
@@ -274,7 +279,7 @@ export default function App() {
   // longtask-наблюдатель: фиксирует блокировки главного потока ВНЕ игрового
   // колбэка (коммит React, сборка мусора, композитинг браузера).
   useEffect(() => {
-    if (!(import.meta.env.DEV || import.meta.env.VITE_PERF === "true")) return;
+    if (!PERF_ENABLED) return;
     try {
       const observer = new PerformanceObserver(list => {
         for (const entry of list.getEntries()) {
@@ -418,16 +423,16 @@ export default function App() {
     if (phase !== "playing") keysRef.current.clear();
   }, [phase]);
 
-  // ─── Soundtrack direction (v2.8.0) ─────────────────────────────────────────
-  // Тема выбирается по фазе и наличию босса: меню — «Звёздная гавань», бой —
-  // «Погоня в пустоте», босс — «Пробуждение титана»; смерть/победа глушат
-  // тему (джинглы играются обработчиками событий). «upgrade»/«paused» тему не
-  // меняют — музыка забега продолжает играть.
+  // ─── Soundtrack direction (v2.9.4) ─────────────────────────────────────────
+  // Меню / бой / отдельная тема каждого босса. Смена — кроссфейд.
+  // Маршрут между волнами остаётся на боевой теме. upgrade/paused не сбрасывают.
   useEffect(() => {
-    if (phase === "playing" || phase === "boss_intro") audio.setMusicTheme(bossActive ? "boss" : "combat");
-    else if (phase === "menu" || phase === "ship_select" || phase === "tutorial" || phase === "route" || phase === "hangar") audio.setMusicTheme("menu");
+    if (phase === "playing" || phase === "boss_intro") {
+      audio.setMusicTheme(bossActive ? musicThemeForBoss(gameRef.current?.boss?.type) : "combat");
+    } else if (phase === "route") audio.setMusicTheme("combat");
+    else if (phase === "menu" || phase === "ship_select" || phase === "tutorial" || phase === "hangar") audio.setMusicTheme("menu");
     else if (phase === "dead" || phase === "victory") audio.setMusicTheme(null);
-  }, [phase, bossActive]);
+  }, [phase, bossActive, bossName]);
 
   useEffect(() => {
     audio.setMusicVolume(musicVolume);
@@ -626,6 +631,7 @@ export default function App() {
     setWave(newWave);
     g.bossActive = false;
     g.boss = null;
+    g.hazards.length = 0;
     g.waveStartedFrame = frameRef.current;
     g.guardSpawnedThisWave = false;
     g.guardEventActive = false;
@@ -1114,6 +1120,7 @@ export default function App() {
       perfTime("orbs", () => { for (const orb of g.xpOrbs) drawXpOrb(ctx, orb, frame); });
       perfTime("powerups", () => { for (const powerup of g.powerups) drawPowerup(ctx, powerup, frame); });
       perfTime("bullets", () => { for (const bullet of g.bullets) drawBullet(ctx, bullet); });
+      perfTime("hazards", () => { if (g.hazards.length > 0) drawHazards(ctx, g.hazards, frame); });
       perfTime("enemies", () => { for (const enemy of g.enemies) drawEnemy(ctx, enemy, frame); });
       perfTime("player", () => {
         drawPlayer(ctx, g.player, frame);
@@ -1289,7 +1296,7 @@ export default function App() {
       }
 
       drawWorld(g, frame);
-      if (import.meta.env.DEV || import.meta.env.VITE_PERF === "true") {
+      if (PERF_ENABLED) {
         // sim фиксируем сразу после секции симуляции (она выше), draw — здесь.
         // (perfSimMs выставлен сразу после while-цикла симуляции.)
         const perfCallbackMs = performance.now() - perfFrameStart;
@@ -1348,6 +1355,13 @@ export default function App() {
         ctx.fillStyle = "#fca5a5";
         ctx.shadowBlur = 0;
         ctx.fillText(bossName, W / 2, H / 2 + 25);
+        const gNow = gameRef.current;
+        const hint = gNow?.boss ? getBossMechanicHint(gNow.boss.type) : "";
+        if (hint) {
+          ctx.font = "16px monospace";
+          ctx.fillStyle = "#fde68a";
+          ctx.fillText(hint, W / 2, H / 2 + 58);
+        }
       }
       ctx.restore();
     }
@@ -1428,6 +1442,7 @@ export default function App() {
     g.waveEnemyQueue = [];
     g.boss = null;
     g.bossActive = false;
+    g.hazards.length = 0;
     g.waveStartedFrame = frameRef.current;
     g.guardSpawnedThisWave = false;
     g.guardEventActive = false;
@@ -1728,7 +1743,7 @@ export default function App() {
         />
 
         {/* Development-only admin panel */}
-        {(import.meta.env.DEV || import.meta.env.VITE_PERF === "true") && (
+        {PERF_ENABLED && (
           <div className="absolute bottom-3 left-3 z-50 font-mono text-[11px]">
             <button
               onClick={() => { setPerfText(getPerfLog()); setPerfOpen(true); }}
@@ -1873,6 +1888,8 @@ export default function App() {
             bossActive={bossActive}
             bossName={bossName}
             bossHpPct={bossHpPct}
+            bossPhase={gameRef.current.boss ? getBossPhaseLabel(gameRef.current.boss.type, gameRef.current.boss.phase) : undefined}
+            bossVulnerable={Boolean(gameRef.current.boss && (gameRef.current.boss.vulnerableTimer ?? 0) > 0)}
             timeSlow={timeSlow}
             onNuke={handleNuke}
             onTimeSlow={handleTimeSlow}
@@ -1914,7 +1931,7 @@ export default function App() {
               pendingMythicDefRef.current = null;
               setPendingMythic(null);
               // Фаза остаётся «upgrade» — вернуть тему забега вручную.
-              audio.setMusicTheme(bossActive ? "boss" : "combat");
+              audio.setMusicTheme(bossActive ? musicThemeForBoss(gameRef.current?.boss?.type) : "combat");
             }}
           />
         )}
@@ -2320,7 +2337,7 @@ export default function App() {
                   disabled={adPending}
                   className="w-full mb-3 py-3 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 disabled:opacity-50 text-white font-black text-base rounded-full shadow-xl transition-all active:scale-95 cursor-pointer"
                 >
-                  {adPending ? "ЗАГРУЗКА ВИДЕО…" : "🎬 ЭКСТРЕННЫЙ РЕМОНТ · +50% HP"}
+                  {adPending ? "ЗАГРУЗКА РЕКЛАМЫ…" : "🎬 РЕКЛАМА · ЭКСТРЕННЫЙ РЕМОНТ · +50% HP"}
                 </button>
               )}
 

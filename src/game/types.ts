@@ -95,6 +95,38 @@ export interface Enemy {
   poisoned: number;
   drops: boolean;
   xp: number;
+  /** Кадры до следующей спецатаки босса. */
+  specialTimer?: number;
+  /** Кадры текущего телеграфа (стрельба-филлер молчит). */
+  telegraphTimer?: number;
+  /** Окно уязвимости: входящий урон ×1.4. */
+  vulnerableTimer?: number;
+  /** Цель тарана (X) или флаг спецатаки. */
+  aimAngle?: number;
+  /** Кадры рывка-тарана. */
+  ramTimer?: number;
+}
+
+/** Арена-телеграф / зона опасности босса. warn>0 — предупреждение, active — удар. */
+export interface ArenaHazard {
+  id: number;
+  kind: "circle" | "beam" | "band" | "well" | "ring";
+  x: number;
+  y: number;
+  x2?: number;
+  y2?: number;
+  r: number;
+  w?: number;
+  h?: number;
+  angle?: number;
+  warn: number;
+  active: number;
+  color: string;
+  damage: number;
+  pull: number;
+  vx?: number;
+  vy?: number;
+  shrink?: number;
 }
 
 export type EnemyType =

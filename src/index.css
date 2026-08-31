@@ -19,6 +19,7 @@ body {
   min-height: 100dvh;
   color-scheme: dark;
   -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
   -webkit-user-select: none;
   user-select: none;
 }

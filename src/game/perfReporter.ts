@@ -15,9 +15,9 @@ const LOCAL_STORAGE_KEY = "perf_log_mirror";
 const MIRROR_MAX_LINES = 60;
 
 function isDev(): boolean {
-  // Активен в dev-режиме ИЛИ в диагностической сборке (VITE_PERF=true):
-  // одностраничный HTML для локального воспроизведения фризов.
-  return import.meta.env.DEV || import.meta.env.VITE_PERF === "true";
+  // Только диагностическая сборка (VITE_PERF=true). Релиз и обычный dev
+  // не шлют [perf]-логи и не поднимают watchdog.
+  return import.meta.env.VITE_PERF === "true";
 }
 
 function mirror(line: string): void {

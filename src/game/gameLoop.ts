@@ -1,14 +1,15 @@
 import type {
   PlayerState, Bullet, Enemy, Particle, Mine, Lightning,
-  Vec2, Star, XpOrb, FloatingText, PowerupItem, PowerupType, ShipClassId
+  Vec2, Star, XpOrb, FloatingText, PowerupItem, PowerupType, ShipClassId,
+  ArenaHazard, EnemyType,
 } from "./types";
 
 import { spawnEnemy, getEnemySize } from "./enemies";
-import type { EnemyType } from "./types";
 import { getUpgradeLevel } from "./upgrades";
 import { audio } from "./audio";
 import { applyShipClassStats } from "./shipClasses";
 import { hasMythic } from "./mythics";
+import { tickBossFight, tickHazards, BOSS_VULN_DAMAGE_MULT, bossBulletBaseDamage, bossContactBase, type BossTools } from "./bosses";
 
 export const W = 960;
 export const H = 720;
@@ -743,6 +744,8 @@ export interface GameObjects {
   singularity: { pos: Vec2; timer: number; maxTimer: number; absorbed: number } | null;
   /** 👁️ МИФИК «Конец Материи»: разрывы пространства (макс. 8, живут 3 c). */
   voidFractures: { pos: Vec2; life: number }[];
+  /** Телеграфы и арена-зоны боссов. */
+  hazards: ArenaHazard[];
 }
 
 export interface StepInput {
@@ -757,9 +760,18 @@ export interface StepInput {
   onKill: (xp: number, pos: Vec2, bossKill: boolean) => void;
 }
 
+const bossTools: BossTools = {
+  uid,
+  spawnBullet: spawnEnemyBullet,
+  burst: () => {},
+  makeOrb: makeXpOrb,
+  makeText: makeFloatingText,
+};
+
 export function stepGame(obj: GameObjects, input: StepInput): void {
   runtimePerformanceTier = obj.performanceTier;
   bindParticleFrame(obj.particles, obj.performanceTier);
+  bossTools.burst = (pos, color, count, big) => emitBurst(obj.particles, pos, color, count, big);
   const { player, bullets, enemies, particles, xpOrbs, mines, lightnings, stars, floatingTexts, powerups } = obj;
   const { keys, wave, frame, timeSlow } = input;
   const timeScale = timeSlow ? 0.5 : 1;
@@ -1467,121 +1479,36 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
     if (e.burning > 0) { damageEnemy(e, 0.18 * ets, frame, enemies); e.burning -= ets; }
     if (e.poisoned > 0) { damageEnemy(e, 0.10 * ets, frame, enemies); e.poisoned -= ets; }
 
-    // Boss phase changes. Omega has four real transformations; other bosses
-    // retain their focused two-stage patterns.
     if (e.isBoss) {
-      const bossHpPct = e.hp / e.maxHp;
-      if (e.type === "boss_omega") {
-        const transform = (phase: number, label: string, intervalDrop: number) => {
-          e.phase = phase;
-          e.shootInterval = Math.max(6, e.shootInterval - intervalDrop);
-          e.frozen = 0;
-          e.controlImmunity = 150;
-          obj.screenShake = Math.max(obj.screenShake, 12 + phase * 2);
-          floatingTexts.push(makeFloatingText(e.pos, label, phase === 3 ? "#ffffff" : "#f43f5e", true));
-          audio.playBossWarning();
-        };
-        if (bossHpPct < 0.75 && e.phase === 0) {
-          transform(1, "ОМЕГА: АДАПТАЦИЯ", 3);
-          e.maxShieldHp = Math.max(e.maxShieldHp, e.maxHp * 0.06);
-          e.shieldHp = e.maxShieldHp;
-        } else if (bossHpPct < 0.5 && e.phase === 1) {
-          transform(2, "ОМЕГА: РАЗРЫВ ФОРМЫ", 3);
-          enemies.push(spawnEnemy("carrier", wave, obj.adaptiveDifficulty), spawnEnemy("phantom", wave, obj.adaptiveDifficulty));
-        } else if (bossHpPct < 0.25 && e.phase === 2) {
-          transform(3, "ФИНАЛЬНАЯ ФОРМА ОМЕГИ", 5);
-          enemies.push(spawnEnemy("phantom", wave, obj.adaptiveDifficulty), spawnEnemy("singularity", wave, obj.adaptiveDifficulty));
-          const dropped = bullets.splice(0, Math.floor(bullets.length * 0.25));
-          for (const db of dropped) releaseBullet(db);
-        }
-        if (e.phase >= 3) {
-          const dx = W / 2 - player.pos.x, dy = H / 2 - player.pos.y;
-          const distance = Math.max(1, Math.sqrt(dx * dx + dy * dy));
-          player.pos.x += (dx / distance) * 0.24;
-          player.pos.y += (dy / distance) * 0.18;
-        }
-        // ── Omega unique mechanics ──
-        // Shockwave ring: every 4 seconds in phase 1+, expanding ring of bullets
-        if (e.phase >= 1 && frame % 240 === 0) {
-          const ringCount = 16 + e.phase * 6;
-          for (let i = 0; i < ringCount; i++) {
-            const a = (i / ringCount) * Math.PI * 2;
-            const ringSpd = 2.8 + e.phase * 0.4;
-            bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(a) * ringSpd, y: Math.sin(a) * ringSpd }, 2.5 + wave * 0.1, 5, "#ff4444", 0, false));
-          }
-          obj.screenShake = Math.max(obj.screenShake, 6);
-        }
-        // Laser beam: aimed burst every 2.5s in phase 2+
-        if (e.phase >= 2 && frame % 150 === 0) {
-          const ldx = player.pos.x - e.pos.x, ldy = player.pos.y - e.pos.y;
-          const aim = Math.atan2(ldy, ldx);
-          const beamSpd = 3.6 + wave * 0.08;
-          const beamDmg = (2.5 + wave * 0.22) * 1.5;
-          const beamCount = e.phase >= 3 ? 7 : 5;
-          for (let i = 0; i < beamCount; i++) {
-            const spread = (i - (beamCount - 1) / 2) * 0.06;
-            const angle = aim + spread;
-            bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(angle) * beamSpd * 2.2, y: Math.sin(angle) * beamSpd * 2.2 }, beamDmg, 8, "#ffffff", 2, false));
-          }
-        }
-        // Vortex pull: in phase 3, pull player bullets toward Omega every 3s
-        if (e.phase >= 3 && frame % 180 === 0) {
-          for (const b of bullets) {
-            if (!b.fromPlayer) continue;
-            const bdx = e.pos.x - b.pos.x, bdy = e.pos.y - b.pos.y;
-            const bdist = Math.max(1, Math.sqrt(bdx * bdx + bdy * bdy));
-            if (bdist < 300) {
-              b.vel.x += (bdx / bdist) * 1.2;
-              b.vel.y += (bdy / bdist) * 1.2;
-            }
-          }
-          obj.screenShake = Math.max(obj.screenShake, 5);
-          emitBurst(particles, e.pos, "#e11d48", 12);
-        }
-        // Rage mode: phase 3 Omega slowly drifts toward the player
-        if (e.phase >= 3) {
-          const rdx = player.pos.x - e.pos.x, rdy = player.pos.y - e.pos.y;
-          const rdist = Math.max(1, Math.sqrt(rdx * rdx + rdy * rdy));
-          if (rdist > 100) {
-            e.pos.x += (rdx / rdist) * 0.35;
-            e.pos.y += (rdy / rdist) * 0.2;
-          }
-        }
-      } else {
-        if (bossHpPct < 0.5 && e.phase === 0) {
-          e.phase = 1;
-          e.shootInterval = Math.max(10, e.shootInterval - 8);
-          obj.screenShake = Math.max(obj.screenShake, 8);
-          audio.playBossWarning();
-          if (e.type === "boss_mothership") {
-            for (let escort = 0; escort < 4; escort++) enemies.push(spawnEnemy(escort % 2 ? "fighter" : "spinner", wave, obj.adaptiveDifficulty));
-          }
-          if (e.type === "boss_dreadnought") {
-            e.maxShieldHp = Math.max(e.maxShieldHp, e.maxHp * 0.12);
-            e.shieldHp = e.maxShieldHp;
-          }
-        }
-        if (bossHpPct < 0.25 && e.phase === 1) {
-          e.phase = 2;
-          e.shootInterval = Math.max(6, e.shootInterval - 6);
-          obj.screenShake = Math.max(obj.screenShake, 10);
-        }
-      }
-      if (e.type === "boss_eclipse" && e.phase >= 1 && frame % 3 === 0) {
-        const dx = e.pos.x - player.pos.x, dy = e.pos.y - player.pos.y;
-        const distance = Math.max(1, Math.sqrt(dx * dx + dy * dy));
-        player.pos.x += (dx / distance) * 0.22;
-        player.pos.y += (dy / distance) * 0.22;
-      }
+      tickBossFight(obj, e, player, wave, frame, ets, bossTools);
     }
 
-    // Enemy shooting
+    // Enemy shooting. During a boss telegraph the filler volley is silenced
+    // so the warning can actually be read.
     e.shootTimer -= ets;
     if (e.shootTimer <= 0) {
-      e.shootTimer = e.shootInterval * (e.frozen > 0 ? (controlResistant ? 1.35 : 3) : 1);
-      shootEnemy(e, player, bullets, wave, obj.adaptiveDifficulty);
+      const telegraphing = e.isBoss && (e.telegraphTimer ?? 0) > 0;
+      e.shootTimer = e.shootInterval * (e.frozen > 0 ? (controlResistant ? 1.35 : 3) : 1)
+        * (e.isBoss && (e.vulnerableTimer ?? 0) > 0 ? 1.45 : 1);
+      if (!telegraphing) shootEnemy(e, player, bullets, wave, obj.adaptiveDifficulty);
     }
   }
+
+  // Арена-зоны босса: телеграф → удар / гравитация.
+  const isGhostNow = player.ghostMode && player.ghostTimer > 0;
+  tickHazards(
+    obj.hazards,
+    player,
+    timeScale,
+    (pdx, pdy) => {
+      player.pos.x = Math.max(25, Math.min(W - 25, player.pos.x + pdx));
+      player.pos.y = Math.max(60, Math.min(H - 32, player.pos.y + pdy));
+    },
+    (dmg) => {
+      if (player.invincTimer > 0 || isGhostNow || player.dashTimer > 0) return;
+      takeDamage(player, dmg, particles, obj, input.onDeath);
+    },
+  );
 
   // ─── Move bullets ──────────────────────────────────────────────────────────
   for (let i = bullets.length - 1; i >= 0; i--) {
@@ -2013,7 +1940,7 @@ export function stepGame(obj: GameObjects, input: StepInput): void {
         const dx = e.pos.x - player.pos.x, dy = e.pos.y - player.pos.y;
         const size = getEnemySize(e.type);
         if (dx * dx + dy * dy < (size + 16) * (size + 16)) {
-          const baseContactDamage = (e.isBoss ? 28 + wave * 0.8 : 11 + wave * 0.18) * enemyDamageFactor(obj.adaptiveDifficulty);
+          const baseContactDamage = (e.isBoss ? bossContactBase(wave) : 11 + wave * 0.18) * enemyDamageFactor(obj.adaptiveDifficulty);
           const contactDamage = baseContactDamage * (e.guardRole ? 0.65 : 1);
           takeDamage(player, contactDamage, particles, obj, input.onDeath);
           if (e.type === "leecher") e.hp = Math.min(e.maxHp, e.hp + contactDamage * 2);
@@ -2215,7 +2142,8 @@ function limitEnemyDamage(enemy: Enemy, amount: number, frame: number, enemies: 
 }
 
 function damageEnemy(enemy: Enemy, amount: number, frame: number, enemies: Enemy[]): number {
-  const applied = limitEnemyDamage(enemy, amount, frame, enemies);
+  const boosted = (enemy.vulnerableTimer ?? 0) > 0 ? amount * BOSS_VULN_DAMAGE_MULT : amount;
+  const applied = limitEnemyDamage(enemy, boosted, frame, enemies);
   enemy.hp = Math.max(0, enemy.hp - applied);
   return applied;
 }
@@ -2319,6 +2247,7 @@ function enforceObjectBudgets(obj: GameObjects) {
   trimOldest(obj.mines, OBJECT_BUDGETS.mines);
   trimOldest(obj.explosions, Math.ceil(OBJECT_BUDGETS.explosions * qualityFactor));
   trimOldest(obj.powerups, OBJECT_BUDGETS.powerups);
+  trimOldest(obj.hazards, 16);
 }
 
 function makePlayerBullet(player: PlayerState, pos: Vec2, vel: Vec2): Bullet {
@@ -2411,7 +2340,7 @@ function shootEnemy(e: Enemy, player: PlayerState, bullets: Bullet[], wave: numb
   const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
   const spd = 3.6 + wave * 0.08;
   const color = getEnemyBulletColorLocal(e.type);
-  const baseDamage = e.isBoss ? 2.5 + wave * 0.22 : 1 + wave * 0.035;
+  const baseDamage = e.isBoss ? bossBulletBaseDamage(wave) : 1 + wave * 0.035;
   // v1.8.3: enemyDamageFactor — прежняя линейная формула до шкалы 12 (волны
   // 1–60 без изменений), дальше логарифмический рост для endless-эскалации.
   const adaptiveDamage = baseDamage * enemyDamageFactor(adaptiveScale);
@@ -2480,70 +2409,47 @@ function shootEnemy(e: Enemy, player: PlayerState, bullets: Bullet[], wave: numb
       break;
     }
     case "boss_destroyer": {
+      // Прицельный тройник с бортов — кольца только в телеграфной спецатаке.
       bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: (dx / dist) * spd * 1.2, y: (dy / dist) * spd * 1.2 }, dmg, size + 2, color, 0, false));
       for (let s2 = -1; s2 <= 1; s2 += 2) {
         bullets.push(spawnEnemyBullet({ x: e.pos.x + s2 * 45, y: e.pos.y }, { x: s2 * spd * 0.45, y: spd * 0.95 }, dmg * 0.7, size, color, 0, false));
       }
-      if (e.phase >= 1) {
-        for (let i = 0; i < 6; i++) {
-          const a = (i / 6) * Math.PI * 2;
-          bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(a) * spd * 0.8, y: Math.sin(a) * spd * 0.8 }, dmg * 0.6, size - 1, color, 0, false));
-        }
-      }
       break;
     }
     case "boss_mothership": {
-      for (let i = 0; i < 6; i++) {
-        const a = (i / 6) * Math.PI * 2 + e.angle * 0.02;
-        bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(a) * spd, y: Math.sin(a) * spd }, dmg, size, color, 0, false));
-      }
+      bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: (dx / dist) * spd * 1.15, y: (dy / dist) * spd * 1.15 }, dmg, size + 1, color, 0, false));
       if (e.phase >= 1) {
-        bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: (dx / dist) * spd * 1.4, y: (dy / dist) * spd * 1.4 }, dmg * 1.3, size + 3, color, 1, false));
+        bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: (dx / dist) * spd * 1.4, y: (dy / dist) * spd * 1.4 }, dmg * 1.25, size + 3, color, 1, false));
       }
       break;
     }
     case "boss_dreadnought": {
-      for (let i = 0; i < 8; i++) {
-        const a = (i / 8) * Math.PI * 2 + e.angle * 0.015;
-        bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(a) * spd * 0.9, y: Math.sin(a) * spd * 0.9 }, dmg, size, color, 0, false));
-      }
+      bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: (dx / dist) * spd * 1.35, y: (dy / dist) * spd * 1.35 }, dmg * 1.4, size + 2, color, 0, false));
       if (e.phase >= 1) {
-        bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: (dx / dist) * spd * 1.7, y: (dy / dist) * spd * 1.7 }, dmg * 2, 11, color, 3, false));
+        bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: (dx / dist) * spd * 1.7, y: (dy / dist) * spd * 1.7 }, dmg * 1.8, 10, color, 2, false));
       }
       break;
     }
     case "boss_eclipse": {
-      for (let i = 0; i < 10; i++) {
-        const a = (i / 10) * Math.PI * 2 + e.angle * 0.02;
-        bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(a) * spd, y: Math.sin(a) * spd }, dmg, size, color, 0, false));
-      }
+      bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: (dx / dist) * spd * 1.2, y: (dy / dist) * spd * 1.2 }, dmg, size + 1, color, 0, false));
       if (e.phase >= 1) {
-        for (let i = 0; i < 5; i++) {
-          const a = (i / 5) * Math.PI * 2;
-          bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(a) * spd * 1.35, y: Math.sin(a) * spd * 1.35 }, dmg * 1.3, size + 2, color, 0, true));
-        }
+        bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: (dx / dist) * spd * 1.05, y: (dy / dist) * spd * 1.05 }, dmg * 1.15, size + 2, color, 0, true));
       }
       break;
     }
     case "boss_titan": {
-      for (let i = 0; i < 12; i++) {
-        const a = (i / 12) * Math.PI * 2;
-        bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(a) * spd * (0.5 + e.phase * 0.4), y: Math.sin(a) * spd * (0.5 + e.phase * 0.4) }, dmg, size, color, 0, false));
-      }
+      bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: (dx / dist) * spd * 0.95, y: (dy / dist) * spd * 0.95 }, dmg * 1.3, size + 3, color, 0, false));
       break;
     }
     case "boss_omega": {
-      const count = 12 + e.phase * 4;
-      for (let i = 0; i < count; i++) {
-        const a = (i / count) * Math.PI * 2 + e.angle * (0.025 + e.phase * 0.008);
-        const speedBand = e.phase >= 2 && i % 2 === 0 ? 0.72 : 1.08 + e.phase * 0.08;
-        bullets.push(spawnEnemyBullet({ x: e.pos.x, y: e.pos.y }, { x: Math.cos(a) * spd * speedBand, y: Math.sin(a) * spd * speedBand }, dmg * (e.phase >= 3 ? 1.15 : 1), size + e.phase, color, 0, false));
-      }
+      // Сложность — телеграфы. Фiller: 1–3 прицельных снаряда с зазором, не кольцо.
+      const aim = Math.atan2(dy, dx);
+      bullets.push(spawnEnemyBullet({ ...e.pos }, { x: Math.cos(aim) * spd * 1.35, y: Math.sin(aim) * spd * 1.35 }, dmg, size + 2, color, 0, false));
       if (e.phase >= 1) {
-        const aim = Math.atan2(dy, dx);
-        for (const offset of e.phase >= 3 ? [-0.3, -0.1, 0.1, 0.3] : [-0.14, 0.14]) {
-          const angle = aim + offset;
-          bullets.push(spawnEnemyBullet({ ...e.pos }, { x: Math.cos(angle) * spd * 1.65, y: Math.sin(angle) * spd * 1.65 }, dmg * 1.25, size + 2, "#ffffff", 1, false));
+        const spread = e.phase >= 3 ? 0.2 : 0.14;
+        for (const offset of e.phase >= 3 ? [-spread, spread] : [spread]) {
+          const a = aim + offset;
+          bullets.push(spawnEnemyBullet({ ...e.pos }, { x: Math.cos(a) * spd * 1.2, y: Math.sin(a) * spd * 1.2 }, dmg, size + 1, "#ffffff", 0, false));
         }
       }
       break;

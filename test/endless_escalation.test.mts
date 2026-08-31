@@ -85,7 +85,7 @@ test("интеграция: кортеж на волне 90 на порядок 
       routeXpMultiplier: 1, routeScoreMultiplier: 1, activeRoute: "warzone", routeEffect: "none",
       performanceTier: 2, performanceAuto: false, waveStartedFrame: 0,
       guardSpawnedThisWave: false, fastClearStreak: 0, guardEventActive: true,
-      singularity: null, voidFractures: [],
+      singularity: null, voidFractures: [], hazards: [],
     };
     spawnAdaptiveGuard(obj, wave);
     const total = obj.enemies.reduce((a, e) => a + e.maxHp, 0);

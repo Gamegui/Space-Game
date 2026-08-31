@@ -9,6 +9,8 @@ interface Props {
   bossActive: boolean;
   bossName: string;
   bossHpPct: number;
+  bossPhase?: string;
+  bossVulnerable?: boolean;
   timeSlow: boolean;
   onNuke: () => void;
   onTimeSlow: () => void;
@@ -16,6 +18,7 @@ interface Props {
 
 export default function HUD({
   player, wave, enemiesLeft, bossActive, bossName, bossHpPct,
+  bossPhase, bossVulnerable,
   timeSlow, onNuke, onTimeSlow
 }: Props) {
   const hpPct = player.hp / player.maxHp;
@@ -168,6 +171,8 @@ export default function HUD({
           </div>
           <div className="text-center text-xs text-red-300 font-mono mt-0.5 font-bold">
             {Math.ceil(bossHpPct * 100)}% ПРОЧНОСТИ
+            {bossPhase ? ` · ФАЗА: ${bossPhase}` : ""}
+            {bossVulnerable ? " · ⚠ УЯЗВИМ" : ""}
           </div>
         </div>
       )}

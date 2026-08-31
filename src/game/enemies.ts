@@ -111,17 +111,18 @@ export function getEnemyDef(type: EnemyType, wave: number, adaptiveScale = 1): E
       return { type, hp: 90 * scale, speed: 0.5, shootInterval: 68, movePattern: "circle", xp: 125, isBoss: false, shieldHp: 35 * adaptiveScale, drops: true };
 
     case "boss_destroyer":
-      return { type, hp: 240 * scale, speed: 0.7, shootInterval: 42, movePattern: "hover", xp: 250, isBoss: true, shieldHp: 40, drops: true };
+      return { type, hp: 240 * scale, speed: 0.7, shootInterval: 55, movePattern: "patrol", xp: 250, isBoss: true, shieldHp: 40, drops: true };
     case "boss_mothership":
-      return { type, hp: 460 * scale, speed: 0.55, shootInterval: 35, movePattern: "hover", xp: 450, isBoss: true, shieldHp: 70, drops: true };
+      return { type, hp: 460 * scale, speed: 0.45, shootInterval: 48, movePattern: "hover", xp: 450, isBoss: true, shieldHp: 70, drops: true };
     case "boss_dreadnought":
-      return { type, hp: 780 * scale, speed: 0.6, shootInterval: 28, movePattern: "hover", xp: 750, isBoss: true, shieldHp: 100, drops: true };
+      return { type, hp: 780 * scale, speed: 0.55, shootInterval: 44, movePattern: "patrol", xp: 750, isBoss: true, shieldHp: 100, drops: true };
     case "boss_eclipse":
-      return { type, hp: 1200 * scale, speed: 0.75, shootInterval: 24, movePattern: "hover", xp: 1100, isBoss: true, shieldHp: 130, drops: true };
+      return { type, hp: 1200 * scale, speed: 0.7, shootInterval: 40, movePattern: "circle", xp: 1100, isBoss: true, shieldHp: 130, drops: true };
     case "boss_titan":
-      return { type, hp: 1800 * scale, speed: 0.65, shootInterval: 20, movePattern: "hover", xp: 1600, isBoss: true, shieldHp: 160, drops: true };
+      return { type, hp: 1800 * scale, speed: 0.5, shootInterval: 38, movePattern: "hover", xp: 1600, isBoss: true, shieldHp: 160, drops: true };
     case "boss_omega":
-      return { type, hp: 3000 * scale, speed: 0.85, shootInterval: 16, movePattern: "hover", xp: 2500, isBoss: true, shieldHp: 220, drops: true };
+      // Жёсткий финал без ковра пуль: ~20k HP на волне 50, filler редкий.
+      return { type, hp: 2100 * scale, speed: 0.65, shootInterval: 48, movePattern: "sine", xp: 2500, isBoss: true, shieldHp: 120, drops: true };
     default:
       return { type, hp: 5, speed: 1, shootInterval: 120, movePattern: "sine", xp: 8, isBoss: false, shieldHp: 0, drops: false };
   }
@@ -151,7 +152,7 @@ export function spawnEnemy(type: EnemyType, wave: number, adaptiveScale = 1): En
     type: def.type,
     shootTimer: randInt(25, def.shootInterval),
     shootInterval: Math.max(
-      def.isBoss ? 8 : 28,
+      def.isBoss ? 36 : 28,
       Math.floor(def.shootInterval * (isElite ? 0.75 : 1) * Math.max(0.58, 1 - wave * 0.012)),
     ),
     isBoss: def.isBoss,
@@ -175,6 +176,11 @@ export function spawnEnemy(type: EnemyType, wave: number, adaptiveScale = 1): En
     poisoned: 0,
     drops: def.drops || isElite,
     xp: def.xp * xpMult,
+    specialTimer: def.isBoss ? 90 : 0,
+    telegraphTimer: 0,
+    vulnerableTimer: 0,
+    aimAngle: 0,
+    ramTimer: 0,
   };
 }
 
